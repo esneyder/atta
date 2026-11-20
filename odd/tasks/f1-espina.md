@@ -23,11 +23,11 @@ Rama: `feat/f1-espina` (desde `develop`). Diseño de referencia: `docs/design/ar
 
 | ID | Specs | Route | Estado | Commit |
 |---|---|---|---|---|
-| T1 | S11, S12 | worker diseño (`design/hormiguero/`) → canvas → elección del usuario | en curso | — |
-| T2 | S1, S3, S4, S5, S6, S10 | worker núcleo (`atta/spine/`, `tests/`) | hecho (70 tests OK en Windows; Unix pendiente de CI T7) | ver Log L4 |
-| T3 | S7, S1 | Filtro | pendiente | — |
-| T4 | S8, S2 | router + política de ramas | pendiente | — |
-| T5 | S9, S10, S12 | CLI + animación de la hormiga en terminal (según dirección elegida en T1) | pendiente | — |
+| T1 | S11, S12 | worker diseño (`design/hormiguero/`) → elección del usuario | hecho (A elegida) | 31a29e8 |
+| T2 | S1, S3, S4, S5, S6, S10 | worker núcleo (`atta/spine/`, `tests/`) | hecho (70 tests OK en Windows; Unix pendiente de CI T7) | 57303bd |
+| T3 | S7, S1 | worker + verify independiente + corrección | hecho | 933213b |
+| T4 | S8, S2 | worker + verify independiente + corrección | hecho | 043ed2e |
+| T5 | S9, S10, S12 | worker CLI + term | hecho (57 tests; smoke manual) | ver commit feat(cli) |
 | T6 | S11 | dashboard implementado (`atta/bin/board.py` + vista) según dirección elegida | pendiente | — |
 | T7 | S13 | CI 3 SO + docs de uso | pendiente | — |
 
@@ -39,3 +39,6 @@ Rama: `feat/f1-espina` (desde `develop`). Diseño de referencia: `docs/design/ar
 - **L4** T2 verificado por el padre: `python -m unittest discover -s tests` → 70 OK (Windows, Python 3.11). Decisiones del worker aceptadas: el tope `max_total_rounds` se copia al crear el job; superar el tope solo permite `needs-human`; `needs-human → build` no reinicia ni suma `total_rounds`; `sync_attempts` suma al entrar a `merging`; claves desconocidas de config se conservan. Pendiente para T4: aplicar `max_rounds` por contador (hoy solo rige el tope global).
 - **L5** Verify independiente de T3/T4 (Risk item 2): S2 y S8 cumplidos; S7 y S1 no: B1 ruta protegida con otra capitalización (`ATTA/checks.json`) pasa como archivo agregado y al mergear pisa `atta/checks.json` en Windows/macOS; B2 `base_ref` sin validar (`""`, `HEAD`, `--output=...`) oculta el diff; B3 shell por defecto `pwsh` no existe en Windows estándar. Advisories: A1 `refs/heads/main` aceptado como integration_branch; A2 agregar archivos bajo rutas protegidas pasa; A3 `git replace` engaña el diff; A4 worktree sucio pasa; A5 timeout no se respeta si un hijo en background mantiene stdout. Decisión del padre: corregir B1-B3 y A1-A5; S7 se endurece a «cualquier cambio, incluido agregar».
 - **L6** Diseño T1: `design/hormiguero/` con `01-camino-de-hormigas`, `02-mesa-de-operacion`, `03-mapa-de-la-colonia` (direcciones del dashboard) y `04-terminal` + `terminal-frames.json` (contrato de frames para T5); sync en `design/system.md` y `design/system.html`. Verificado por el worker con capturas headless (claro, oscuro, 420 px), sin URLs externas, solo tokens de marca. Pendiente: elección del usuario.
+- **L7** Usuario eligió: dashboard «A · Camino de hormigas» (`design/hormiguero/01-camino-de-hormigas.html`) para T6; terminal: «Siempre ATTA_THEME explícito» (paleta oscura salvo `ATTA_THEME=light`, sin autodetección) para T5. T1 cerrado (commit 31a29e8).
+- **L8** Corrección de L5 aplicada (B1-B3, A1-A5) con 27 pruebas de bypass en `tests/test_gate_bypass.py`; 180 tests OK (Windows). Commits: T4 `043ed2e`, T3 `933213b`. Riesgo residual: tras un timeout con hijo en background el Filtro ya no espera, pero el proceso huérfano puede seguir vivo; `--end-of-options` requiere git reciente (probado 2.49). Slice: la rama supera ~400 líneas por commit; al publicar se puede revisar por commit.
+- **L9** T5 verificado por el padre: `test_cli` + `test_term` OK; smoke: `create 12` → `12-agregar-exportacion-a-csv`, `check-pr-base main` → exit 2 con el mensaje exacto, `status` tabla en español. Decisiones aceptadas: legalidad antes que presupuesto en `advance`; `route` llena `job.intake`; `ATTA_NO_ANIM` = línea estática sin ANSI. Pendiente: probar la animación en terminales reales (Windows Terminal, macOS, Linux).
