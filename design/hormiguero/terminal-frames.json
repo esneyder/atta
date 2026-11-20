@@ -1,0 +1,334 @@
+{
+  "$comment": "Frames de la hormiga de Atta para la CLI (T5). Fuente de color: brand/tokens.css. Cada frame son 2 lineas de ancho fijo: [cuerpo+hoja, patas+camino]. Se redibujan en sitio (\r y cursor arriba 1 linea) solo mientras corre la etapa real; al terminar se borran y se imprime la linea de resultado. Sin espera minima.",
+  "source": "design/hormiguero/04-terminal.html",
+  "width": 24,
+  "lines_per_frame": 2,
+  "interval_ms": 120,
+  "loop": true,
+  "label_gap": 2,
+  "label_format": "{rol} · {detalle} · {mm:ss}",
+  "disable_when": {
+    "not_tty": true,
+    "env": [
+      "NO_COLOR",
+      "ATTA_NO_ANIM"
+    ],
+    "term_dumb": true,
+    "note": "NO_COLOR quita color y animacion (lineas estaticas); ATTA_NO_ANIM quita solo la animacion. Sin TTY: lineas estaticas sin ANSI."
+  },
+  "never_wait": "La animacion corre en un hilo mientras el subproceso de la etapa trabaja; se detiene en cuanto la etapa termina, aunque el frame no haya acabado. Nunca hay duracion minima ni sleep extra.",
+  "unicode": {
+    "sprite": {
+      "body": "●•●●❦",
+      "legs": [
+        "╱╲╱╲",
+        "╲╱╲╱"
+      ],
+      "path": "·"
+    },
+    "colors": {
+      "body": "culona",
+      "leaf": "hoja",
+      "legs": "culona",
+      "path": "tinta-suave",
+      "label": "chicamocha"
+    },
+    "leaf_index": 4,
+    "frames": [
+      [
+        "●•●●❦                   ",
+        "╱╲╱╲                    "
+      ],
+      [
+        " ●•●●❦                  ",
+        "·╲╱╲╱                   "
+      ],
+      [
+        "  ●•●●❦                 ",
+        "··╱╲╱╲                  "
+      ],
+      [
+        "   ●•●●❦                ",
+        "···╲╱╲╱                 "
+      ],
+      [
+        "    ●•●●❦               ",
+        "····╱╲╱╲                "
+      ],
+      [
+        "     ●•●●❦              ",
+        "·····╲╱╲╱               "
+      ],
+      [
+        "      ●•●●❦             ",
+        "······╱╲╱╲              "
+      ],
+      [
+        "       ●•●●❦            ",
+        "·······╲╱╲╱             "
+      ],
+      [
+        "        ●•●●❦           ",
+        "········╱╲╱╲            "
+      ],
+      [
+        "         ●•●●❦          ",
+        "·········╲╱╲╱           "
+      ],
+      [
+        "          ●•●●❦         ",
+        "··········╱╲╱╲          "
+      ],
+      [
+        "           ●•●●❦        ",
+        "···········╲╱╲╱         "
+      ],
+      [
+        "            ●•●●❦       ",
+        "············╱╲╱╲        "
+      ],
+      [
+        "             ●•●●❦      ",
+        "·············╲╱╲╱       "
+      ],
+      [
+        "              ●•●●❦     ",
+        "··············╱╲╱╲      "
+      ],
+      [
+        "               ●•●●❦    ",
+        "···············╲╱╲╱     "
+      ],
+      [
+        "                ●•●●❦   ",
+        "················╱╲╱╲    "
+      ],
+      [
+        "                 ●•●●❦  ",
+        "·················╲╱╲╱   "
+      ],
+      [
+        "                  ●•●●❦ ",
+        "··················╱╲╱╲  "
+      ],
+      [
+        "                   ●•●●❦",
+        "···················╲╱╲╱ "
+      ]
+    ]
+  },
+  "ascii": {
+    "sprite": {
+      "body": "O-oo%",
+      "legs": [
+        "/|/|",
+        "|/|/"
+      ],
+      "path": "."
+    },
+    "colors": {
+      "body": "culona",
+      "leaf": "hoja",
+      "legs": "culona",
+      "path": "tinta-suave",
+      "label": "chicamocha"
+    },
+    "leaf_index": 4,
+    "frames": [
+      [
+        "O-oo%                   ",
+        "/|/|                    "
+      ],
+      [
+        " O-oo%                  ",
+        ".|/|/                   "
+      ],
+      [
+        "  O-oo%                 ",
+        "../|/|                  "
+      ],
+      [
+        "   O-oo%                ",
+        "...|/|/                 "
+      ],
+      [
+        "    O-oo%               ",
+        "..../|/|                "
+      ],
+      [
+        "     O-oo%              ",
+        ".....|/|/               "
+      ],
+      [
+        "      O-oo%             ",
+        "....../|/|              "
+      ],
+      [
+        "       O-oo%            ",
+        ".......|/|/             "
+      ],
+      [
+        "        O-oo%           ",
+        "......../|/|            "
+      ],
+      [
+        "         O-oo%          ",
+        ".........|/|/           "
+      ],
+      [
+        "          O-oo%         ",
+        "........../|/|          "
+      ],
+      [
+        "           O-oo%        ",
+        "...........|/|/         "
+      ],
+      [
+        "            O-oo%       ",
+        "............/|/|        "
+      ],
+      [
+        "             O-oo%      ",
+        ".............|/|/       "
+      ],
+      [
+        "              O-oo%     ",
+        "............../|/|      "
+      ],
+      [
+        "               O-oo%    ",
+        "...............|/|/     "
+      ],
+      [
+        "                O-oo%   ",
+        "................/|/|    "
+      ],
+      [
+        "                 O-oo%  ",
+        ".................|/|/   "
+      ],
+      [
+        "                  O-oo% ",
+        "................../|/|  "
+      ],
+      [
+        "                   O-oo%",
+        "...................|/|/ "
+      ]
+    ]
+  },
+  "status_icons": {
+    "ok": {
+      "unicode": "✔",
+      "ascii": "[ok]",
+      "color": "hoja",
+      "use": "aprobado, filtro paso, merge"
+    },
+    "running": {
+      "unicode": "◐",
+      "ascii": "[..]",
+      "color": "chicamocha",
+      "use": "etapa en curso (modo sin animacion)"
+    },
+    "retry": {
+      "unicode": "↻",
+      "ascii": "[~]",
+      "color": "chicamocha",
+      "use": "FAIL o CHANGES: vuelve a la Cortadora"
+    },
+    "human": {
+      "unicode": "⚑",
+      "ascii": "[!]",
+      "color": "culona",
+      "use": "necesita humano"
+    },
+    "rejected": {
+      "unicode": "✖",
+      "ascii": "[x]",
+      "color": "tinta-suave",
+      "use": "rechazado"
+    },
+    "skip": {
+      "unicode": "·",
+      "ascii": "[-]",
+      "color": "tinta-suave",
+      "use": "etapa que no aplica"
+    }
+  },
+  "ansi": {
+    "$comment": "Terminal oscura por defecto (columna dark). Usar columna light si COLORFGBG indica fondo claro (ultimo campo 7 o 15). truecolor si COLORTERM es truecolor o 24bit; si no, 256; si no, 16. chicamocha es igual en ambos temas.",
+    "reset": "\u001b[0m",
+    "bold": "\u001b[1m",
+    "dim": "\u001b[2m",
+    "dark": {
+      "culona": {
+        "hex": "#e57a52",
+        "truecolor": "38;2;229;122;82",
+        "ansi256": 173,
+        "ansi16": 31
+      },
+      "hoja": {
+        "hex": "#7cc283",
+        "truecolor": "38;2;124;194;131",
+        "ansi256": 108,
+        "ansi16": 32
+      },
+      "chicamocha": {
+        "hex": "#d39b2a",
+        "truecolor": "38;2;211;155;42",
+        "ansi256": 178,
+        "ansi16": 33
+      },
+      "tinta": {
+        "hex": "#f4eadb",
+        "truecolor": "38;2;244;234;219",
+        "ansi256": 255,
+        "ansi16": 39
+      },
+      "tinta-suave": {
+        "hex": "#bba894",
+        "truecolor": "38;2;187;168;148",
+        "ansi256": 144,
+        "ansi16": 90
+      }
+    },
+    "light": {
+      "culona": {
+        "hex": "#a0381a",
+        "truecolor": "38;2;160;56;26",
+        "ansi256": 130,
+        "ansi16": 31
+      },
+      "hoja": {
+        "hex": "#2f6b35",
+        "truecolor": "38;2;47;107;53",
+        "ansi256": 22,
+        "ansi16": 32
+      },
+      "chicamocha": {
+        "hex": "#d39b2a",
+        "truecolor": "38;2;211;155;42",
+        "ansi256": 178,
+        "ansi16": 33,
+        "note": "En terminal clara chicamocha no es legible como texto (2.2:1): usar fondo 48;2;211;155;42 con texto tinta 38;2;36;23;15"
+      },
+      "tinta": {
+        "hex": "#24170f",
+        "truecolor": "38;2;36;23;15",
+        "ansi256": 234,
+        "ansi16": 39
+      },
+      "tinta-suave": {
+        "hex": "#6b5444",
+        "truecolor": "38;2;107;84;68",
+        "ansi256": 59,
+        "ansi16": 90
+      }
+    },
+    "sgr_format": {
+      "truecolor": "\u001b[{truecolor}m",
+      "ansi256": "\u001b[38;5;{ansi256}m",
+      "ansi16": "\u001b[{ansi16}m"
+    }
+  }
+}

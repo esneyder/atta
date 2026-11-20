@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>El hormiguero · B · Mesa de operación</title>
+<style>
+/* Tokens de brand/tokens.css (design/system.md). Sin URLs externas. */
+:root, [data-theme="light"] {
+  --fondo: #f7f1e6; --fondo-elevado: #efe5d3; --tinta: #24170f; --tinta-suave: #6b5444;
+  --culona: #a0381a; --sobre-culona: #fff7ee; --hoja: #2f6b35; --chicamocha: #d39b2a; --linea: #dccdb5;
+}
+[data-theme="dark"] {
+  --fondo: #17110d; --fondo-elevado: #221913; --tinta: #f4eadb; --tinta-suave: #bba894;
+  --culona: #e57a52; --sobre-culona: #1a0f09; --hoja: #7cc283; --linea: #3a2c22;
+}
+:root {
+  --space-1: 4px; --space-2: 8px; --space-4: 16px; --space-6: 24px; --space-8: 32px;
+  --radius-sm: 4px; --radius-md: 10px; --radius-hoja: 24px;
+  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --text-titulo-1: 700 36px/42px var(--font-display);
+  --text-titulo-2: 600 22px/30px var(--font-sans);
+  --text-cuerpo: 400 16px/24px var(--font-sans);
+  --text-pequeno: 500 13px/18px var(--font-sans);
+  --text-codigo: 400 14px/22px var(--font-mono);
+  --tinta-oscura: #24170f; /* = --tinta claro; texto sobre chicamocha en ambos temas */
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--fondo); color: var(--tinta); font: var(--text-cuerpo); }
+:focus-visible { outline: 2px solid var(--tinta); outline-offset: 2px; }
+button, input { font: inherit; color: inherit; }
+.meta { font: var(--text-pequeno); color: var(--tinta-suave); }
+.mono { font-family: var(--font-mono); }
+.sr { position: absolute; left: -9999px; }
+.num { font: var(--text-pequeno); font-family: var(--font-mono); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.a-leg { fill: none; stroke: var(--culona); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+.a-leaf { fill: var(--hoja); }
+.a-vein { fill: none; stroke: var(--fondo); stroke-linecap: round; }
+.a-body { fill: var(--culona); }
+.a-word { fill: none; stroke: var(--tinta); stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; }
+.walking .a-legs-a { animation: leg .36s steps(2) infinite; transform-origin: 62px 62px; }
+.walking .a-legs-b { animation: leg .36s steps(2) infinite reverse; transform-origin: 62px 62px; }
+@keyframes leg { from { transform: rotate(-6deg); } to { transform: rotate(6deg); } }
+
+.app { display: grid; grid-template-columns: 1fr 440px; grid-template-rows: auto auto 1fr; height: 900px; }
+header.top { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--space-4); padding: var(--space-2) var(--space-6); border-bottom: 1px solid var(--linea); }
+.logo { width: 76px; height: 30px; }
+header.top h1 { font: var(--text-titulo-2); margin: 0; }
+.spacer { flex: 1; }
+.btn { font: var(--text-pequeno); min-height: 44px; padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); border: 1px solid var(--tinta-suave); background: transparent; cursor: pointer; }
+.btn[aria-pressed="true"] { background: var(--fondo-elevado); }
+.btn-pri { background: var(--culona); color: var(--sobre-culona); border-color: var(--culona); }
+
+.stats { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 180px) 1fr; gap: var(--space-6); padding: var(--space-4) var(--space-6); border-bottom: 1px solid var(--linea); align-items: start; }
+.stat { display: flex; flex-direction: column; }
+.stat b { font: var(--text-titulo-2); font-variant-numeric: tabular-nums; }
+.p50 { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--space-2); list-style: none; margin: var(--space-1) 0 0; padding: 0; }
+.p50 li { display: flex; flex-direction: column; gap: 2px; font: var(--text-pequeno); }
+.p50 .bar { height: 6px; background: var(--tinta-suave); border-radius: var(--radius-sm); }
+.p50 .v { font-family: var(--font-mono); }
+
+.list { overflow: auto; padding: var(--space-4) var(--space-6); min-width: 0; }
+.toolbar { display: flex; align-items: flex-end; gap: var(--space-4); flex-wrap: wrap; margin-bottom: var(--space-4); }
+.toolbar label { display: flex; flex-direction: column; gap: var(--space-1); font: var(--text-pequeno); color: var(--tinta-suave); }
+.toolbar input { width: 260px; min-height: 44px; padding: var(--space-2); border: 1px solid var(--tinta-suave); border-radius: var(--radius-sm); background: var(--fondo); font: var(--text-cuerpo); }
+.filters { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.filters button { min-height: 44px; padding: 0 var(--space-4); border-radius: var(--radius-sm); border: 1px solid var(--tinta-suave); background: transparent; font: var(--text-pequeno); cursor: pointer; }
+.filters button[aria-pressed="true"] { background: var(--tinta); color: var(--fondo); border-color: var(--tinta); }
+
+table { width: 100%; border-collapse: collapse; font: var(--text-pequeno); }
+caption { text-align: left; font: var(--text-pequeno); color: var(--tinta-suave); padding-bottom: var(--space-2); }
+th { text-align: left; color: var(--tinta-suave); font-weight: 500; padding: var(--space-2); border-bottom: 1px solid var(--tinta-suave); white-space: nowrap; }
+th.r { text-align: right; }
+td { padding: var(--space-2); border-bottom: 1px solid var(--linea); vertical-align: top; }
+tr.sel td { background: var(--fondo-elevado); }
+tr.sel td:first-child { box-shadow: inset 4px 0 0 var(--tinta); }
+tr:hover td { background: var(--fondo-elevado); }
+.open { all: unset; cursor: pointer; display: flex; flex-direction: column; gap: 2px; border-radius: var(--radius-sm); }
+.open:focus-visible { outline: 2px solid var(--tinta); outline-offset: 2px; }
+.open b { font-weight: 600; color: var(--tinta); }
+.st { display: inline-flex; align-items: center; gap: var(--space-1); font: var(--text-pequeno); padding: 2px var(--space-2); border-radius: var(--radius-sm); border: 1px solid transparent; white-space: nowrap; }
+.st-run { background: var(--chicamocha); color: var(--tinta-oscura); }
+.st-ok { background: var(--hoja); color: var(--fondo); }
+.st-human { background: var(--culona); color: var(--sobre-culona); }
+.st-off { background: transparent; color: var(--tinta-suave); border-color: var(--tinta-suave); }
+.st-retry { background: transparent; color: var(--tinta); border-color: var(--tinta-suave); }
+.rr { display: flex; flex-direction: column; gap: 2px; }
+.rr span.l { display: flex; gap: 2px; align-items: center; }
+.mini { display: inline-grid; place-items: center; min-width: 30px; height: 20px; padding: 0 2px; border-radius: 10px 0; font: var(--text-pequeno); font-size: 13px; border: 1px solid var(--tinta-suave); color: var(--tinta); }
+.mini.ok { border-color: var(--hoja); color: var(--hoja); }
+.mini.run { background: var(--chicamocha); border-color: var(--chicamocha); color: var(--tinta-oscura); }
+.empty { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-6) var(--space-2); }
+.empty svg { width: 64px; height: 54px; flex: none; }
+.empty p { margin: 0 0 var(--space-2); }
+
+/* panel de detalle */
+.detail { border-left: 1px solid var(--linea); overflow: auto; padding: var(--space-4) var(--space-6) var(--space-6); display: flex; flex-direction: column; gap: var(--space-4); }
+.detail h2 { font: var(--text-titulo-2); margin: 0; }
+.detail h3 { font: var(--text-pequeno); color: var(--tinta-suave); margin: 0 0 var(--space-2); text-transform: uppercase; letter-spacing: .04em; }
+.human { border: 1px solid var(--culona); border-left-width: 4px; border-radius: var(--radius-md); padding: var(--space-4); }
+.human p { margin: 0 0 var(--space-2); }
+.matrix { width: 100%; }
+.matrix th, .matrix td { padding: var(--space-1) var(--space-2); white-space: nowrap; }
+.arts { list-style: none; margin: 0; padding: 0; }
+.arts li { padding: var(--space-2) 0; border-bottom: 1px solid var(--linea); }
+.arts .p { font: var(--text-codigo); font-size: 13px; }
+.arts .f { font: var(--text-pequeno); font-family: var(--font-mono); color: var(--tinta-suave); }
+.arts .s { margin: 2px 0 0; font: var(--text-pequeno); }
+.arts .s::before { content: "## Summary  "; font-family: var(--font-mono); color: var(--tinta-suave); }
+.loader { width: 110px; height: 26px; position: relative; overflow: hidden; border-bottom: 2px dotted var(--tinta-suave); display: inline-block; vertical-align: middle; }
+.loader svg { position: absolute; bottom: 0; width: 31px; height: 26px; animation: walk 2.4s linear infinite; }
+@keyframes walk { from { transform: translateX(-31px); } to { transform: translateX(110px); } }
+.av { width: 28px; height: 28px; border-radius: var(--radius-hoja) 0; display: inline-grid; place-items: center; font: var(--text-pequeno); background: var(--fondo-elevado); border: 1px solid var(--tinta-suave); flex: none; }
+.models { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.models li { display: flex; gap: var(--space-2); align-items: center; font: var(--text-pequeno); }
+.models .mono { color: var(--tinta-suave); }
+.tradeoff { font: var(--text-pequeno); color: var(--tinta-suave); margin: var(--space-4) 0 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .walking .a-legs-a, .walking .a-legs-b, .loader svg { animation: none; }
+  .loader svg { transform: translateX(40px); }
+}
+@media (max-width: 900px) {
+  .app { display: block; height: auto; }
+  header.top { flex-wrap: wrap; padding: var(--space-2) var(--space-4); }
+  .list { padding: var(--space-4); }
+  .p50 li { min-width: 0; }
+  caption { display: block; }
+  .stats { grid-template-columns: 1fr 1fr; }
+  .p50 { grid-template-columns: repeat(3, 1fr); grid-column: 1 / -1; }
+  .stat.wide { grid-column: 1 / -1; }
+  .toolbar input { width: 100%; }
+  .toolbar label { width: 100%; }
+  thead { display: none; }
+  table, tbody, tr, td { display: block; }
+  tr { border-bottom: 1px solid var(--linea); padding: var(--space-2) 0; }
+  td { border: 0; padding: 2px var(--space-2); }
+  td[data-k]::before { content: attr(data-k) ": "; color: var(--tinta-suave); }
+  td.num { text-align: left; }
+  .detail { border-left: 0; border-top: 1px solid var(--tinta-suave); }
+}
+</style>
+</head>
+<body>
+<div class="app">
+<header class="top">
+  <svg class="logo" viewBox="0 0 252 100" role="img" aria-label="Atta">
+    <g class="a-leg"><path d="M56 61 L44 68 L34 85"/><path d="M62 63 L67 74 L63 89"/><path d="M68 60 L81 66 L90 82"/><path d="M88 44 L98 35 L107 40"/></g>
+    <path class="a-leaf" d="M90 56 C100 36 80 12 52 6 C50 26 64 46 90 56 Z"/>
+    <g class="a-vein"><path d="M87 53 C78 38 66 22 55 10" stroke-width="2.6"/><path d="M78 39 L87 33 M78 39 L69 39 M69 27 L77 20 M69 27 L60 27" stroke-width="1.8"/></g>
+    <g class="a-body"><ellipse cx="27" cy="62" rx="19" ry="15"/><circle cx="49.5" cy="60" r="4.5"/><ellipse cx="62" cy="57" rx="11" ry="7" transform="rotate(-14 62 57)"/><circle cx="83" cy="51" r="10"/></g>
+    <g class="a-word"><circle cx="140" cy="66" r="12.5"/><path d="M152.5 53 L152.5 80"/><path d="M172 40 L172 71 Q172 80 181 80 L184 80"/><path d="M164 54 L184 54"/><path d="M198 40 L198 71 Q198 80 207 80 L210 80"/><path d="M190 54 L210 54"/><circle cx="230" cy="66" r="12.5"/><path d="M242.5 53 L242.5 80"/></g>
+  </svg>
+  <h1>El hormiguero <span class="meta">· mesa de operación · acme/tienda-web → <span class="mono">develop</span></span></h1>
+  <div class="spacer"></div>
+  <span class="meta" role="status">Actualizado 10:42:08 · cada 5 s</span>
+  <button class="btn" id="theme" aria-pressed="false">Tema oscuro</button>
+</header>
+
+<section class="stats" aria-label="Cifras de la colonia">
+  <div class="stat"><span class="meta">Jobs activos</span><b>3</b><span class="meta">+ 1 espera humano</span></div>
+  <div class="stat"><span class="meta">Merge rate · 30 días</span><b>81 %</b><span class="meta">17 de 21 cerrados</span></div>
+  <div class="stat"><span class="meta">Costo total · 30 días</span><b class="mono">US$ 48.70</b><span class="meta">hoy US$ 8.53 · p50 por job US$ 0.58</span></div>
+  <div class="stat wide"><span class="meta">p50 de tiempo por etapa · 30 días</span>
+    <ul class="p50" aria-label="p50 por etapa">
+      <li><span>Exploradora</span><span class="bar" style="width:8%"></span><span class="v">41 s</span></li>
+      <li><span>Guía</span><span class="bar" style="width:33%"></span><span class="v">3 min</span></li>
+      <li><span>Cortadora</span><span class="bar" style="width:100%"></span><span class="v">9 min</span></li>
+      <li><span>Filtro</span><span class="bar" style="width:21%"></span><span class="v">1 min 52 s</span></li>
+      <li><span>Jardineras</span><span class="bar" style="width:44%"></span><span class="v">4 min</span></li>
+      <li><span>Reina</span><span class="bar" style="width:2%"></span><span class="v">6 s</span></li>
+    </ul>
+  </div>
+</section>
+
+<main class="list" aria-labelledby="list-title">
+  <h2 id="list-title" class="sr">Jobs</h2>
+  <div class="toolbar">
+    <label for="q">Buscar en número y título de issue<input id="q" type="search" placeholder="p. ej. 21 o redis"></label>
+    <div class="filters" role="group" aria-label="Filtrar por estado" id="filters"></div>
+  </div>
+  <div id="table"></div>
+  <p class="tradeoff">Dirección B · Mesa de operación — máxima densidad y comparación entre jobs; menos narrativa, pide familiaridad con el pipeline.</p>
+</main>
+
+<aside class="detail" id="detail" aria-label="Detalle del job"></aside>
+</div>
+
+<script>
+const ANT = (cls = "") => `<svg viewBox="0 0 120 100" class="${cls}" aria-hidden="true">
+  <g class="a-leg a-legs-a"><path d="M56 61 L44 68 L34 85"/><path d="M68 60 L81 66 L90 82"/></g>
+  <g class="a-leg a-legs-b"><path d="M62 63 L67 74 L63 89"/></g>
+  <g class="a-leg"><path d="M88 44 L98 35 L107 40"/></g>
+  <path class="a-leaf" d="M90 56 C100 36 80 12 52 6 C50 26 64 46 90 56 Z"/>
+  <g class="a-vein"><path d="M87 53 C78 38 66 22 55 10" stroke-width="2.6"/><path d="M78 39 L87 33 M78 39 L69 39 M69 27 L77 20 M69 27 L60 27" stroke-width="1.8"/></g>
+  <g class="a-body"><ellipse cx="27" cy="62" rx="19" ry="15"/><circle cx="49.5" cy="60" r="4.5"/><ellipse cx="62" cy="57" rx="11" ry="7" transform="rotate(-14 62 57)"/><circle cx="83" cy="51" r="10"/></g></svg>`;
+const ICON = { run: "◐", ok: "✓", human: "⚑", off: "✕", retry: "↻" };
+const ABBR = { "Filtro": "Fi", "Jardinera código": "Jc", "Jardineras 4R": "J4", "Soldado": "So" };
+const JOBS = [
+  { id: 21, title: "Migrar sesiones a Redis", pr: 29, stage: "needs-human", state: "human", label: "te necesita", group: "human", round: "3/3", risk: "alto", tier: "T3", cost: "6.42", time: "2 h 14 min",
+    rounds: [[["Filtro", "ok", "PASS"], ["Jardinera código", "retry", "CHANGES"], ["Soldado", "retry", "CHANGES"]], [["Filtro", "retry", "FAIL"]], [["Filtro", "ok", "PASS"], ["Jardineras 4R", "ok", "PASS"], ["Soldado", "retry", "CHANGES"]]],
+    human: "La Reina lo deja en tus manos: tras 3 rondas el Soldado sigue viendo tokens de sesión sin expiración en Redis.",
+    models: [["Co", "Cortadora R3", "T3 · anthropic/claude-opus-4.1"], ["So", "Soldado", "T3 · openai/gpt-5"], ["Ja", "Jardineras 4R", "T2 · google/gemini-2.5-pro"], ["Re", "Reina", "T3 · openai/gpt-5"]],
+    arts: [["round-3/checks.md", "GATE: PASS · COMMIT: 51ad7e2", "El Filtro pasó: 118 tests en 47 s."], ["round-3/review-security.md", "VERDICT: CHANGES", "Las claves session:* no llevan TTL. PREVENTION: regla ast-grep para SET sin EX en módulos de sesión."], ["round-3/review-code.md", "VERDICT: PASS", "Pool de conexiones y reintentos correctos."], ["decision.md", "ESCALATE", "Riesgo alto y hallazgo de seguridad abierto al llegar a max_rounds."]] },
+  { id: 12, title: "Agregar exportación a CSV", pr: 31, stage: "review", state: "run", label: "en revisión", group: "run", round: "2/3", risk: "bajo", tier: "T2", cost: "0.62", time: "31 min",
+    rounds: [[["Filtro", "ok", "PASS"], ["Jardinera código", "retry", "CHANGES"]], [["Filtro", "ok", "PASS"], ["Jardinera código", "run", "revisando"]]],
+    models: [["Ex", "Exploradora", "T1 · google/gemini-2.5-flash"], ["Co", "Cortadora R2", "T2 · anthropic/claude-sonnet-4.5"], ["Ja", "Jardinera código", "T1 · openai/gpt-5-mini"]],
+    arts: [["intake.md", "DECISION: ACCEPT · RISK: low", "Botón «Exportar CSV» en Pedidos que respeta los filtros activos."], ["round-1/review-code.md", "VERDICT: CHANGES", "Los nombres con comillas dobles rompen el CSV. PREVENTION: probar comillas, comas y saltos de línea."], ["round-2/checks.md", "GATE: PASS · COMMIT: 8b41d0e", "El Filtro pasó: 44 tests en 19 s."], ["round-2/review-code.md", null, "La Jardinera de código está leyendo el diff · 1 min 10 s"]] },
+  { id: 18, title: "Validar fechas en el formulario de reservas", pr: 32, stage: "gate → build", state: "retry", label: "Filtro falló", group: "run", round: "1/3", risk: "medio", tier: "T2→T3", cost: "0.94", time: "22 min",
+    rounds: [[["Filtro", "retry", "FAIL · 2 tests"]]],
+    models: [["Co", "Cortadora R1", "T2 · anthropic/claude-sonnet-4.5"], ["Co", "Cortadora R2", "T3 · anthropic/claude-opus-4.1"], ["Vi", "Vigía", "T2 · openai/gpt-5"]],
+    arts: [["spec-review.md", "VERDICT: READY", "El spec coincide con booking/validators.ts."], ["round-1/checks.md", "GATE: FAIL · COMMIT: c07e5a9", "El Filtro no pasó: 2 tests fallan (test_range_end, test_past_date)."], ["round-2/build.md", null, "La Cortadora retoma en T3 · 40 s"]] },
+  { id: 24, title: "Modo oscuro en el panel de ajustes", pr: null, stage: "spec", state: "run", label: "en spec", group: "run", round: "—", risk: "medio", tier: "T2", cost: "0.12", time: "3 min",
+    rounds: [], models: [["Gu", "Guía", "T2 · anthropic/claude-sonnet-4.5"]],
+    arts: [["intake.md", "DECISION: ACCEPT · RISK: medium", "Toggle de tema en Ajustes con persistencia por usuario."], ["spec.md", null, "La Guía está escribiendo el spec · 3 min"]] },
+  { id: 23, title: "Paginar el listado de facturas", pr: 30, stage: "merged", state: "ok", label: "mergeado", group: "ok", round: "1/3", risk: "bajo", tier: "T1", cost: "0.41", time: "12 min",
+    rounds: [[["Filtro", "ok", "PASS"], ["Jardinera código", "ok", "PASS"]]], models: [["Co", "Cortadora R1", "T1 · google/gemini-2.5-flash"], ["Re", "Reina", "regla determinista (riesgo bajo)"]],
+    arts: [["decision.md", "APPROVE", "La Reina aprobó: merge a develop. Regla determinista: riesgo bajo, todo en PASS, 84 líneas."]] },
+  { id: 15, title: "Minar criptomonedas con el runner de CI", pr: null, stage: "rejected", state: "off", label: "rechazado", group: "off", round: "—", risk: "alto", tier: "T1", cost: "0.02", time: "38 s",
+    rounds: [], models: [["Ex", "Exploradora", "T1 · google/gemini-2.5-flash"]],
+    arts: [["intake.md", "DECISION: REJECT · RISK: high", "La Exploradora rechazó el issue #15: pide un minero de criptomonedas."]] }
+];
+const FILTERS = [["all", "Todos"], ["run", "En curso"], ["human", "Te necesita"], ["ok", "Mergeados"], ["off", "Rechazados"]];
+let filter = "all", query = "", selected = 21;
+
+function mini(r) { const c = r[1] === "ok" ? "ok" : r[1] === "run" ? "run" : ""; return `<span class="mini ${c}" title="${r[0]}: ${r[2]}">${ABBR[r[0]]}${ICON[r[1]]}<span class="sr">${r[0]} ${r[2]}</span></span>`; }
+function visible() { return JOBS.filter(j => (filter === "all" || j.group === filter) && (!query || (`${j.id} ${j.title}`).toLowerCase().includes(query))); }
+function renderFilters() {
+  document.getElementById("filters").innerHTML = FILTERS.map(([k, l]) => {
+    const n = k === "all" ? JOBS.length : JOBS.filter(j => j.group === k).length;
+    return `<button data-f="${k}" aria-pressed="${filter === k}">${l} ${n}</button>`;
+  }).join("");
+}
+function renderTable() {
+  const rows = visible();
+  const el = document.getElementById("table");
+  if (!rows.length) {
+    const fl = FILTERS.find(f => f[0] === filter)[1];
+    el.innerHTML = `<div class="empty" role="status">${ANT()}<div><p>Ningún job coincide con «${query}» en <b>${fl}</b>.</p><button class="btn" id="clear">Quitar búsqueda y filtro</button></div></div>`;
+    document.getElementById("clear").onclick = () => { filter = "all"; query = ""; document.getElementById("q").value = ""; render(); };
+    return;
+  }
+  el.innerHTML = `<table><caption>${rows.length} de ${JOBS.length} jobs · orden: más urgente primero</caption>
+  <thead><tr><th>Estado</th><th>Issue</th><th>Etapa</th><th>Ronda</th><th>Riesgo</th><th>Revisiones por ronda</th><th>Tier</th><th class="r">Costo</th><th class="r">Tiempo</th></tr></thead>
+  <tbody>${rows.map(j => `<tr class="${j.id === selected ? "sel" : ""}">
+    <td data-k="Estado"><span class="st st-${j.state}"><span aria-hidden="true">${ICON[j.state]}</span> ${j.label}</span></td>
+    <td><button class="open" data-id="${j.id}" aria-pressed="${j.id === selected}"><b>#${j.id} ${j.title}</b><span class="meta mono">${j.pr ? "PR #" + j.pr : "sin PR"}</span></button></td>
+    <td data-k="Etapa" class="mono">${j.stage}</td>
+    <td data-k="Ronda" class="num" style="text-align:left">${j.round}</td>
+    <td data-k="Riesgo">${j.risk}</td>
+    <td data-k="Revisiones"><span class="rr">${j.rounds.length ? j.rounds.map((r, i) => `<span class="l"><span class="meta mono">R${i + 1}</span>${r.map(mini).join("")}</span>`).join("") : '<span class="meta">—</span>'}</span></td>
+    <td data-k="Tier" class="mono">${j.tier}</td>
+    <td data-k="Costo" class="num">US$ ${j.cost}</td>
+    <td data-k="Tiempo" class="num">${j.time}</td></tr>`).join("")}</tbody></table>`;
+}
+function renderDetail() {
+  const j = JOBS.find(x => x.id === selected);
+  const reviewers = [...new Set(j.rounds.flat().map(r => r[0]))];
+  document.getElementById("detail").innerHTML = `
+    <div><span class="meta mono">issue #${j.id}${j.pr ? ` · PR #${j.pr}` : ""} · rama atta/${j.id}</span><h2>${j.title}</h2></div>
+    <span class="st st-${j.state}" style="width:fit-content"><span aria-hidden="true">${ICON[j.state]}</span> ${j.label} · ronda ${j.round} · riesgo ${j.risk} · US$ ${j.cost}</span>
+    ${j.human ? `<div class="human"><p><b>⚑ ${j.human}</b></p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-pri">Abrir PR #${j.pr}</button><button class="btn">Dar feedback</button><button class="btn">Cerrar sin merge</button></div><p class="meta" style="margin:8px 0 0">Tu feedback no reinicia el tope global (max_total_rounds).</p></div>` : ""}
+    ${j.rounds.length ? `<div><h3>Revisiones por ronda</h3><table class="matrix"><thead><tr><th>Ronda</th>${reviewers.map(r => `<th>${r}</th>`).join("")}</tr></thead><tbody>${j.rounds.map((r, i) => `<tr><td class="mono">R${i + 1}</td>${reviewers.map(n => { const x = r.find(y => y[0] === n); return `<td>${x ? `${ICON[x[1]]} ${x[2]}` : '<span class="meta">—</span>'}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>` : ""}
+    <div><h3>Modelo por etapa</h3><ul class="models">${j.models.map(m => `<li><span class="av" aria-hidden="true">${m[0]}</span><span>${m[1]}</span><span class="mono">${m[2]}</span></li>`).join("")}</ul></div>
+    <div><h3>Artefactos · atta/jobs/${j.id}/</h3><ul class="arts">${j.arts.map(a => a[1] === null
+      ? `<li role="status"><div class="p">${a[0]}</div><span class="loader">${ANT("walking")}</span> <span class="meta">${a[2]}</span></li>`
+      : `<li><div class="p">${a[0]}</div><div class="f">${a[1]}</div><p class="s">${a[2]}</p></li>`).join("")}</ul></div>`;
+}
+function render() { renderFilters(); renderTable(); renderDetail(); }
+document.getElementById("filters").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { filter = b.dataset.f; render(); } });
+document.getElementById("q").addEventListener("input", e => { query = e.target.value.trim().toLowerCase(); renderTable(); });
+document.getElementById("table").addEventListener("click", e => { const b = e.target.closest(".open"); if (b) { selected = +b.dataset.id; renderTable(); renderDetail(); document.querySelector(`.open[data-id="${selected}"]`).focus(); } });
+document.getElementById("theme").addEventListener("click", e => {
+  const dark = document.documentElement.dataset.theme !== "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  e.currentTarget.setAttribute("aria-pressed", String(dark));
+});
+render();
+</script>
+</body>
+</html>
