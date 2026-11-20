@@ -1,0 +1,15 @@
+{
+  "integration_branch": "develop",
+  "forbidden_branches": ["main", "master"],
+  "branch_prefix": "atta/",
+  "max_rounds": 3,
+  "max_total_rounds": 6,
+  "concurrency": 3,
+  "labels": {
+    "queue": "atta",
+    "needs_info": "atta:needs-info",
+    "needs_human": "atta:needs-human"
+  },
+  "protected_paths": ["atta/**", ".claude/**", ".pi/**", ".github/workflows/**"],
+  "prices_usd_per_mtok": {}
+}

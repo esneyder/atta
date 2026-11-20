@@ -1,0 +1,108 @@
+"""Job state machine: explicit legal transitions, counters and the global round cap (K13)."""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from .events import append_event, make_event
+from .lock import job_lock
+from .store import JobStore
+from .timeutil import seconds_between, to_iso, utcnow
+
+STAGES = (
+    "intake", "needs-info", "spec", "spec-review", "build", "gate", "review",
+    "approve", "merging", "needs-human", "merged", "rejected",
+)
+
+TRANSITIONS = {
+    "intake": ("spec", "needs-info", "rejected"),
+    "needs-info": ("intake", "rejected"),
+    "spec": ("spec-review", "build"),
+    "spec-review": ("spec", "build"),
+    "build": ("gate", "needs-human"),
+    "gate": ("review", "build", "needs-human"),
+    "review": ("approve", "build", "needs-human"),
+    "approve": ("merging", "needs-human"),
+    "merging": ("merged", "needs-human"),
+    "needs-human": ("build", "rejected"),
+    "merged": (),
+    "rejected": (),
+}
+
+TERMINAL = frozenset(s for s, exits in TRANSITIONS.items() if not exits)
+
+# Rework rounds: re-entering build from these stages bumps their counter and total_rounds.
+ROUND_COUNTERS = {"gate": "gate_rounds", "review": "review_rounds"}
+
+
+class Refused(Exception):
+    """An illegal transition. Nothing was written."""
+
+
+def check(job: dict, to: str) -> None:
+    """Raise Refused if `job` may not move to `to`."""
+    frm = job["stage"]
+    if to not in TRANSITIONS:
+        raise Refused(f"Etapa desconocida: {to}.")
+    if frm in TERMINAL:
+        raise Refused(
+            f"El job {job['id']} está en {frm}, una etapa final; no admite transiciones."
+        )
+    exits = TRANSITIONS.get(frm, ())
+    if to not in exits:
+        raise Refused(
+            f"Transición ilegal en {job['id']}: {frm} → {to}. "
+            f"Desde {frm} solo se puede ir a: {', '.join(exits)}."
+        )
+    # K13: total_rounds is never reset; once another round would exceed the cap,
+    # the only way out of the rework loop is needs-human.
+    if to == "build" and frm in ROUND_COUNTERS:
+        total, cap = job["total_rounds"], job["max_total_rounds"]
+        if total + 1 > cap:
+            raise Refused(
+                f"Tope global alcanzado en {job['id']}: {total} de {cap} rondas. "
+                f"Desde {frm} solo se puede ir a needs-human."
+            )
+
+
+def apply(job: dict, to: str, now: datetime) -> dict:
+    """Return a new job dict after a checked transition (pure)."""
+    frm = job["stage"]
+    new = dict(job)
+    counter = ROUND_COUNTERS.get(frm) if to == "build" else None
+    if counter:
+        new[counter] = job[counter] + 1
+        new["total_rounds"] = job["total_rounds"] + 1
+    if to == "merging":
+        new["sync_attempts"] = job["sync_attempts"] + 1
+    new["stage"] = to
+    new["stage_since"] = to_iso(now)
+    if to in TERMINAL:
+        new["ended"] = to_iso(now)
+    return new
+
+
+def advance(store: JobStore, jid: str, to: str, *, now: datetime | None = None,
+            model: str | None = None, tier: str | None = None,
+            tokens_in: int | None = None, tokens_out: int | None = None,
+            cost_usd: float | None = None) -> dict:
+    """Move job `jid` to stage `to` under its lock; append the event, then save job.json.
+
+    Refused leaves job.json and events.jsonl untouched.
+    """
+    now = now or utcnow()
+    job_dir = store.job_dir(jid)
+    with job_lock(job_dir):
+        job = store.load(jid)
+        check(job, to)
+        new = apply(job, to, now)
+        if cost_usd is not None:
+            new["cost_usd"] = round((job.get("cost_usd") or 0) + cost_usd, 6)
+        event = make_event(
+            job["id"], job["stage"], to, seconds_between(job["stage_since"], now), now,
+            model=model, tier=tier, tokens_in=tokens_in, tokens_out=tokens_out,
+            cost_usd=cost_usd,
+        )
+        append_event(job_dir, event)
+        store.save(new)
+        return new
