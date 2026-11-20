@@ -36,6 +36,12 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
         self.assertEqual(cfg["concurrency"], 1)
         self.assertEqual(cfg["integration_branch"], "develop")
 
+    def test_missing_routing_takes_default_table(self):
+        from spine import router
+        cfg = config.load_config(self.write({"concurrency": 1}))
+        self.assertEqual(set(cfg["routing"]["risk"]), {"low", "medium", "high"})
+        self.assertEqual(router.plan("low", [], cfg)["reviewers"][0]["reviewer"], "code")
+
     def test_rejects_forbidden_integration_branch(self):
         path = self.write({"integration_branch": "main"})
         with self.assertRaises(config.ConfigError) as ctx:
@@ -51,6 +57,43 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
         with self.assertRaises(config.ConfigError) as ctx:
             config.load_config(path)
         self.assertIn("«Master» está en forbidden_branches", str(ctx.exception))
+
+    def test_rejects_forbidden_branch_behind_ref_or_remote_prefix(self):
+        for name in ("refs/heads/main", "origin/main", "Main", " main "):
+            with self.subTest(name=name):
+                with self.assertRaises(config.ConfigError) as ctx:
+                    config.load_config(self.write({"integration_branch": name}))
+                self.assertEqual(
+                    str(ctx.exception),
+                    f"config.json: integration_branch «{name}» está en forbidden_branches; "
+                    "Atta nunca integra en una rama prohibida.",
+                )
+
+    def test_rejects_empty_forbidden_branches(self):
+        with self.assertRaises(config.ConfigError) as ctx:
+            config.load_config(self.write({"forbidden_branches": []}))
+        self.assertEqual(
+            str(ctx.exception),
+            "config.json: forbidden_branches no puede estar vacía; "
+            "Atta necesita al menos una rama prohibida (p. ej. main).",
+        )
+
+    def test_rejects_empty_protected_paths(self):
+        with self.assertRaises(config.ConfigError) as ctx:
+            config.load_config(self.write({"protected_paths": []}))
+        self.assertEqual(
+            str(ctx.exception),
+            "config.json: protected_paths no puede estar vacía; el Filtro necesita rutas protegidas.",
+        )
+
+    def test_rejects_branch_prefix_under_refs(self):
+        with self.assertRaises(config.ConfigError) as ctx:
+            config.load_config(self.write({"branch_prefix": "refs/heads/atta/"}))
+        self.assertEqual(
+            str(ctx.exception),
+            "config.json: branch_prefix no puede empezar con «refs/»; "
+            "usa un prefijo de rama como «atta/».",
+        )
 
     def test_rejects_invalid_json(self):
         path = self.tmp / "config.json"
