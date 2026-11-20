@@ -1,0 +1,50 @@
+# --- Atta runtime state (local to the machine running the factory) ---
+/factory/jobs/
+/atta/jobs/
+/.worktrees/
+*.lock
+
+# --- Secrets and local environment ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Agent runtimes: local, per-user settings ---
+.claude/settings.local.json
+.pi/settings.local.json
+.pi/sessions/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# --- Node (Pi extension) ---
+node_modules/
+npm-debug.log*
+
+# --- Logs ---
+*.log
+
+# --- Editors ---
+.vscode/
+.idea/
+*.swp
+*~
+
+# --- OS files (Windows, macOS, Linux) ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.directory

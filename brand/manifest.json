@@ -1,0 +1,59 @@
+{
+  "manifestVersion": 3,
+  "name": "Atta",
+  "namespace": "Atta",
+  "files": [
+    "assets/Logos/README.md",
+    "tokens.css"
+  ],
+  "libraries": [],
+  "components": [],
+  "assetGroups": [
+    {
+      "name": "Logos",
+      "tile": "l",
+      "order": [
+        "atta-logo.svg",
+        "atta-logo-oscuro.svg",
+        "atta-marca.svg"
+      ],
+      "files": [
+        {
+          "path": "assets/Logos/atta-logo.svg",
+          "id": "f1b7e4586a168ae308c8ac4bbbf0c060"
+        },
+        {
+          "path": "assets/Logos/atta-logo-oscuro.svg",
+          "id": "0c6cf3d1a0e5b15052ddd2755a6e2cf4"
+        },
+        {
+          "path": "assets/Logos/atta-marca.svg",
+          "id": "e864da36fabfe874c1928834546b94d0"
+        }
+      ]
+    }
+  ],
+  "storage": {
+    "files": {
+      "assets/Logos/atta-logo-oscuro.svg": {
+        "store": "blob",
+        "id": "0c6cf3d1a0e5b15052ddd2755a6e2cf4",
+        "bytes": 1432,
+        "type": "image/svg+xml"
+      },
+      "assets/Logos/atta-logo.svg": {
+        "store": "blob",
+        "id": "f1b7e4586a168ae308c8ac4bbbf0c060",
+        "bytes": 1432,
+        "type": "image/svg+xml"
+      },
+      "assets/Logos/atta-marca.svg": {
+        "store": "blob",
+        "id": "e864da36fabfe874c1928834546b94d0",
+        "bytes": 968,
+        "type": "image/svg+xml"
+      }
+    },
+    "blobBytesUsed": 3832
+  }
+}

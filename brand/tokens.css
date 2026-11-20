@@ -1,0 +1,83 @@
+/* Atta — generated from tokens.json */
+:root, [data-theme="light"] {
+  --fondo: #f7f1e6; /* Fondo de página. Crema de fique en claro; tierra de noche en oscuro. */
+  --fondo-elevado: #efe5d3; /* Tarjetas, paneles y bloques de código sobre fondo. */
+  --tinta: #24170f; /* Texto principal sobre fondo y fondo-elevado (≥13.9:1 en ambos temas). */
+  --tinta-suave: #6b5444; /* Texto secundario, metadatos y leyendas sobre fondo y fondo-elevado (≥5.6:1). */
+  --culona: #a0381a; /* Color de marca, el rojizo de la hormiga culona. Botón principal, enlaces y el cuerpo de la hormiga en el logo. Válido como texto sobre fondo (≥5.9:1). */
+  --sobre-culona: #fff7ee; /* Texto e íconos encima de culona (≥6.4:1). */
+  --hoja: #2f6b35; /* Acento: la hoja que carga la hormiga. Estados de éxito, PR aprobado y mergeado, la hoja del logo. Válido como texto sobre fondo (≥5.1:1). */
+  --chicamocha: #d39b2a; /* Ocre del cañón del Chicamocha. Resaltados, trabajo en curso y bloques gráficos. En tema claro NO es color de texto (2.2:1): úsalo como fondo con tinta oscura encima (7:1). */
+  --linea: #dccdb5; /* Separadores decorativos de 1px. No sirve como borde de controles: para eso usa tinta-suave. */
+}
+[data-theme="dark"] {
+  --fondo: #17110d;
+  --fondo-elevado: #221913;
+  --tinta: #f4eadb;
+  --tinta-suave: #bba894;
+  --culona: #e57a52;
+  --sobre-culona: #1a0f09;
+  --hoja: #7cc283;
+  --linea: #3a2c22;
+}
+:root {
+  --space-1: 4px; /* Separación entre ícono y texto. */
+  --space-2: 8px; /* Padding de chips y etiquetas; gap en listas compactas. */
+  --space-4: 16px; /* Padding de botones y tarjetas. */
+  --space-6: 24px; /* Gap entre tarjetas; tamaño de la hoja en patrones. */
+  --space-8: 32px; /* Separación entre secciones. */
+  --radius-sm: 4px; /* Chips, etiquetas, inputs. */
+  --radius-md: 10px; /* Botones y tarjetas. */
+  --radius-hoja: 24px; /* La forma de hoja: dos esquinas opuestas redondeadas a 24px y dos rectas. Para avatares de agentes, badges y patrones. */
+  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --text-display: 700 64px/64px var(--font-display); /* Titulares de landing y portadas. */
+  --text-titulo-1: 700 36px/42px var(--font-display); /* Título de página o sección grande. */
+  --text-titulo-2: 600 22px/30px var(--font-sans); /* Subtítulos y encabezados de tarjeta. */
+  --text-cuerpo: 400 16px/24px var(--font-sans); /* Texto corrido. */
+  --text-pequeno: 500 13px/18px var(--font-sans); /* Etiquetas, chips, metadatos. */
+  --text-codigo: 400 14px/22px var(--font-mono); /* Comandos, rutas, nombres de rama y fragmentos de código. */
+}
+.display {
+  font-family: var(--font-display);
+  font-size: 64px;
+  line-height: 64px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.titulo-1 {
+  font-family: var(--font-display);
+  font-size: 36px;
+  line-height: 42px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.titulo-2 {
+  font-family: var(--font-sans);
+  font-size: 22px;
+  line-height: 30px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.cuerpo {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.pequeno {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.codigo {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
