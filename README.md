@@ -1,4 +1,22 @@
-# Atta
+<p align="center">
+  <img src="docs/assets/atta-banner.svg" alt="Atta · Tu colonia de agentes de software" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/esneyder/atta/actions/workflows/ci.yml"><img src="https://github.com/esneyder/atta/actions/workflows/ci.yml/badge.svg?branch=develop" alt="CI"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-2F6B35" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-A0381A" alt="Windows, macOS y Linux">
+  <img src="https://img.shields.io/badge/dependencias-solo%20stdlib-D39B2A" alt="Sin dependencias">
+  <img src="https://img.shields.io/badge/integra%20en-develop-24170F" alt="Integra en develop">
+</p>
+
+<p align="center">
+  <a href="#3-requisitos-e-instalación">Instalar</a> ·
+  <a href="#4-poner-atta-en-un-proyecto">Poner Atta en un proyecto</a> ·
+  <a href="#5-correr-la-fábrica-en-claude-code">Correr la fábrica</a> ·
+  <a href="#7-referencia-de-comandos">Comandos</a> ·
+  <a href="docs/design/arquitectura.md">Arquitectura</a>
+</p>
 
 **Tu colonia de agentes de software.** Etiquetas un issue y una colonia de agentes lo evalúa, lo
 especifica, lo construye, lo prueba, lo revisa, abre el pull request contra `develop` y lo mergea en
@@ -7,6 +25,39 @@ especifica, lo construye, lo prueba, lo revisa, abre el pull request contra `dev
 El nombre viene de *Atta laevigata*, la hormiga culona de Santander, y de las hormigas cortadoras: no
 se comen las hojas, las cortan, las llevan al hormiguero y con ellas cultivan su alimento. Atta
 funciona igual: los issues son las hojas, el repositorio es el hormiguero y el código es el jardín.
+
+<p align="center">
+  <img src="docs/assets/atta-colonia.svg" alt="El camino de un issue por la colonia: Exploradora, Guía, Vigía, Cortadora, Filtro, Jardineras y Soldado, Reina y merge a develop" width="100%">
+</p>
+
+### En una mirada
+
+| | |
+|---|---|
+| **Lo mecánico es script** | Estados, Filtro, merge y guardas son código determinista: ningún prompt los convence. |
+| **El juicio es de los agentes** | Cada rol lee el job, escribe un solo artefacto y su primera línea es un veredicto que la espina valida. |
+| **Modelo según el riesgo** | Haiku para lo simple, Sonnet para lo normal, Opus solo cuando el riesgo o una ronda fallida lo piden. |
+| **`main` nunca** | Atta integra siempre en `develop`; el release a `main` es tuyo. |
+| **Todo queda escrito** | Cada job deja sus artefactos y un `events.jsonl` con tiempos, modelos y costo. |
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/hormiguero-claro.png" alt="El hormiguero en tema claro: jobs por etapa, la hormiga en la etapa activa y estadísticas"></td>
+    <td width="50%"><img src="docs/assets/hormiguero-detalle.png" alt="Detalle de un job escalado: rondas, tiempos por etapa y veredictos"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>El hormiguero</b>: cada job en su etapa; la hormiga marca dónde hay trabajo corriendo.</td>
+    <td align="center"><b>Detalle de un job</b>: rondas, veredictos, modelos, tiempo y costo por etapa.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/atta-terminal.svg" alt="Salida real del CLI atta con la hormiga caminando mientras corre el Filtro"></td>
+    <td width="50%"><img src="docs/assets/hormiguero-oscuro.png" alt="El hormiguero en tema oscuro"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>La terminal</b>: la hormiga camina mientras corre el Filtro, sin agregar espera.</td>
+    <td align="center"><b>Tema oscuro</b>: la misma paleta de Santander, de noche.</td>
+  </tr>
+</table>
 
 ---
 
