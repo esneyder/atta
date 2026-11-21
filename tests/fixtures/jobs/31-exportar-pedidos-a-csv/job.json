@@ -1,0 +1,26 @@
+{
+  "id": "31-exportar-pedidos-a-csv",
+  "issue": 31,
+  "title": "Exportar pedidos a CSV",
+  "issue_url": "https://github.com/colonia/tienda/issues/31",
+  "pr": 40,
+  "pr_url": "https://github.com/colonia/tienda/pull/40",
+  "branch": "atta/31-exportar-pedidos-a-csv",
+  "worktree": null,
+  "stage": "merged",
+  "stage_since": "2025-06-02T14:18:51Z",
+  "review_rounds": 0,
+  "gate_rounds": 0,
+  "sync_attempts": 1,
+  "total_rounds": 0,
+  "max_total_rounds": 6,
+  "intake": {
+    "risk": "low",
+    "surfaces": [],
+    "decision": "ACCEPT"
+  },
+  "agents": {},
+  "started": "2025-06-02T14:00:00Z",
+  "ended": "2025-06-02T14:18:51Z",
+  "cost_usd": 0.284
+}

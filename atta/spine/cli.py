@@ -1,0 +1,261 @@
+"""CLI `atta` (arquitectura §4.1): `python atta/bin/atta.py <comando>`.
+
+F1 commands are local and deterministic (no GitHub, no network). Exit codes:
+0 ok, 1 negative verdict (the Filtro did not pass), 2 refused or usage error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from . import branches, config, gate, intake, issue, machine, router, store, term, voice
+from .ids import InvalidId
+from .lock import LockTimeout, job_lock
+from .timeutil import from_iso, utcnow
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+INTAKE_FILE = "intake.md"
+OK, NEGATIVE, REFUSED = 0, 1, 2
+
+# Counter whose budget (max_rounds) is checked before entering `to` from `frm`.
+_BUDGET = {("gate", "build"): "gate_rounds", ("review", "build"): "review_rounds"}
+# Transitions whose voice line needs a PR number.
+_NEEDS_PR = {("approve", "merging"), ("merging", "merged")}
+
+
+class Refusal(Exception):
+    """A refused command: message to stderr, exit 2."""
+
+
+def _err(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_create(args, cfg, jobs: store.JobStore) -> int:
+    body = None
+    if args.body_file:
+        path = Path(args.body_file)
+        try:
+            body = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise Refusal(f"No se pudo leer {path}: {exc.strerror or exc}.") from exc
+    job = jobs.create(args.issue, args.title, None, cfg)
+    issue.write_issue_md(jobs.job_dir(job["id"]), args.issue, args.title, body)
+    print(job["id"])
+    return OK
+
+
+def _voice_line(new: dict, frm: str, to: str, cfg: dict) -> str:
+    if (frm, to) in _NEEDS_PR and new.get("pr") is None:
+        return f"{new['id']}: {frm} → {to}"
+    try:
+        line = voice.for_transition(new, frm, to, cfg["integration_branch"])
+    except (KeyError, TypeError, ValueError):
+        line = None
+    return line or f"{new['id']}: {frm} → {to}"
+
+
+def cmd_advance(args, cfg, jobs: store.JobStore) -> int:
+    job = jobs.load(args.job)
+    frm, to = job["stage"], args.stage
+    counter = "sync_attempts" if to == "merging" else _BUDGET.get((frm, to))
+    if counter:
+        machine.check(job, to)
+        try:
+            branches.assert_round_budget(job, counter, cfg)
+        except branches.RoundBudgetExhausted as exc:
+            raise Refusal(str(exc)) from None
+    new = machine.advance(jobs, args.job, to)
+    print(_voice_line(new, frm, to, cfg))
+    return OK
+
+
+def cmd_route(args, cfg, jobs: store.JobStore) -> int:
+    jid = jobs.load(args.job)["id"]
+    directory = jobs.job_dir(jid)
+    header = intake.parse_file(directory / INTAKE_FILE)
+    plan = router.plan_for_intake(header, cfg)
+    with job_lock(directory):
+        job = jobs.load(jid)
+        job["intake"] = {"risk": header["risk"], "surfaces": list(header["surfaces"]),
+                         "decision": header["decision"]}
+        job["agents"] = plan
+        jobs.save(job)
+    reviewers = ", ".join(f"{r['reviewer']} {r['tier']}" for r in plan["reviewers"])
+    print(f"El router asignó {len(plan['reviewers'])} reviewers a {jid} "
+          f"(riesgo {voice.RISK_ES[plan['risk']]}, spec-review {'sí' if plan['spec_review'] else 'no'}): "
+          f"{reviewers}.")
+    return OK
+
+
+def cmd_gate(args, cfg, jobs: store.JobStore) -> int:
+    job = jobs.load(args.job)
+    round_dir = jobs.job_dir(job["id"]) / f"round-{job['total_rounds'] + 1}"
+    with term.ant("Filtro", "corriendo los checks"):
+        try:
+            result = gate.run_gate(REPO_ROOT, Path(args.worktree), job, round_dir,
+                                   base_ref=args.base, config=cfg, kind=args.kind)
+        except gate.GateError as exc:
+            error = str(exc)
+        else:
+            error = None
+    if error is not None:
+        raise Refusal(error)
+    print(result.summary)
+    return OK if result.passed else NEGATIVE
+
+
+def cmd_check_pr_base(args, cfg, jobs) -> int:
+    try:
+        branches.check_pr_base(args.base, cfg)
+    except branches.BranchRefused as exc:
+        raise Refusal(str(exc)) from None
+    print(f"La Reina acepta la base {args.base}.")
+    return OK
+
+
+def cmd_check_push(args, cfg, jobs) -> int:
+    try:
+        branches.check_push_target(args.ref, cfg)
+    except branches.BranchRefused as exc:
+        raise Refusal(str(exc)) from None
+    print(f"Atta puede empujar a {args.ref}.")
+    return OK
+
+
+# ---------------------------------------------------------------- status and summary
+
+def _elapsed(job: dict, now) -> str:
+    end = from_iso(job["ended"]) if job.get("ended") else now
+    secs = max(int((end - from_iso(job["started"])).total_seconds()), 0)
+    if secs < 60:
+        return f"{secs} s"
+    if secs < 3600:
+        return f"{secs // 60} min {secs % 60} s"
+    return f"{secs // 3600} h {secs % 3600 // 60} min"
+
+
+def _cost(value) -> str:
+    return "-" if value is None else f"US$ {value:.2f}"
+
+
+def _table(jobs_list: list[dict]) -> list[str]:
+    now = utcnow()
+    rows = [("JOB", "ISSUE", "ETAPA", "RONDAS", "COSTO", "TIEMPO")]
+    for j in jobs_list:
+        rows.append((j["id"], f"#{j['issue']}", j["stage"],
+                     f"{j['total_rounds']}/{j['max_total_rounds']}", _cost(j.get("cost_usd")),
+                     _elapsed(j, now)))
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    return ["  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in rows]
+
+
+def _all(jobs: store.JobStore) -> list[dict]:
+    return [jobs.load(jid) for jid in jobs.list_ids()]
+
+
+def cmd_status(args, cfg, jobs: store.JobStore) -> int:
+    listed = [jobs.load(args.job)] if args.job else _all(jobs)
+    if not listed:
+        print("No hay jobs.")
+        return OK
+    print("\n".join(_table(listed)))
+    return OK
+
+
+def cmd_summary(args, cfg, jobs: store.JobStore) -> int:
+    listed = _all(jobs)
+    if not listed:
+        print("No hay jobs.")
+        return OK
+    running = sum(1 for j in listed if j["stage"] not in machine.TERMINAL)
+    merged = sum(1 for j in listed if j["stage"] == "merged")
+    rejected = sum(1 for j in listed if j["stage"] == "rejected")
+    costs = [j["cost_usd"] for j in listed if j.get("cost_usd") is not None]
+    total = _cost(round(sum(costs), 6) if costs else None)
+    noun = "job" if len(listed) == 1 else "jobs"
+    lines = _table(listed)
+    lines.append(f"Total: {len(listed)} {noun} · {running} en curso · {merged} merged · "
+                 f"{rejected} rejected · costo {total}")
+    print("\n".join(lines))
+    return OK
+
+
+# ---------------------------------------------------------------- parser
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="atta",
+        description="Atta, tu colonia de agentes: espina determinista (F1, sin GitHub).",
+        epilog="Códigos de salida: 0 ok, 1 veredicto negativo, 2 rechazado o error de uso.",
+    )
+    p.add_argument("--jobs-dir", default=str(store.JOBS_DIR),
+                   help="carpeta de los jobs (por defecto: atta/jobs)")
+    sub = p.add_subparsers(dest="command", metavar="<comando>", required=True)
+
+    c = sub.add_parser("create", help="Crea un job para un issue e imprime su id.",
+                       description="Crea un job para un issue e imprime su id.")
+    c.add_argument("issue", type=int, help="número del issue")
+    c.add_argument("--title", required=True, help="título del issue (se guarda citado)")
+    c.add_argument("--body-file", help="archivo UTF-8 con el cuerpo del issue")
+    c.set_defaults(func=cmd_create)
+
+    a = sub.add_parser("advance", help="Mueve un job a otra etapa (transición legal).",
+                       description="Mueve un job a otra etapa; respeta max_rounds y el tope global.")
+    a.add_argument("job", help="id del job")
+    a.add_argument("stage", help="etapa destino: " + ", ".join(machine.STAGES))
+    a.set_defaults(func=cmd_advance)
+
+    r = sub.add_parser("route", help="Lee intake.md y guarda los reviewers del job.",
+                       description="Lee RISK y SURFACES de intake.md y guarda el plan del router.")
+    r.add_argument("job", help="id del job")
+    r.set_defaults(func=cmd_route)
+
+    g = sub.add_parser("gate", help="Corre el Filtro sobre el worktree del job.",
+                       description="Corre el Filtro (atta/checks.json del checkout principal) "
+                                   "sobre el worktree. Sale 0 si pasa, 1 si no pasa.")
+    g.add_argument("job", help="id del job")
+    g.add_argument("--worktree", required=True, help="ruta del worktree del job")
+    g.add_argument("--base", required=True, help="ref base del diff (p. ej. origin/develop)")
+    g.add_argument("--kind", choices=gate.KINDS, default="checks",
+                   help="checks (por defecto) o merge-checks")
+    g.set_defaults(func=cmd_gate)
+
+    s = sub.add_parser("status", help="Tabla de jobs (o de un job).",
+                       description="Tabla de jobs: id, issue, etapa, rondas, costo y tiempo.")
+    s.add_argument("job", nargs="?", help="id del job (opcional)")
+    s.set_defaults(func=cmd_status)
+
+    m = sub.add_parser("summary", help="Tabla de todos los jobs con totales.",
+                       description="Tabla de todos los jobs con totales.")
+    m.set_defaults(func=cmd_summary)
+
+    b = sub.add_parser("check-pr-base", help="Verifica la base de un PR (solo develop).",
+                       description="Sale 0 si la base es la rama de integración; 2 si no.")
+    b.add_argument("base", help="rama base del PR")
+    b.set_defaults(func=cmd_check_pr_base)
+
+    u = sub.add_parser("check-push", help="Verifica que una rama se pueda empujar.",
+                       description="Sale 0 solo para ramas atta/<job-id>; 2 si no.")
+    u.add_argument("ref", help="rama o ref destino del push")
+    u.set_defaults(func=cmd_check_push)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else REFUSED
+    try:
+        cfg = config.load_config()
+        return args.func(args, cfg, store.JobStore(args.jobs_dir))
+    except (Refusal, config.ConfigError, store.StoreError, InvalidId, machine.Refused,
+            intake.IntakeError, router.RoutingError, branches.BranchRefused, LockTimeout) as exc:
+        _err(str(exc))
+        return REFUSED

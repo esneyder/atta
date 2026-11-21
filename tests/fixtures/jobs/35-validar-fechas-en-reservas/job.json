@@ -1,0 +1,28 @@
+{
+  "id": "35-validar-fechas-en-reservas",
+  "issue": 35,
+  "title": "Validar fechas en reservas",
+  "issue_url": "https://github.com/colonia/tienda/issues/35",
+  "pr": 43,
+  "pr_url": "https://github.com/colonia/tienda/pull/43",
+  "branch": "atta/35-validar-fechas-en-reservas",
+  "worktree": null,
+  "stage": "build",
+  "stage_since": "2025-06-04T10:21:07Z",
+  "review_rounds": 0,
+  "gate_rounds": 1,
+  "sync_attempts": 0,
+  "total_rounds": 1,
+  "max_total_rounds": 6,
+  "intake": {
+    "risk": "medium",
+    "surfaces": [
+      "ui"
+    ],
+    "decision": "ACCEPT"
+  },
+  "agents": {},
+  "started": "2025-06-04T10:00:00Z",
+  "ended": null,
+  "cost_usd": 0.465
+}

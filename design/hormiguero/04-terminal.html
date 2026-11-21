@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>El hormiguero · Terminal · la hormiga en la CLI</title>
+<style>
+/* Tokens de brand/tokens.css (design/system.md). Sin URLs externas. */
+:root, [data-theme="light"] {
+  --fondo: #f7f1e6; --fondo-elevado: #efe5d3; --tinta: #24170f; --tinta-suave: #6b5444;
+  --culona: #a0381a; --sobre-culona: #fff7ee; --hoja: #2f6b35; --chicamocha: #d39b2a; --linea: #dccdb5;
+}
+[data-theme="dark"] {
+  --fondo: #17110d; --fondo-elevado: #221913; --tinta: #f4eadb; --tinta-suave: #bba894;
+  --culona: #e57a52; --sobre-culona: #1a0f09; --hoja: #7cc283; --linea: #3a2c22;
+}
+:root {
+  --space-1: 4px; --space-2: 8px; --space-4: 16px; --space-6: 24px; --space-8: 32px;
+  --radius-sm: 4px; --radius-md: 10px; --radius-hoja: 24px;
+  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --text-titulo-1: 700 36px/42px var(--font-display);
+  --text-titulo-2: 600 22px/30px var(--font-sans);
+  --text-cuerpo: 400 16px/24px var(--font-sans);
+  --text-pequeno: 500 13px/18px var(--font-sans);
+  --text-codigo: 400 14px/22px var(--font-mono);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--fondo); color: var(--tinta); font: var(--text-cuerpo); }
+:focus-visible { outline: 2px solid var(--tinta); outline-offset: 2px; }
+button { font: inherit; color: inherit; }
+.meta { font: var(--text-pequeno); color: var(--tinta-suave); }
+code { font: var(--text-codigo); }
+header.top { display: flex; align-items: center; gap: var(--space-6); padding: var(--space-4) var(--space-8); }
+header.top h1 { font: var(--text-titulo-1); letter-spacing: -0.01em; margin: 0; }
+.mark { width: 56px; height: 46px; flex: none; }
+.a-leg { fill: none; stroke: var(--culona); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+.a-leaf { fill: var(--hoja); }
+.a-vein { fill: none; stroke: var(--fondo); stroke-linecap: round; }
+.a-body { fill: var(--culona); }
+.spacer { flex: 1; }
+.btn { font: var(--text-pequeno); min-height: 44px; padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); border: 1px solid var(--tinta-suave); background: transparent; cursor: pointer; }
+.btn[aria-pressed="true"] { background: var(--fondo-elevado); }
+.btn-pri { background: var(--culona); color: var(--sobre-culona); border-color: var(--culona); }
+
+main { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-6); padding: 0 var(--space-8); }
+.col { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+figure { margin: 0; }
+figcaption { font: var(--text-pequeno); color: var(--tinta-suave); margin-bottom: var(--space-1); display: flex; justify-content: space-between; gap: var(--space-2); }
+figcaption b { color: var(--tinta); }
+
+/* ventana de terminal neutra: colores de la columna oscura o clara de los tokens */
+.term { --t-bg: #17110d; --t-fg: #f4eadb; --t-suave: #bba894; --t-culona: #e57a52; --t-hoja: #7cc283; --t-chic: #d39b2a; --t-bar: #221913; --t-line: #3a2c22;
+  border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--tinta-suave); background: var(--t-bg); }
+.term.light { --t-bg: #f7f1e6; --t-fg: #24170f; --t-suave: #6b5444; --t-culona: #a0381a; --t-hoja: #2f6b35; --t-chic: #d39b2a; --t-bar: #efe5d3; --t-line: #dccdb5; }
+.bar { display: flex; align-items: center; gap: var(--space-2); height: 32px; padding: 0 var(--space-4); background: var(--t-bar); border-bottom: 1px solid var(--t-line); color: var(--t-suave); font: var(--text-pequeno); }
+.bar i { width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--t-suave); display: inline-block; }
+.bar span { margin-left: var(--space-2); }
+pre.screen { margin: 0; padding: var(--space-2) var(--space-4); font: var(--text-codigo); color: var(--t-fg); white-space: pre-wrap; overflow: auto; }
+.big pre.screen { height: 470px; }
+.small pre.screen { height: 214px; }
+.c-cul { color: var(--t-culona); }
+.c-hoja { color: var(--t-hoja); }
+.c-chic { color: var(--t-chic); }
+.c-suave { color: var(--t-suave); }
+.c-b { font-weight: 600; }
+.term.light .c-chic { color: #24170f; background: var(--t-chic); } /* chicamocha no es texto en claro: fondo con tinta */
+.term.mono .c-cul, .term.mono .c-hoja, .term.mono .c-chic, .term.mono .c-suave { color: var(--t-fg); background: none; font-weight: 400; }
+
+.notes { display: grid; grid-template-columns: 1.3fr 1fr; gap: var(--space-6); padding: var(--space-4) var(--space-8) var(--space-6); }
+table { border-collapse: collapse; width: 100%; font: var(--text-pequeno); }
+caption { text-align: left; font: var(--text-titulo-2); font-size: 22px; padding-bottom: var(--space-2); }
+th { text-align: left; color: var(--tinta-suave); font-weight: 500; border-bottom: 1px solid var(--tinta-suave); padding: var(--space-1) var(--space-2); }
+td { border-bottom: 1px solid var(--linea); padding: var(--space-1) var(--space-2); font-family: var(--font-mono); }
+td:first-child, td:last-child { font-family: var(--font-sans); }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 6px 0; vertical-align: -1px; margin-right: var(--space-1); border: 1px solid var(--tinta-suave); }
+.rules h2 { font: var(--text-titulo-2); margin: 0 0 var(--space-2); }
+.rules ul { margin: 0; padding-left: 20px; font: var(--text-pequeno); display: flex; flex-direction: column; gap: var(--space-1); }
+.rules li b { font-weight: 600; }
+
+@media (max-width: 900px) {
+  header.top { flex-wrap: wrap; padding: var(--space-4); }
+  header.top h1 { font: var(--text-titulo-2); }
+  main, .notes { grid-template-columns: 1fr; padding: 0 var(--space-4) var(--space-4); }
+  .big pre.screen { height: 380px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <svg class="mark" viewBox="0 0 120 100" role="img" aria-label="Atta">
+    <g class="a-leg"><path d="M56 61 L44 68 L34 85"/><path d="M62 63 L67 74 L63 89"/><path d="M68 60 L81 66 L90 82"/><path d="M88 44 L98 35 L107 40"/></g>
+    <path class="a-leaf" d="M90 56 C100 36 80 12 52 6 C50 26 64 46 90 56 Z"/>
+    <g class="a-vein"><path d="M87 53 C78 38 66 22 55 10" stroke-width="2.6"/><path d="M78 39 L87 33 M78 39 L69 39 M69 27 L77 20 M69 27 L60 27" stroke-width="1.8"/></g>
+    <g class="a-body"><ellipse cx="27" cy="62" rx="19" ry="15"/><circle cx="49.5" cy="60" r="4.5"/><ellipse cx="62" cy="57" rx="11" ry="7" transform="rotate(-14 62 57)"/><circle cx="83" cy="51" r="10"/></g>
+  </svg>
+  <div><h1>La hormiga en la terminal</h1><span class="meta"><code>python atta/bin/atta.py run 12</code> · frames y colores en <code>design/hormiguero/terminal-frames.json</code></span></div>
+  <div class="spacer"></div>
+  <button class="btn" id="termlight" aria-pressed="false">Terminal clara</button>
+  <button class="btn btn-pri" id="replay">Repetir</button>
+  <button class="btn" id="theme" aria-pressed="false">Tema oscuro</button>
+</header>
+
+<main>
+  <div class="col">
+    <figure id="t-uni" aria-labelledby="cap-uni">
+      <figcaption id="cap-uni"><span><b>Unicode + truecolor</b> · Windows Terminal, iTerm2, GNOME Terminal</span><span>frame 120 ms · ancho 24</span></figcaption>
+      <div class="term big"><div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>atta — run 12</span></div>
+      <pre class="screen"></pre></div>
+    </figure>
+  </div>
+  <div class="col">
+    <figure id="t-ascii" aria-labelledby="cap-ascii">
+      <figcaption id="cap-ascii"><span><b>ASCII + 256 colores</b> · conhost antiguo, <code>LANG=C</code>, sin Unicode</span><span>mismos frames, otros glifos</span></figcaption>
+      <div class="term small"><div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>atta — run 12 (ascii)</span></div>
+      <pre class="screen"></pre></div>
+    </figure>
+    <figure id="t-static" aria-labelledby="cap-static">
+      <figcaption id="cap-static"><span><b>Sin animación</b> · sin TTY, <code>NO_COLOR</code> o <code>ATTA_NO_ANIM</code></span><span>líneas estáticas</span></figcaption>
+      <div class="term small mono"><div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>atta — run 12 (NO_COLOR)</span></div>
+      <pre class="screen"></pre></div>
+    </figure>
+  </div>
+</main>
+
+<section class="notes">
+  <table>
+    <caption>Paleta ANSI desde los tokens</caption>
+    <thead><tr><th>token</th><th>terminal oscura (defecto)</th><th>terminal clara</th><th>256 · 16</th><th>uso en la CLI</th></tr></thead>
+    <tbody>
+      <tr><td><span class="sw" style="background:#e57a52"></span>culona</td><td>38;2;229;122;82</td><td>38;2;160;56;26</td><td>173/130 · 31</td><td>cuerpo y patas de la hormiga · ⚑ necesita humano</td></tr>
+      <tr><td><span class="sw" style="background:#7cc283"></span>hoja</td><td>38;2;124;194;131</td><td>38;2;47;107;53</td><td>108/22 · 32</td><td>la hoja · ✔ pasó, aprobó, merge</td></tr>
+      <tr><td><span class="sw" style="background:#d39b2a"></span>chicamocha</td><td>38;2;211;155;42</td><td>fondo 48;2;211;155;42 + tinta</td><td>178 · 33</td><td>etiqueta de la etapa en curso · ↻ nueva ronda</td></tr>
+      <tr><td><span class="sw" style="background:#bba894"></span>tinta-suave</td><td>38;2;187;168;148</td><td>38;2;107;84;68</td><td>144/59 · 90</td><td>camino, tiempos, costos · ✖ rechazado</td></tr>
+      <tr><td><span class="sw" style="background:#f4eadb"></span>tinta</td><td>38;2;244;234;219</td><td>38;2;36;23;15</td><td>255/234 · 39</td><td>texto de los mensajes</td></tr>
+    </tbody>
+  </table>
+  <div class="rules">
+    <h2>Reglas de la animación</h2>
+    <ul>
+      <li><b>Nunca agrega espera.</b> Corre en un hilo mientras el subproceso de la etapa trabaja; al terminar se borra en el acto y se imprime la línea firmada. Sin duración mínima ni <code>sleep</code>.</li>
+      <li><b>Se apaga sola</b> sin TTY (<code>| tee</code>, CI), con <code>NO_COLOR</code> (sin color ni animación), con <code>ATTA_NO_ANIM</code> (sin animación) o con <code>TERM=dumb</code>.</li>
+      <li><b>ASCII</b> si la salida no codifica UTF-8 (<code>sys.stdout.encoding</code>) o con <code>ATTA_ASCII=1</code>. Íconos: <code>[ok] [~] [!] [x] [-]</code>.</li>
+      <li><b>Color siempre con palabra:</b> cada línea lleva ícono y verbo firmado por rol.</li>
+      <li>Ejemplo de escalamiento: <code>⚑ La Reina lo deja en tus manos: #21, el Soldado sigue viendo tokens sin expiración.</code> · <code>⚑ Tres rondas sin pasar el filtro. Te lo dejamos a ti.</code></li>
+      <li class="meta">Esta vista acelera los tiempos (×300) solo para mostrar el ritmo; con movimiento reducido se muestra el resultado final y un frame fijo.</li>
+    </ul>
+  </div>
+</section>
+
+<script>
+/* Frames idénticos a terminal-frames.json (2 líneas, ancho 24, 120 ms) */
+const W = 24, INTERVAL = 120;
+const SPRITE = {
+  unicode: { body: "●•●●❦", legs: ["╱╲╱╲", "╲╱╲╱"], path: "·", icons: { ok: "✔", run: "◐", retry: "↻", human: "⚑", rejected: "✖", skip: "·" } },
+  ascii: { body: "O-oo%", legs: ["/|/|", "|/|/"], path: ".", icons: { ok: "[ok]", run: "[..]", retry: "[~]", human: "[!]", rejected: "[x]", skip: "[-]" } }
+};
+function frame(mode, p) {
+  const s = SPRITE[mode], n = s.body.length, pad = W - n - p;
+  return [" ".repeat(p) + s.body + " ".repeat(pad), s.path.repeat(p) + s.legs[p % 2] + " ".repeat(n - 4 + pad)];
+}
+const ICOLOR = { ok: "c-hoja", run: "c-chic", retry: "c-chic", human: "c-cul", rejected: "c-suave", skip: "c-suave" };
+const RUN = [
+  { who: "Exploradora", doing: "leyendo el issue", ms: 1400, real: "41 s", icon: "ok", text: "La Exploradora aceptó el issue #12 (riesgo bajo).", meta: "41 s · US$ 0.03" },
+  { who: "Guía", doing: "escribiendo el spec", ms: 1900, real: "2 min 48 s", icon: "ok", text: "La Guía marcó el camino: spec listo, 3 archivos y 4 criterios.", meta: "2 min 48 s · US$ 0.09" },
+  { icon: "skip", text: "La Vigía no revisa en riesgo bajo." },
+  { who: "Cortadora", doing: "ronda 1 · T1", ms: 2400, icon: "ok", text: "La Cortadora terminó la ronda 1: 3 commits en atta/12.", meta: "8 min 54 s · US$ 0.21" },
+  { who: "Filtro", doing: "tests, lint y build", ms: 1300, icon: "ok", text: "El Filtro pasó: 42 tests en 18 s.", meta: "52 s" },
+  { who: "Jardinera de código", doing: "revisando el diff", ms: 1800, icon: "retry", text: "La Jardinera de código pidió cambios: el CSV no escapa comillas dobles.", meta: "3 min 40 s · US$ 0.06" },
+  { icon: "retry", text: "Ronda 2 de 3: la Cortadora sube a T2." },
+  { who: "Cortadora", doing: "ronda 2 · T2", ms: 2200, icon: "ok", text: "La Cortadora terminó la ronda 2: 1 commit.", meta: "7 min 50 s · US$ 0.17" },
+  { who: "Filtro", doing: "tests, lint y build", ms: 1300, icon: "ok", text: "El Filtro pasó: 44 tests en 19 s.", meta: "55 s" },
+  { who: "Jardinera de código", doing: "revisando el diff", ms: 1500, icon: "ok", text: "La Jardinera de código aprobó la ronda 2.", meta: "2 min 10 s · US$ 0.06" },
+  { who: "Reina", doing: "decidiendo", ms: 600, icon: "ok", text: "La Reina aprobó: merge a develop.", meta: "regla determinista · riesgo bajo" },
+  { icon: "ok", text: "La Cultivadora guardó 1 lección en atta/memory/lessons.md." }
+];
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+const span = (c, t) => `<span class="${c}">${esc(t)}</span>`;
+const HEAD = (cmd) => [
+  span("c-suave", "$ ") + esc(cmd),
+  span("c-cul c-b", "atta") + span("c-suave", " · tu colonia de agentes"),
+  `issue #12 «Agregar exportación a CSV» ` + span("c-suave", "· riesgo bajo · atta/12 → develop"),
+  ""
+];
+function resultLine(mode, st) {
+  const ic = SPRITE[mode].icons[st.icon];
+  const meta = st.meta ? "  " + span("c-suave", st.meta) : "";
+  return span(ICOLOR[st.icon], ic) + " " + esc(st.text) + meta;
+}
+function animLines(mode, st, p, elapsed) {
+  const [a, b] = frame(mode, p);
+  const n = SPRITE[mode].body.length;
+  const l1 = "  " + span("c-cul", a.slice(0, p + n - 1)) + span("c-hoja", a.slice(p + n - 1, p + n)) + a.slice(p + n) + "  " + span("c-chic", `${st.who} · ${st.doing} · ${elapsed}`);
+  const l2 = "  " + span("c-suave", b.slice(0, p)) + span("c-cul", b.slice(p, p + 4)) + b.slice(p + 4);
+  return [l1, l2];
+}
+const mmss = ms => { const s = Math.floor(ms / 1000 * 300); const m = Math.floor(s / 60); return `${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`; };
+const FOOT = mode => ["", span("c-hoja", SPRITE[mode].icons.ok) + " Listo en 31 min · " + span("c-suave", "US$ 0.62") + " · PR #31 mergeado en develop."];
+
+const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+const runs = [];
+function play(id, mode) {
+  const pre = document.querySelector(`#${id} pre`);
+  const lines = HEAD(mode === "ascii" ? "ATTA_ASCII=1 python atta/bin/atta.py run 12" : "python atta/bin/atta.py run 12");
+  const draw = extra => { pre.innerHTML = lines.concat(extra || []).join("\n"); pre.scrollTop = pre.scrollHeight; };
+  if (reduce.matches) {
+    RUN.forEach(st => lines.push(resultLine(mode, st)));
+    draw(FOOT(mode).concat(["", span("c-suave", "frame fijo (movimiento reducido):"), ...animLines(mode, { who: "Cortadora", doing: "ronda 2 · T2" }, 9, "01:12")]));
+    return;
+  }
+  let i = 0, timer = null, alive = true;
+  runs.push(() => { alive = false; clearInterval(timer); });
+  const next = () => {
+    if (!alive) return;
+    if (i >= RUN.length) { draw(FOOT(mode)); return; }
+    const st = RUN[i++];
+    if (!st.ms) { lines.push(resultLine(mode, st)); draw(); setTimeout(next, 250); return; }
+    let p = 0; const t0 = performance.now();
+    timer = setInterval(() => { draw(animLines(mode, st, p, mmss(performance.now() - t0))); p = (p + 1) % (W - SPRITE[mode].body.length + 1); }, INTERVAL);
+    draw(animLines(mode, st, 0, "00:00"));
+    // la etapa "real" termina: se borra la hormiga en el acto, sin esperar a que acabe el frame
+    setTimeout(() => { if (!alive) return; clearInterval(timer); lines.push(resultLine(mode, st)); draw(); next(); }, st.ms);
+  };
+  draw(); setTimeout(next, 300);
+}
+function staticRun() {
+  const pre = document.querySelector("#t-static pre");
+  const out = ["$ NO_COLOR=1 python atta/bin/atta.py run 12", "atta · issue #12 «Agregar exportación a CSV» · riesgo bajo · atta/12 → develop", ""];
+  RUN.forEach(st => {
+    if (st.ms) out.push(`◐ ${st.who}: ${st.doing}…`);
+    out.push(`${SPRITE.unicode.icons[st.icon]} ${st.text}${st.meta ? "  " + st.meta : ""}`);
+  });
+  out.push("", "✔ Listo en 31 min · US$ 0.62 · PR #31 mergeado en develop.", "", "$ python atta/bin/atta.py run 12 | tee run.log   # sin TTY: mismas líneas, sin ANSI");
+  pre.textContent = out.join("\n");
+}
+function start() { runs.splice(0).forEach(stop => stop()); play("t-uni", "unicode"); play("t-ascii", "ascii"); staticRun(); }
+document.getElementById("replay").addEventListener("click", start);
+document.getElementById("termlight").addEventListener("click", e => {
+  const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+  e.currentTarget.setAttribute("aria-pressed", String(on));
+  document.querySelectorAll(".term").forEach(t => t.classList.toggle("light", on));
+});
+document.getElementById("theme").addEventListener("click", e => {
+  const dark = document.documentElement.dataset.theme !== "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  e.currentTarget.setAttribute("aria-pressed", String(dark));
+});
+start();
+</script>
+</body>
+</html>

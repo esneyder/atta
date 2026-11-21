@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>El hormiguero · Atta</title>
+<link rel="icon" type="image/svg+xml" href="atta-marca.svg">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="board.css">
+<script src="board.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#board">Saltar al camino de hormigas</a>
+<header class="top">
+  <img class="logo logo-claro" src="atta-logo.svg" alt="Atta" width="96" height="38">
+  <img class="logo logo-oscuro" src="atta-logo-oscuro.svg" alt="Atta" width="96" height="38">
+  <div class="ctx">
+    <h1>El hormiguero</h1>
+    <span class="meta">Integra en <code id="branch">develop</code> · solo lectura</span>
+  </div>
+  <div class="spacer"></div>
+  <span class="meta live" id="live">Buscando jobs…</span>
+  <button class="btn" id="theme" type="button" aria-pressed="false">Tema oscuro</button>
+</header>
+<p class="sr" role="status" id="announce"></p>
+
+<section class="stats" aria-label="Cifras de la colonia">
+  <div class="stat"><span class="meta">Jobs activos</span><b><span id="s-active">—</span> <span class="meta" id="s-human"></span></b></div>
+  <div class="stat"><span class="meta">Merge rate</span><b><span id="s-rate">—</span> <span class="meta" id="s-closed"></span></b></div>
+  <div class="stat"><span class="meta">Costo total</span><b class="mono" id="s-cost">—</b></div>
+  <div class="stat"><span class="meta">p50 por etapa</span><ul class="p50" id="s-p50"></ul></div>
+</section>
+
+<div id="alerts"></div>
+<p class="meta swipe">Desliza para recorrer las 7 columnas →</p>
+<main class="board" id="board" tabindex="-1" aria-label="Camino de hormigas: jobs por etapa"></main>
+<p class="warnings meta" id="warnings" hidden></p>
+
+<aside class="drawer" id="drawer" role="dialog" aria-modal="false" aria-labelledby="d-title" hidden></aside>
+</body>
+</html>

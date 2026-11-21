@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 100" width="120" height="100">
+  <title>Atta</title>
+  <g fill="none" stroke="#A0381A" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M56 61 L44 68 L34 85"></path>
+    <path d="M62 63 L67 74 L63 89"></path>
+    <path d="M68 60 L81 66 L90 82"></path>
+    <path d="M88 44 L98 35 L107 40"></path>
+  </g>
+  <path d="M90 56 C100 36 80 12 52 6 C50 26 64 46 90 56 Z" fill="#2F6B35"></path>
+  <g fill="none" stroke="#F7F1E6" stroke-linecap="round">
+    <path d="M87 53 C78 38 66 22 55 10" stroke-width="2.6"></path>
+    <path d="M78 39 L87 33 M78 39 L69 39 M69 27 L77 20 M69 27 L60 27" stroke-width="1.8"></path>
+  </g>
+  <g fill="#A0381A">
+    <ellipse cx="27" cy="62" rx="19" ry="15"></ellipse>
+    <circle cx="49.5" cy="60" r="4.5"></circle>
+    <ellipse cx="62" cy="57" rx="11" ry="7" transform="rotate(-14 62 57)"></ellipse>
+    <circle cx="83" cy="51" r="10"></circle>
+  </g>
+</svg>

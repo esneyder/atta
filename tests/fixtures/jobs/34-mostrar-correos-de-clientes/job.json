@@ -1,0 +1,28 @@
+{
+  "id": "34-mostrar-correos-de-clientes",
+  "issue": 34,
+  "title": "Mostrar correos de clientes en la portada",
+  "issue_url": "https://github.com/colonia/tienda/issues/34",
+  "pr": null,
+  "pr_url": null,
+  "branch": "atta/34-mostrar-correos-de-clientes",
+  "worktree": null,
+  "stage": "rejected",
+  "stage_since": "2025-06-03T09:00:38Z",
+  "review_rounds": 0,
+  "gate_rounds": 0,
+  "sync_attempts": 0,
+  "total_rounds": 0,
+  "max_total_rounds": 6,
+  "intake": {
+    "risk": "high",
+    "surfaces": [
+      "security"
+    ],
+    "decision": "REJECT"
+  },
+  "agents": {},
+  "started": "2025-06-03T09:00:00Z",
+  "ended": "2025-06-03T09:00:38Z",
+  "cost_usd": 0.002
+}

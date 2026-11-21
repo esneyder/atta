@@ -1,0 +1,28 @@
+{
+  "id": "36-cifrar-tokens-de-sesion",
+  "issue": 36,
+  "title": "Cifrar tokens de sesión",
+  "issue_url": "https://github.com/colonia/tienda/issues/36",
+  "pr": 41,
+  "pr_url": "https://github.com/colonia/tienda/pull/41",
+  "branch": "atta/36-cifrar-tokens-de-sesion",
+  "worktree": null,
+  "stage": "needs-human",
+  "stage_since": "2025-06-05T09:08:35Z",
+  "review_rounds": 1,
+  "gate_rounds": 1,
+  "sync_attempts": 0,
+  "total_rounds": 2,
+  "max_total_rounds": 6,
+  "intake": {
+    "risk": "high",
+    "surfaces": [
+      "security"
+    ],
+    "decision": "ACCEPT"
+  },
+  "agents": {},
+  "started": "2025-06-05T08:00:00Z",
+  "ended": null,
+  "cost_usd": 3.956
+}

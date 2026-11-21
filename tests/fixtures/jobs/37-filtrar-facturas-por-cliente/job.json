@@ -1,0 +1,26 @@
+{
+  "id": "37-filtrar-facturas-por-cliente",
+  "issue": 37,
+  "title": "Filtrar facturas por cliente",
+  "issue_url": "https://github.com/colonia/tienda/issues/37",
+  "pr": 42,
+  "pr_url": "https://github.com/colonia/tienda/pull/42",
+  "branch": "atta/37-filtrar-facturas-por-cliente",
+  "worktree": null,
+  "stage": "review",
+  "stage_since": "2025-06-06T11:23:40Z",
+  "review_rounds": 1,
+  "gate_rounds": 0,
+  "sync_attempts": 0,
+  "total_rounds": 1,
+  "max_total_rounds": 6,
+  "intake": {
+    "risk": "low",
+    "surfaces": [],
+    "decision": "ACCEPT"
+  },
+  "agents": {},
+  "started": "2025-06-06T11:00:00Z",
+  "ended": null,
+  "cost_usd": 0.474
+}

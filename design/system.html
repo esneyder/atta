@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sistema de diseño · Atta</title>
+<style>
+/* Tokens copiados de brand/tokens.css (sin URLs externas) */
+:root, [data-theme="light"] {
+  --fondo: #f7f1e6; --fondo-elevado: #efe5d3; --tinta: #24170f; --tinta-suave: #6b5444;
+  --culona: #a0381a; --sobre-culona: #fff7ee; --hoja: #2f6b35; --chicamocha: #d39b2a; --linea: #dccdb5;
+}
+[data-theme="dark"] {
+  --fondo: #17110d; --fondo-elevado: #221913; --tinta: #f4eadb; --tinta-suave: #bba894;
+  --culona: #e57a52; --sobre-culona: #1a0f09; --hoja: #7cc283; --linea: #3a2c22;
+}
+:root {
+  --space-1: 4px; --space-2: 8px; --space-4: 16px; --space-6: 24px; --space-8: 32px;
+  --radius-sm: 4px; --radius-md: 10px; --radius-hoja: 24px;
+  --font-display: "Bricolage Grotesque", system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --text-display: 700 64px/64px var(--font-display);
+  --text-titulo-1: 700 36px/42px var(--font-display);
+  --text-titulo-2: 600 22px/30px var(--font-sans);
+  --text-cuerpo: 400 16px/24px var(--font-sans);
+  --text-pequeno: 500 13px/18px var(--font-sans);
+  --text-codigo: 400 14px/22px var(--font-mono);
+  --tinta-oscura: #24170f; /* = --tinta claro: texto sobre chicamocha en ambos temas */
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--fondo); color: var(--tinta); font: var(--text-cuerpo); }
+.wrap { max-width: 1440px; margin: 0 auto; padding: var(--space-8); }
+header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); margin-bottom: var(--space-8); }
+.logo { width: 200px; height: auto; display: block; }
+h1 { font: var(--text-titulo-1); letter-spacing: -0.01em; margin: 0; }
+h2 { font: var(--text-titulo-2); margin: 0 0 var(--space-4); }
+p.meta, .meta { font: var(--text-pequeno); color: var(--tinta-suave); margin: 0; }
+section { padding: var(--space-8) 0; border-top: 1px solid var(--linea); }
+code, .mono { font: var(--text-codigo); }
+.grid { display: grid; gap: var(--space-4); }
+.sw-grid { grid-template-columns: repeat(9, 1fr); }
+.sw { border-radius: var(--radius-md); background: var(--fondo-elevado); padding: var(--space-2); }
+.sw i { display: block; height: 72px; border-radius: var(--radius-sm); border: 1px solid var(--linea); margin-bottom: var(--space-2); }
+.sw b { font: var(--text-pequeno); display: block; }
+.sw span { font: var(--text-pequeno); color: var(--tinta-suave); font-family: var(--font-mono); }
+.dark-panel { margin-top: var(--space-4); padding: var(--space-4); border-radius: var(--radius-md); background: var(--fondo); }
+.type-row { display: grid; grid-template-columns: 220px 1fr; gap: var(--space-4); align-items: baseline; padding: var(--space-2) 0; border-bottom: 1px solid var(--linea); }
+.t-display { font: var(--text-display); letter-spacing: -0.02em; }
+.t-t1 { font: var(--text-titulo-1); letter-spacing: -0.01em; }
+.t-t2 { font: var(--text-titulo-2); }
+.t-cu { font: var(--text-cuerpo); }
+.t-pe { font: var(--text-pequeno); }
+.t-co { font: var(--text-codigo); }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-8); }
+.sp { display: flex; align-items: center; gap: var(--space-4); margin-bottom: var(--space-2); }
+.sp i { display: block; height: 16px; background: var(--chicamocha); border-radius: var(--radius-sm); }
+.rad { display: flex; gap: var(--space-6); }
+.rad div { width: 96px; height: 96px; background: var(--fondo-elevado); border: 1px solid var(--tinta-suave); display: grid; place-items: center; font: var(--text-pequeno); text-align: center; }
+.row { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: center; margin-bottom: var(--space-4); }
+.btn { font: var(--text-pequeno); font-size: 16px; line-height: 24px; padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); min-height: 44px; cursor: pointer; }
+.btn-pri { background: var(--culona); color: var(--sobre-culona); border: 1px solid var(--culona); }
+.btn-sec { background: transparent; color: var(--tinta); border: 1px solid var(--tinta-suave); }
+:focus-visible { outline: 2px solid var(--tinta); outline-offset: 2px; }
+.st { display: inline-flex; align-items: center; gap: var(--space-1); font: var(--text-pequeno); padding: 2px var(--space-2); border-radius: var(--radius-sm); border: 1px solid transparent; }
+.st-run { background: var(--chicamocha); color: var(--tinta-oscura); }
+.st-ok { background: var(--hoja); color: var(--fondo); }
+.st-human { background: var(--culona); color: var(--sobre-culona); }
+.st-off { background: var(--fondo-elevado); color: var(--tinta-suave); border-color: var(--tinta-suave); }
+.st-retry { background: transparent; color: var(--tinta); border-color: var(--tinta-suave); }
+.av { width: 40px; height: 40px; border-radius: var(--radius-hoja) 0; display: inline-grid; place-items: center; font: var(--text-pequeno); background: var(--fondo-elevado); color: var(--tinta); border: 1px solid var(--tinta-suave); }
+.av.now { background: var(--chicamocha); color: var(--tinta-oscura); border-color: var(--chicamocha); }
+.card { background: var(--fondo-elevado); border-radius: var(--radius-md); padding: var(--space-4); max-width: 420px; }
+.card h3 { font: var(--text-titulo-2); margin: 0 0 var(--space-1); }
+.input { font: var(--text-cuerpo); padding: var(--space-2); border-radius: var(--radius-sm); border: 1px solid var(--tinta-suave); background: var(--fondo); color: var(--tinta); min-height: 44px; width: 280px; }
+.ant { width: 72px; height: 60px; }
+.a-leg { fill: none; stroke: var(--culona); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+.a-leaf { fill: var(--hoja); }
+.a-vein { fill: none; stroke: var(--fondo); stroke-linecap: round; }
+.a-body { fill: var(--culona); }
+.a-word { fill: none; stroke: var(--tinta); stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; }
+.leafrow { display: flex; gap: var(--space-2); }
+.leafrow span { width: 24px; height: 24px; border-radius: var(--radius-hoja) 0; background: var(--hoja); }
+.leafrow span:nth-child(3n+2) { background: var(--chicamocha); }
+@media (max-width: 900px) {
+  .sw-grid { grid-template-columns: repeat(3, 1fr); }
+  .two { grid-template-columns: 1fr; }
+  .type-row { grid-template-columns: 1fr; }
+  .t-display { font-size: 36px; line-height: 42px; }
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="ant" viewBox="0 0 120 100">
+    <g class="a-leg"><path d="M56 61 L44 68 L34 85"/><path d="M62 63 L67 74 L63 89"/><path d="M68 60 L81 66 L90 82"/><path d="M88 44 L98 35 L107 40"/></g>
+    <path class="a-leaf" d="M90 56 C100 36 80 12 52 6 C50 26 64 46 90 56 Z"/>
+    <g class="a-vein"><path d="M87 53 C78 38 66 22 55 10" stroke-width="2.6"/><path d="M78 39 L87 33 M78 39 L69 39 M69 27 L77 20 M69 27 L60 27" stroke-width="1.8"/></g>
+    <g class="a-body"><ellipse cx="27" cy="62" rx="19" ry="15"/><circle cx="49.5" cy="60" r="4.5"/><ellipse cx="62" cy="57" rx="11" ry="7" transform="rotate(-14 62 57)"/><circle cx="83" cy="51" r="10"/></g>
+  </symbol>
+</svg>
+<div class="wrap">
+<header>
+  <div style="display:flex;align-items:center;gap:24px">
+    <svg class="logo" viewBox="0 0 252 100" role="img" aria-label="Atta">
+      <use href="#ant" width="120" height="100"/>
+      <g class="a-word"><circle cx="140" cy="66" r="12.5"/><path d="M152.5 53 L152.5 80"/><path d="M172 40 L172 71 Q172 80 181 80 L184 80"/><path d="M164 54 L184 54"/><path d="M198 40 L198 71 Q198 80 207 80 L210 80"/><path d="M190 54 L210 54"/><circle cx="230" cy="66" r="12.5"/><path d="M242.5 53 L242.5 80"/></g>
+    </svg>
+    <div><h1>Sistema de diseño</h1><p class="meta">Fuentes: <code>brand/tokens.css</code>, <code>brand/api/tokens.md</code>, <code>brand/README.md</code>, <code>brand/assets/Logos/</code></p></div>
+  </div>
+  <button class="btn btn-sec" id="theme" aria-pressed="false">Tema oscuro</button>
+</header>
+<main>
+<section aria-labelledby="h-color">
+  <h2 id="h-color">Color</h2>
+  <div class="grid sw-grid" id="swatches"></div>
+  <p class="meta" style="margin-top:8px">Cada muestra lee el token del tema activo. <code>--chicamocha</code> no es texto en claro; <code>--linea</code> no es borde de controles.</p>
+</section>
+<section aria-labelledby="h-type">
+  <h2 id="h-type">Tipografía</h2>
+  <div class="type-row"><span class="meta mono">display · 64/64 · 700</span><span class="t-display">Software hecho en colonia</span></div>
+  <div class="type-row"><span class="meta mono">titulo-1 · 36/42 · 700</span><span class="t-t1">El hormiguero</span></div>
+  <div class="type-row"><span class="meta mono">titulo-2 · 22/30 · 600</span><span class="t-t2">#12 Agregar exportación a CSV</span></div>
+  <div class="type-row"><span class="meta mono">cuerpo · 16/24 · 400</span><span class="t-cu">La Exploradora aceptó el issue #12 (riesgo bajo).</span></div>
+  <div class="type-row"><span class="meta mono">pequeno · 13/18 · 500</span><span class="t-pe">Ronda 2 · T2 · US$ 1.84 · 38 min</span></div>
+  <div class="type-row"><span class="meta mono">codigo · 14/22 · 400</span><span class="t-co">python atta/bin/atta.py run 12</span></div>
+</section>
+<section class="two" aria-label="Espaciado y radio">
+  <div>
+    <h2>Espaciado</h2>
+    <div class="sp"><i style="width:4px"></i><code>--space-1 · 4px</code></div>
+    <div class="sp"><i style="width:8px"></i><code>--space-2 · 8px</code></div>
+    <div class="sp"><i style="width:16px"></i><code>--space-4 · 16px</code></div>
+    <div class="sp"><i style="width:24px"></i><code>--space-6 · 24px</code></div>
+    <div class="sp"><i style="width:32px"></i><code>--space-8 · 32px</code></div>
+  </div>
+  <div>
+    <h2>Radio</h2>
+    <div class="rad">
+      <div style="border-radius:4px">radius-sm<br>4px</div>
+      <div style="border-radius:10px">radius-md<br>10px</div>
+      <div style="border-radius:24px 0">radius-hoja<br>24px</div>
+    </div>
+    <p class="meta" style="margin-top:16px">Sombras: la marca no define tokens de sombra; no se usan.</p>
+  </div>
+</section>
+<section aria-labelledby="h-comp">
+  <h2 id="h-comp">Componentes</h2>
+  <div class="row">
+    <button class="btn btn-pri">Aprobar y mergear</button>
+    <button class="btn btn-sec">Ver PR #31</button>
+    <label class="meta" for="q" style="display:flex;flex-direction:column;gap:4px">Buscar por issue o título<input class="input" id="q" value="exportación"></label>
+  </div>
+  <div class="row" aria-label="Estados del pipeline">
+    <span class="st st-run"><span aria-hidden="true">◐</span> en curso</span>
+    <span class="st st-ok"><span aria-hidden="true">✓</span> mergeado</span>
+    <span class="st st-ok"><span aria-hidden="true">✓</span> filtro pasó</span>
+    <span class="st st-human"><span aria-hidden="true">⚑</span> te necesita</span>
+    <span class="st st-retry"><span aria-hidden="true">↻</span> CHANGES</span>
+    <span class="st st-off"><span aria-hidden="true">✕</span> rechazado</span>
+  </div>
+  <div class="row" aria-label="Avatares de agentes">
+    <span class="av" title="Exploradora">Ex</span><span class="av" title="Guía">Gu</span><span class="av" title="Vigía">Vi</span>
+    <span class="av now" title="Cortadora, trabajando">Co</span><span class="av" title="Filtro">Fi</span><span class="av" title="Jardinera">Ja</span>
+    <span class="av" title="Soldado">So</span><span class="av" title="Reina">Re</span><span class="av" title="Cultivadora">Cu</span>
+  </div>
+  <div class="row">
+    <article class="card">
+      <h3>#23 Paginar el listado de facturas</h3>
+      <p class="meta">PR #30 · riesgo bajo · 1 ronda · US$ 0.41 · 12 min</p>
+      <p style="margin:8px 0 0"><span class="st st-ok"><span aria-hidden="true">✓</span> mergeado a develop</span></p>
+    </article>
+    <div style="display:flex;align-items:center;gap:16px">
+      <svg class="ant" role="img" aria-label="Hormiga de Atta"><use href="#ant"/></svg>
+      <div class="leafrow" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+      <span class="meta">Patrón: fila de hojas, camino de hormigas</span>
+    </div>
+  </div>
+</section>
+</main>
+</div>
+<script>
+const toks = ["fondo","fondo-elevado","tinta","tinta-suave","culona","sobre-culona","hoja","chicamocha","linea"];
+const root = document.documentElement;
+function paint(){
+  const cs = getComputedStyle(root);
+  document.getElementById("swatches").innerHTML = toks.map(t =>
+    `<div class="sw"><i style="background:var(--${t})"></i><b>--${t}</b><span>${cs.getPropertyValue("--"+t).trim()}</span></div>`).join("");
+}
+document.getElementById("theme").addEventListener("click", e => {
+  const dark = root.dataset.theme !== "dark";
+  root.dataset.theme = dark ? "dark" : "light";
+  e.currentTarget.setAttribute("aria-pressed", String(dark));
+  paint();
+});
+paint();
+</script>
+</body>
+</html>
