@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 260" width="1280" height="260" role="img" aria-labelledby="t d">
+  <title id="t">La colonia de Atta</title>
+  <desc id="d">El camino de un issue por la colonia: Exploradora, Guía, Vigía, Cortadora, Filtro, Jardineras y Soldado, Reina y merge a develop.</desc>
+  <rect width="1280" height="260" fill="#F7F1E6"/>
+  <defs>
+    <!-- the brand "hoja" shape: two opposite corners rounded, two straight -->
+    <path id="hoja" d="M0 0 h48 a24 24 0 0 1 24 24 v48 h-48 a24 24 0 0 1 -24 -24 z"/>
+  </defs>
+  <path d="M96 96 H1184" stroke="#6B5444" stroke-width="2" stroke-dasharray="2 8" stroke-linecap="round" fill="none"/>
+  <g font-family="'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif" text-anchor="middle">
+    <g transform="translate(60 60)"><use href="#hoja" fill="#EFE5D3" stroke="#6B5444" stroke-width="2"/><text x="36" y="44" font-size="18" font-weight="600" fill="#24170F">Ex</text></g>
+    <g transform="translate(220 60)"><use href="#hoja" fill="#EFE5D3" stroke="#6B5444" stroke-width="2"/><text x="36" y="44" font-size="18" font-weight="600" fill="#24170F">Gu</text></g>
+    <g transform="translate(380 60)"><use href="#hoja" fill="#EFE5D3" stroke="#6B5444" stroke-width="2"/><text x="36" y="44" font-size="18" font-weight="600" fill="#24170F">Vi</text></g>
+    <g transform="translate(540 60)"><use href="#hoja" fill="#D39B2A"/><text x="36" y="44" font-size="18" font-weight="600" fill="#24170F">Co</text></g>
+    <g transform="translate(700 60)"><use href="#hoja" fill="#EFE5D3" stroke="#24170F" stroke-width="2" stroke-dasharray="4 4"/><text x="36" y="44" font-size="18" font-weight="600" fill="#24170F">Fi</text></g>
+    <g transform="translate(860 60)"><use href="#hoja" fill="#EFE5D3" stroke="#6B5444" stroke-width="2"/><text x="36" y="44" font-size="18" font-weight="600" fill="#24170F">Ja</text></g>
+    <g transform="translate(1020 60)"><use href="#hoja" fill="#EFE5D3" stroke="#6B5444" stroke-width="2"/><text x="36" y="44" font-size="18" font-weight="600" fill="#24170F">Re</text></g>
+    <g transform="translate(1160 60)"><use href="#hoja" fill="#2F6B35"/><text x="36" y="46" font-size="24" font-weight="700" fill="#F7F1E6">✓</text></g>
+
+    <g font-size="16" font-weight="600" fill="#24170F">
+      <text x="96" y="168">Exploradora</text><text x="256" y="168">Guía</text><text x="416" y="168">Vigía</text>
+      <text x="576" y="168">Cortadora</text><text x="736" y="168">Filtro</text><text x="896" y="168">Jardineras</text>
+      <text x="1056" y="168">Reina</text><text x="1196" y="168">develop</text>
+    </g>
+    <g font-size="13" fill="#6B5444">
+      <text x="96" y="190">¿vale la pena?</text><text x="96" y="208">riesgo y alcance</text>
+      <text x="256" y="190">escribe el spec</text>
+      <text x="416" y="190">revisa el spec</text><text x="416" y="208">(riesgo medio/alto)</text>
+      <text x="576" y="190">código, tests</text><text x="576" y="208">y commits</text>
+      <text x="736" y="190">script, no agente:</text><text x="736" y="208">checks y rutas</text>
+      <text x="896" y="190">calidad + Soldado</text><text x="896" y="208">(seguridad)</text>
+      <text x="1056" y="190">aprueba o</text><text x="1056" y="208">te lo deja a ti</text>
+      <text x="1196" y="190">merge, nunca</text><text x="1196" y="208">a main</text>
+    </g>
+  </g>
+  <!-- the ant walking the path, above the Cortadora -->
+  <g transform="translate(600 18) scale(0.42)">
+    <g fill="none" stroke="#A0381A" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M56 61 L44 68 L34 85"/><path d="M62 63 L67 74 L63 89"/><path d="M68 60 L81 66 L90 82"/><path d="M88 44 L98 35 L107 40"/>
+    </g>
+    <path d="M90 56 C100 36 80 12 52 6 C50 26 64 46 90 56 Z" fill="#2F6B35"/>
+    <g fill="#A0381A"><ellipse cx="27" cy="62" rx="19" ry="15"/><circle cx="49.5" cy="60" r="4.5"/><ellipse cx="62" cy="57" rx="11" ry="7" transform="rotate(-14 62 57)"/><circle cx="83" cy="51" r="10"/></g>
+  </g>
+</svg>
