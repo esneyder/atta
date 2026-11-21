@@ -50,6 +50,7 @@ DEFAULTS = {
     "max_rounds": 3,
     "max_total_rounds": 6,
     "concurrency": 3,
+    "merge_method": "merge",
     "labels": {
         "queue": "atta",
         "needs_info": "atta:needs-info",
@@ -58,9 +59,17 @@ DEFAULTS = {
     "protected_paths": ["atta/**", ".claude/**", ".pi/**", ".github/workflows/**"],
     "prices_usd_per_mtok": {},
     "routing": DEFAULT_ROUTING,
+    # S13: the highest job risk Atta merges by itself; above it the PR waits for a human.
+    # `high` keeps today's behaviour for existing projects; `atta init` writes `none` (T13).
+    "delivery": {"auto_merge_up_to": "high"},
 }
 # Optional key, never defaulted: `models` (per-runtime tier and role overrides, S12; see
 # models.py and `atta models`).
+
+MERGE_METHODS = ("merge", "squash", "rebase")
+RISK_LEVELS = ("none", "low", "medium", "high")
+# Object sections whose missing sub-keys take the defaults (a partial `labels` is completed).
+_SECTIONS = ("labels", "delivery")
 
 
 class ConfigError(ValueError):
@@ -126,6 +135,15 @@ def validate(cfg: dict) -> dict:
         isinstance(labels.get(k), str) and labels.get(k) for k in DEFAULTS["labels"]
     ):
         raise _err("labels debe tener queue, needs_info y needs_human como textos.")
+    if cfg["merge_method"] not in MERGE_METHODS:
+        raise _err(f"merge_method «{cfg['merge_method']}» no es válido "
+                   f"(usa: {', '.join(MERGE_METHODS)}).")
+    delivery = cfg["delivery"]
+    if not isinstance(delivery, dict):
+        raise _err("delivery debe ser un objeto.")
+    if delivery.get("auto_merge_up_to") not in RISK_LEVELS:
+        raise _err(f"delivery.auto_merge_up_to «{delivery.get('auto_merge_up_to')}» no es "
+                   f"válido (usa: {', '.join(RISK_LEVELS)}).")
     prices = cfg["prices_usd_per_mtok"]
     if not isinstance(prices, dict):
         raise _err("prices_usd_per_mtok debe ser un objeto.")
@@ -155,6 +173,9 @@ def with_defaults(data: dict) -> dict:
         raise _err("debe ser un objeto JSON.")
     cfg = copy.deepcopy(DEFAULTS)
     cfg.update(copy.deepcopy(data))
+    for key in _SECTIONS:
+        if isinstance(cfg[key], dict):
+            cfg[key] = {**DEFAULTS[key], **cfg[key]}
     return validate(cfg)
 
 
