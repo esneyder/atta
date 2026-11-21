@@ -33,12 +33,19 @@ line equal to DELIM) and PowerShell here-strings (`@'...'@`, `@"..."@`) are data
 removed before the command is tokenised (`$(...)`/backticks inside an unquoted heredoc and
 `$(...)` inside `@"..."@` are still inspected). Exceptions, where the body stays in the command
 and is inspected as today: the pipeline fed by the heredoc reaches a shell (`bash/sh/zsh/...`,
-`pwsh/powershell`, `cmd`), `source`/`.`, `eval`, `xargs`, `Invoke-Expression`, or a compound
-command (`done <<EOF`); the heredoc sits inside `$(...)`, backticks or `<(...)`; the line ends
-in `|`, `&&`, `||` or `\\`; or the command contains dynamic execution anywhere (a shell,
-`eval`, `source`, `iex`, `Invoke-Command`, `[scriptblock]`, `Start-Process`, a `$var` as command
-word). An interpreter fed code through a heredoc (`python`, `python3`, `py`, `node`, `perl`,
-`ruby` with no script, or `-`/`/dev/stdin`) is denied. An unterminated heredoc is not stripped.
+`pwsh/powershell`, `cmd`), `source`/`.`, `eval`, `xargs`, `at`/`batch`, `Invoke-Expression`, a
+wrapper with no command (`exec 3<<EOF`, `sudo -s`) or a compound command (`done <<EOF`); the
+opener's logical line (continuations joined) ends in `|`, `&&`, `||` or `\\`; the command text
+before the end of the opener line (other heredoc bodies excluded) contains a construct whose
+nested quoting the scanner does not model (Bash: `${`, `$(`, backticks, `$[`, `<(`, `>(`, `((`;
+PowerShell: `$(`, `${`, backticks, `<(`, `<#`, typographic quotes), so the heredoc could be text
+for the shell; or the command contains dynamic execution anywhere (a shell, `eval`, `source`,
+`at`, `iex`, `Invoke-Command`, `[scriptblock]`, `Start-Process`, a `$var` as command word). An
+interpreter fed code through a heredoc (`python`, `python3`, `py`, `node`, `perl`, `ruby` with
+no script, or `-`/`/dev/stdin`) is denied, and so is any heredoc fed to a program that runs its
+input as commands (`ssh`, `su`, `script`, `wsl`, `busybox`, `make`, `crontab`, `php`, `lua`,
+`tclsh`, `expect`, `osascript`, `Rscript`, `nu`, `xonsh`). A `#` right after `<`/`>` starts a
+comment for the scanner (as in Bash). An unterminated heredoc is not stripped.
 
 Shell commands (Bash and PowerShell) first get their line continuations joined (`\\` + newline
 in Bash, backtick + newline in PowerShell), then are tokenised with shlex (tolerant: unbalanced
@@ -77,11 +84,14 @@ Denied:
 - deploy commands: `guard.deny_commands` in config.json (a list of command prefixes; it REPLACES
   `DEFAULT_DENY_COMMANDS`). A rule matches when the command name is equal and the remaining words
   appear in order among the arguments (`kubectl apply` matches `kubectl -n prod apply -f x`);
-- writing through `>`, `>>`, `tee`, `Out-File`, `Set-Content`, `Add-Content` or `Tee-Object` to
-  a target inside the project but outside the worktree of an active job (main checkout, job
-  control files, artifacts, other worktrees), into protected paths or into a `.git` folder;
-  targets outside the project (temp dirs) and null devices stay allowed. A destination with
-  variables (`$X`, `%X%`) cannot be checked and is denied. `cd` within the command is followed.
+- writing through `>`, `>>`, `>|`, `&>`, `2>`, `tee`, `Out-File`, `Set-Content`, `Add-Content`
+  or `Tee-Object` to a target inside the project but outside the worktree of an active job (main
+  checkout, job control files, artifacts, other worktrees), into protected paths or into a
+  `.git` folder; outside the project, to anything but the system temp folder (same roots as for
+  Write/Edit: `~/.bashrc`, `~/.profile`, the Windows Startup folder, other projects are denied).
+  Null devices (`/dev/null`, `NUL`, `$null`, `/dev/stdout`, `/dev/stderr`, `CON`) stay allowed.
+  A destination with variables (`$X`, `$HOME`, `$PROFILE`, `%X%`) cannot be checked and is
+  denied. `~` is expanded. `cd` within the command is followed.
 
 Known limits (best effort, not detected):
 - writes by other programs: `cp`, `mv`, `sed -i`, `rm`, `install`, `git apply`, hard links;
@@ -96,7 +106,11 @@ Known limits (best effort, not detected):
   (`-F query=@q.graphql`, `--input`), `gh api -X PATCH pulls/<n>` changing a PR base;
 - heavily obfuscated shell code.
 - a heredoc stored in a variable and run later without a dynamic-execution word in the same
-  command (`read X <<EOF` then, in a later call, `$X`).
+  command (`read X <<EOF` then, in a later call, `$X`); a heredoc read by a program not listed
+  above that executes data (`awk '{system($0)}'`, `sed e`, `git am`, a function or alias defined
+  in an earlier call); `bash 3<<EOF` is seen as a script named `3` (its body is still inspected,
+  since a shell is present).
+- programs that read commands from a pipe instead of a heredoc (`echo x | ssh host`).
 The Filtro (gate) still rejects any diff that touches protected paths, and branch protection on
 GitHub remains the last line. Text that merely mentions a denied command (quoted args, heredocs
 that stay inspected per the exceptions above) may be denied.
@@ -172,7 +186,15 @@ _INTERP_VALUED = {"-W", "-X", "-r", "--require"}
 _STDIN_FILES = {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
 # Command words whose presence anywhere keeps heredoc bodies inspected as commands.
 _DYNAMIC = {"eval", "source", ".", "iex", "invoke-expression", "invoke-command", "icm",
-            "start-process", "saps", "start-job", "xargs"}
+            "start-process", "saps", "start-job", "xargs", "at", "batch"}
+# Programs that run their stdin as commands: a heredoc fed to them is denied.
+STDIN_RUNNERS = {"ssh", "su", "script", "wsl", "busybox", "make", "gmake", "crontab", "php",
+                 "lua", "luajit", "tclsh", "wish", "expect", "osascript", "rscript", "nu",
+                 "xonsh"}
+# Text before the end of a heredoc opener line that the quote scanner does not model; when
+# present the heredoc body stays inspected (see module docstring).
+_FRAGILE_BASH = ("${", "$(", "`", "$[", "<(", ">(", "((")
+_FRAGILE_PS = ("$(", "${", "`", "<(", "<#") + tuple("\u2018\u2019\u201a\u201b\u201c\u201d\u201e")
 _HERE_MARK = "ATTA_HEREDOC_DATA"
 
 POSIX_SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "ash", "fish", "mksh"}
@@ -288,7 +310,7 @@ def _evaluate(hook, root, explicit, environ) -> None:
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
         raise Deny(f"Entrada del hook inválida: falta el comando de {tool}.")
-    ctx = _Ctx(root, cfg, rules, base)
+    ctx = _Ctx(root, cfg, rules, base, environ)
     check_command(command, ctx, powershell=tool == "PowerShell")
 
 
@@ -468,8 +490,9 @@ def _check_worktree_rel(rel, root: Path, cfg: dict) -> None:
 # ---------------------------------------------------------------- shell commands
 
 class _Ctx:
-    def __init__(self, root: Path, cfg: dict, rules, cwd: Path | None):
+    def __init__(self, root: Path, cfg: dict, rules, cwd: Path | None, environ=None):
         self.root, self.cfg, self.rules, self.cwd = root, cfg, rules, cwd
+        self.environ = environ
 
 
 def deny_rules(cfg: dict):
@@ -586,7 +609,7 @@ def _find_heredocs(s: str) -> list[_Doc]:
         if c in "'\"":
             state, i = c, i + 1
             continue
-        if c == "#" and (i == 0 or s[i - 1] in " \t\n;&|()"):
+        if c == "#" and (i == 0 or s[i - 1] in " \t\r\n;&|()<>"):
             nl = s.find("\n", i)
             i = n if nl == -1 else nl
             continue
@@ -662,6 +685,10 @@ def _find_herestrings(s: str) -> list[_Doc]:
         if c == "`":
             i += 2
             continue
+        if s.startswith("<#", i):  # block comment
+            k = s.find("#>", i + 2)
+            i = n if k == -1 else k + 2
+            continue
         if c == "#":
             nl = s.find("\n", i)
             i = n if nl == -1 else nl
@@ -687,6 +714,10 @@ def _find_herestrings(s: str) -> list[_Doc]:
                 continue
         if c in "'\"":
             state = c
+        elif c in "\u2018\u2019\u201a\u201b":
+            state = "'"
+        elif c in "\u201c\u201d\u201e":
+            state = '"'
         i += 1
     return docs
 
@@ -771,7 +802,8 @@ def _is_interpreter(name: str) -> bool:
 
 def _feeding(line: str, powershell: bool) -> bool:
     """True when the heredoc on `line` feeds a shell/dynamic consumer (keep it inspected).
-    Raises Deny when it feeds code to an interpreter."""
+    Raises Deny when it feeds code to an interpreter or to a program that runs its input."""
+    line = (_CONTINUATION_PS if powershell else _CONTINUATION_BASH).sub("", line)
     for stmt in _pipelines(_tokenize(line, powershell)):
         marked = [k for k, (_w, has) in enumerate(stmt) if has]
         if not marked:
@@ -783,7 +815,35 @@ def _feeding(line: str, powershell: bool) -> bool:
             if _is_interpreter(name) and _interpreter_fed(args):
                 raise Deny(f"Atta no deja pasar código a {name} por un heredoc: no puede "
                            "verificarlo. Escribe el script en un archivo y ejecútalo.")
+            if name in STDIN_RUNNERS:
+                raise Deny(f"Atta no deja pasar un heredoc a {name}: ejecutaría su contenido "
+                           "como comandos sin que Atta pueda verificarlos.")
     return False
+
+
+def _line_start(s: str, pos: int, cont: str) -> int:
+    """Start of the logical line holding `pos` (lines ending in `cont` + newline are joined)."""
+    start = s.rfind("\n", 0, pos) + 1
+    while start >= 2:
+        k = start - 2
+        if s[k] == "\r" and k >= 1:
+            k -= 1
+        if s[k] != cont:
+            break
+        start = s.rfind("\n", 0, k) + 1
+    return start
+
+
+def _skeleton(s: str, docs: list[_Doc], start: int, end: int, powershell: bool) -> str:
+    """s[start:end] without the heredoc bodies (or whole here-strings) that lie inside it."""
+    out, pos = [], start
+    for d in docs:
+        lo = d.op_start if powershell else d.body_start
+        if lo >= start and d.term_end <= end:
+            out.append(s[pos:lo])
+            pos = d.term_end
+    out.append(s[pos:end])
+    return "".join(out)
 
 
 def _strip_heredocs(command: str, ctx: "_Ctx", powershell: bool, depth: int) -> str:
@@ -798,17 +858,19 @@ def _strip_heredocs(command: str, ctx: "_Ctx", powershell: bool, depth: int) -> 
     for members in groups.values():
         first, last = docs[members[0]], docs[members[-1]]
         if powershell:
-            start = command.rfind("\n", 0, first.op_start) + 1
+            start = _line_start(command, first.op_start, "`")
             nl = command.find("\n", last.term_end)
-            line = (command[start:first.op_start] + _HERE_MARK + " "
-                    + command[last.term_end:len(command) if nl == -1 else nl])
-            prefix = command[start:first.op_start]
+            rest = command[last.term_end:len(command) if nl == -1 else nl]
+            line = command[start:first.op_start] + _HERE_MARK + " " + rest
+            context = _skeleton(command, docs, 0, first.op_start, True) + " " + rest
+            fragile = _FRAGILE_PS
         else:
-            start = command.rfind("\n", 0, first.op_start) + 1
+            start = _line_start(command, first.op_start, "\\")
             line = command[start:first.line_nl]
-            prefix = command[start:first.op_start]
+            context = _skeleton(command, docs, 0, first.line_nl, False)
+            fragile = _FRAGILE_BASH
         tail = line.rstrip()
-        if ("$(" in prefix or "`" in prefix or "<(" in prefix
+        if (any(f in context for f in fragile)
                 or tail.endswith(("|", "&&", "||", "\\", "`"))
                 or _feeding(line, powershell)):
             keep.update(members)
@@ -1111,7 +1173,7 @@ def _check_ps_writer(args: list[str], ctx: _Ctx) -> None:
 
 
 def _check_shell_target(raw: str, ctx: _Ctx) -> None:
-    """Shell write target: allowed outside the project or inside an active job worktree."""
+    """Shell write target: allowed in an active job worktree or the system temp folder."""
     text = raw.strip()
     if not text or text.lower() in _NULL_TARGETS:
         return
@@ -1125,7 +1187,11 @@ def _check_shell_target(raw: str, ctx: _Ctx) -> None:
     target = _target(text, ctx.cwd or ctx.root)
     rel = _relparts(target, ctx.root)
     if rel is None:
-        return
+        if any(_relparts(target, t) is not None for t in temp_roots(ctx.environ)):
+            return
+        raise Deny(f"Atta solo deja escribir desde la terminal dentro del worktree de un job "
+                   f"activo o en la carpeta temporal del sistema; «{raw}» queda fuera del "
+                   "proyecto y de la carpeta temporal.")
     if any(_key(p) == _key(".git") for p in rel):
         raise Deny(f"Atta no deja escribir dentro de .git desde la terminal («{raw}»).")
     in_worktree = len(rel) >= 3 and _key(rel[0]) == _key(WORKTREES_DIR)
@@ -1134,8 +1200,8 @@ def _check_shell_target(raw: str, ctx: _Ctx) -> None:
         raise Deny(f"Atta no deja escribir en la ruta protegida «{raw}» desde la terminal.")
     if not in_worktree:
         raise Deny(f"Atta solo deja escribir desde la terminal dentro del worktree de un job "
-                   f"activo (.worktrees/<id>/) o fuera del proyecto; «{raw}» queda en el "
-                   "proyecto.")
+                   f"activo (.worktrees/<id>/) o en la carpeta temporal del sistema; «{raw}» "
+                   "queda en el proyecto.")
     _check_worktree_rel(rel, ctx.root, ctx.cfg)
 
 

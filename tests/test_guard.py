@@ -343,15 +343,14 @@ class CommandTests(GuardBase):
 
         Before the T5 correction (L9, M2) this test also stood for redirects anywhere in the
         project that were not protected paths. Now a redirect that lands inside the project but
-        outside the active job worktree is denied (see ShellWriteScopeTests); only the worktree,
-        null devices and folders outside the project (temp dirs) remain allowed.
+        outside the active job worktree is denied (see ShellWriteScopeTests); outside the project
+        only the system temp folder is allowed (L19, see OutsideShellWriteTests).
         """
         for cmd, cwd in (("echo x > out.txt", self.wt), ("echo x > /dev/null", self.root),
                          ("echo x 2>&1 | tee log.txt", self.wt),
                          (f"echo x > {(self.wt / 'src' / 'a.txt').as_posix()}", self.root),
-                         (f"echo x > {(self.tmp / 'scratch.txt').as_posix()}", self.root),
-                         (f"echo x > {Path(tempfile.gettempdir()).as_posix()}/atta-x.txt",
-                          self.wt)):
+                         (f"echo x > {(self.systmp / 'scratch.txt').as_posix()}", self.root),
+                         (f"echo x > {self.systmp.as_posix()}/atta-x.txt", self.wt)):
             with self.subTest(cmd=cmd):
                 self.assertAllowed(self.bash_reason(cmd, cwd=cwd))
 
@@ -543,7 +542,7 @@ class ShellWriteScopeTests(GuardBase):
 
     def test_redirect_inside_worktree_or_outside_project_allowed(self):
         for cmd, cwd in (("echo x > src/a.txt", self.wt),
-                         (f"echo x > {(self.tmp / 'fuera.txt').as_posix()}", self.root),
+                         (f"echo x > {(self.systmp / 'fuera.txt').as_posix()}", self.root),
                          ("echo x > /dev/null", self.root)):
             with self.subTest(cmd=cmd):
                 self.assertAllowed(self.bash_reason(cmd, cwd=cwd))
@@ -553,6 +552,67 @@ class ShellWriteScopeTests(GuardBase):
     def test_expected_allow_controls(self):
         self.assertAllowed(self.bash_reason(f"git push origin atta/{JID}"))
         self.assertAllowed(self.bash_reason("gh pr create --base develop --fill"))
+
+
+class OutsideShellWriteTests(GuardBase):
+    """L19: shell writes outside the project are allowed only in the system temp folder."""
+
+    def test_outside_project_and_temp_denied(self):
+        out = self.systmp.parent / "fuera"  # real path: no 8.3 short name with «~»
+        bashrc, profile = (out / ".bashrc").as_posix(), (out / ".profile").as_posix()
+        startup = (out / "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/a.cmd")
+        cases = (
+            f"echo x > {bashrc}", f"echo x >> {bashrc}", f"echo x >| {bashrc}",
+            f"echo x &> {bashrc}", f"echo x &>> {bashrc}", f"echo x 2> {bashrc}",
+            f"echo x 2>> {bashrc}", f"echo x | tee {bashrc}", f"echo x | tee -a {bashrc}",
+            f"echo x | tee {(self.systmp / 'ok.txt').as_posix()} {bashrc}",
+            f"cat <<EOF >> {profile}\nalias ls='git push origin main'\nEOF",
+            f"cat <<'EOF' > {profile}\nx\nEOF", f'echo x > "{startup.as_posix()}"',
+            f"cd {out.as_posix()} && echo x > .bashrc",
+            f"echo x > {self.systmp.as_posix()}/../fuera.txt",
+        )
+        for cmd in cases:
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd, cwd=self.wt), "carpeta temporal")
+        for cmd in (f"'x' | Out-File {bashrc}", f"Set-Content -Path {bashrc} -Value x",
+                    f"Add-Content {bashrc} x", f"'x' | Tee-Object -FilePath {bashrc}",
+                    f"'x' > {bashrc}", f"'x' >> '{startup}'"):
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd, tool="PowerShell", cwd=self.wt),
+                                  "carpeta temporal")
+
+    def test_home_and_variable_targets_denied(self):
+        for cmd in ("echo x >> ~/.bashrc", "cat <<EOF >> ~/.profile\nx\nEOF",
+                    'tee -a "$HOME/.zshrc"', "echo x > ~/.ssh/authorized_keys",
+                    "echo x | tee -a ~/.zshrc", "echo x > %APPDATA%/x.cmd"):
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd, cwd=self.wt))
+        for cmd in ("Add-Content $PROFILE x", "'x' | Out-File $env:APPDATA\\x.cmd",
+                    "Set-Content -Path ~/.bashrc -Value x"):
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd, tool="PowerShell", cwd=self.wt))
+
+    def test_temp_null_devices_and_worktree_still_allowed(self):
+        tmp = self.systmp.as_posix()
+        for cmd in (f"echo x > {tmp}/a.txt", f"echo x >> {tmp}/sub/a.txt",
+                    f"echo x 2> {tmp}/err.log", f"echo x &> {tmp}/all.log",
+                    f"echo x | tee -a {tmp}/t.txt", f"cat <<EOF > {tmp}/r.txt\nx\nEOF",
+                    "echo x > /dev/null", "echo x 2> /dev/stderr", "echo x > /dev/stdout",
+                    "echo x > out.txt", "echo x 2>&1 | tee log.txt"):
+            with self.subTest(cmd=cmd):
+                self.assertAllowed(self.bash_reason(cmd, cwd=self.wt))
+        for cmd in (f"'x' | Out-File {tmp}/a.txt", f"Add-Content {tmp}/a.txt x",
+                    "'x' > $null", "'x' | Out-File NUL", "Set-Content a.txt x"):
+            with self.subTest(cmd=cmd):
+                self.assertAllowed(self.bash_reason(cmd, tool="PowerShell", cwd=self.wt))
+
+    def test_reason_is_spanish_and_signed(self):
+        out = io.StringIO()
+        h = self.hook("Bash", command=f"echo x >> {(self.tmp / '.bashrc').as_posix()}")
+        guard.run(json.dumps(h), out, root=self.root)
+        reason = json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("fuera del proyecto", reason)
+        self.assertTrue(reason.endswith("«Atta»"), reason)
 
 
 RUN_BODY = (
@@ -635,6 +695,64 @@ class HeredocTests(GuardBase):
             "echo '<<X'\ngh pr merge 1\nX",
             "# <<X\ngh pr merge 1\nX",
         ), cwd=self.wt)
+
+    def test_audit_hidden_execution_denied(self):
+        """L19 audit: each way to run a heredoc body as code is denied (body = git push)."""
+        push = "git push origin main"
+        self.denied_all((
+            f"cat <<EOF | sh\n{push}\nEOF",
+            f"cat <<EOF|sh\n{push}\nEOF",
+            f"cat <<'EOF' | sh -s\n{push}\nEOF",
+            f"cat <<EOF \\\n| sh\n{push}\nEOF",
+            f"<<EOF bash\n{push}\nEOF",
+            f"<<'EOF' sh\n{push}\nEOF",
+            f"bash 3<<EOF\n{push}\nEOF",
+            f"exec 3<<EOF; bash <&3\n{push}\nEOF",
+            f"exec 3<<EOF\n{push}\nEOF\nbash <&3",
+            f"while read l; do $l; done <<EOF\n{push}\nEOF",
+            f"while read -r l; do eval \"$l\"; done <<'EOF'\n{push}\nEOF",
+            f'eval "$(cat <<EOF\n{push}\nEOF\n)"',
+            f"eval \"$(cat <<'EOF'\n{push}\nEOF\n)\"",
+            f"bash <(cat <<EOF\n{push}\nEOF\n)",
+            f"source <(cat <<'EOF'\n{push}\nEOF\n)",
+            f"cat <<A | bash\ncat <<B | bash\n{push}\nB\nA",
+            f"cat <<A\nx\nA\ncat <<B | sh\n{push}\nB",
+            f"cat <<A <<B | sh\nx\nA\n{push}\nB",
+            f"cat <<EOF | sh\r\n{push}\r\nEOF\r\n",
+            f"cat <<EOF\r\nx\r\nEOF\r\n{push}\r\n",
+            f'echo "<<EOF"\n{push}\nEOF',
+            f'echo "a <<EOF b"; echo x\n{push}\nEOF',
+            # Quote/expansion contexts where bash sees no heredoc (the body runs as code).
+            f'x="${{y:-"<<EOF"}}"\n{push}\nEOF}}',
+            f'echo ${{x#<<EOF}}\n{push}\nEOF}}',
+            f'x="$(echo "\ncat <<EOF ")"\n{push}\nEOF',
+            f'x="`echo "\ncat <<EOF "`"\n{push}\nEOF',
+            f"(( \")\" \")\"\" ; cat <<EOF ))\n{push}\nEOF",
+            f"cat >#<<EOF\n{push}\nEOF",
+            f"cat <<EOF | tee >(bash)\n{push}\nEOF",
+            f"at now <<EOF\n{push}\nEOF",
+            f"batch <<EOF\n{push}\nEOF",
+            f"sudo -s <<EOF\n{push}\nEOF",
+            f"ssh localhost <<EOF\n{push}\nEOF",
+            f"su -c x <<EOF\n{push}\nEOF",
+            f"script -q <<EOF\n{push}\nEOF",
+            f"wsl <<EOF\n{push}\nEOF",
+            f"busybox sh <<EOF\n{push}\nEOF",
+            f"make -f - <<EOF\nall:\n\t{push}\nEOF",
+            f"php <<EOF\n<?php system('{push}');\nEOF",
+            f"crontab - <<EOF\n* * * * * {push}\nEOF",
+        ), cwd=self.wt)
+        # PowerShell: contexts where the here-string opener is comment or string text.
+        self.denied_all((
+            "<#\n@'\n#>\ngh pr merge 1\n'@'",
+            "echo \u201cx @'\n\u201d; gh pr merge 1\n'@'",
+            "$x = \"$(echo \"@'\n\")\"\ngh pr merge 1\n'@'",
+            "@'\ngh pr merge 1\n'@ | & pwsh -Command -",
+        ), tool="PowerShell", cwd=self.wt)
+        # Real heredoc after a quoted fake one: data, the body only feeds cat.
+        self.allowed_all((f'echo "<<EOF"; cat <<EOF\n{push}\nEOF',
+                          f"cat <<EOF\r\n{push}\r\nEOF\r\n",
+                          f"cat <<'EOF' | grep push\n{push}\nEOF"), cwd=self.wt)
 
     def test_powershell_here_strings(self):
         self.allowed_all((
