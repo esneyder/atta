@@ -26,7 +26,7 @@ Rama: `feat/f2-colonia` (apilada sobre `docs/readme-guia`, PR #3). Base de dise�
 | T3 | S3, S4 | Adaptador GitHub (`gh`) + worktree + PR + merge seguro | pendiente | — |
 | T4 | S7 | `atta next` / `atta queue` + skill `/atta` | pendiente | — |
 | T5 | S8 | `atta guard` (hook PreToolUse) | pendiente | — |
-| T6 | S5, S6 | Agentes de la colonia (plantillas) + mapeo de tiers | pendiente | — |
+| T6 | S5, S6 | Agentes de la colonia (plantillas) + mapeo de tiers | hecho (checker OK; unittest al integrar T1) | ver commit feat(templates) |
 | T7 | S9 | Sandbox `esneyder/atta-sandbox` + corrida de punta a punta | pendiente | — |
 | T8 | S1-S10 | README y docs de F2 | pendiente | — |
 
@@ -35,3 +35,4 @@ Rama: `feat/f2-colonia` (apilada sobre `docs/readme-guia`, PR #3). Base de dise�
 - **L1** (usuario): «continuemos con la fase del plan»
 - **L2** Decisiones del usuario (ask_user_question): instalación «Herramienta instalada + config por repo (recomendado)»; repo de prueba «Crear esneyder/atta-sandbox privado»; modelos «T1 Haiku · T2 Sonnet · T3 Opus»; merge «Mergea en F2 (recomendado)».
 - **L3** Orden: T1 primero (cambia imports y rutas de todo); luego T2-T6 en paralelo con superficies disjuntas; T7 al final; T8 con cada tarea.
+- **L4** T6 plantillas listas (`atta/templates/claude/agents/atta-*.md`, `models.json`, `check_templates.py` → «OK: 10 plantillas válidas.»). Requisitos para otras tareas: T2 `atta init` debe resolver `{{model:Tn}}` antes de copiar; T4 debe pasar el tier del router al lanzar reviewers (Soldado T3 en riesgo alto) y parsear la respuesta de la Exploradora entre `<<<ATTA-ARTIFACT`/`ATTA-ARTIFACT>>>`; T5 debe permitir a cada agente escribir solo su artefacto en `atta/jobs/<id>/` aunque `atta/**` esté protegido; ubicación de `feedback-*.md` por definir (T4). La regla «revisor ≠ modelo de la Cortadora» la aplica el router (F4), no el prompt.
