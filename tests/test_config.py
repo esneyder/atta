@@ -118,6 +118,41 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
             "config.json: branch_prefix debe terminar en «/».",
         )
 
+    def test_models_is_optional_and_accepts_tiers_and_roles(self):
+        self.assertNotIn("models", config.load_config(self.write({})))
+        models = {"claude-code": {"tiers": {"T2": "haiku", "T3": "claude-opus-4-1"},
+                                   "roles": {"soldado": "opus"}}}
+        self.assertEqual(config.load_config(self.write({"models": models}))["models"], models)
+
+    def test_rejects_invalid_models(self):
+        example = ('{"claude-code": {"tiers": {"T2": "haiku"}, "roles": {"soldado": "opus"}}}')
+        cases = [
+            ([], f"models debe ser un objeto por runtime, p. ej. {example}."),
+            ({"otro": {}}, "models: el runtime «otro» no existe; usa claude-code."),
+            ({"claude-code": {"tier": {}}},
+             f"models.claude-code debe ser un objeto con «tiers» y/o «roles», p. ej. {example}."),
+            ({"claude-code": {"tiers": []}}, "models.claude-code.tiers debe ser un objeto."),
+            ({"claude-code": {"tiers": {"T9": "haiku"}}},
+             "models.claude-code.tiers.T9: El tier «T9» no existe: usa T0, T1, T2 o T3."),
+            ({"claude-code": {"roles": {"obrera": "haiku"}}},
+             "models.claude-code.roles.obrera: El rol «obrera» no existe: usa exploradora, guia, "
+             "vigia, cortadora, jardinera-code, jardinera-resilience, jardinera-ux, "
+             "jardinera-ui, soldado o reina."),
+            ({"claude-code": {"roles": {"soldado": "gpt-4"}}},
+             "models.claude-code.roles.soldado: «gpt-4» no es un modelo válido para "
+             "claude-code: usa haiku, sonnet u opus, o un id completo que cumpla "
+             "claude-[a-z0-9.-]+ (p. ej. claude-sonnet-4-5)."),
+            ({"claude-code": {"tiers": {"T2": 3}}},
+             "models.claude-code.tiers.T2: «3» no es un modelo válido para claude-code: usa "
+             "haiku, sonnet u opus, o un id completo que cumpla claude-[a-z0-9.-]+ "
+             "(p. ej. claude-sonnet-4-5)."),
+        ]
+        for value, msg in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(config.ConfigError) as ctx:
+                    config.load_config(self.write({"models": value}))
+                self.assertEqual(str(ctx.exception), f"config.json: {msg}")
+
 
 if __name__ == "__main__":
     unittest.main()

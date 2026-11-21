@@ -3,11 +3,15 @@
 A pure, deterministic decision from job.json, the files in the job folder and the job worktree's
 presence; no network, no writes. It prints ONE JSON action for the `/atta` skill to execute:
 
-    {"action": "spawn", "agent": "atta-<rol>", "model": "haiku|sonnet|opus", "prompt": "..."}
+    {"action": "spawn", "agent": "atta-<rol>", "model": "<modelo>", "prompt": "..."}
     {"action": "spawn-group", "agents": [{"agent": ..., "model": ..., "prompt": ...}, ...]}
     {"action": "run", "argv": ["atta", ...]}                 (optional "then": [[...], ...])
     {"action": "wait", "reason": "..."}
     {"action": "done", "stage": "merged|rejected"}
+
+Every model comes from models.py (packaged defaults plus the project's `models` in
+atta/config.json, S12): role override, else the tier model; escalation goes to T3; the Vigía avoids
+the Guía's model.
 
 `then` lists commands to run in order after `argv` when a step has several side effects (label,
 comment, advance); the skill stops at the first one that fails, so a retry starts over.
@@ -32,12 +36,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import branches, intake, machine, project
+from . import branches, intake, machine
+from . import models as mdl
 from .store import _replace
 from .timeutil import from_iso
 
-RUNTIME = "claude-code"
-MODELS_FILE = project.TEMPLATES_DIR / "claude" / "models.json"
+RUNTIME = mdl.RUNTIME
 INTAKE_FILE = "intake.md"
 SPEC_FILE = "spec.md"
 SPEC_REVIEW_FILE = "spec-review.md"
@@ -55,8 +59,8 @@ OPEN_MARK, CLOSE_MARK = "<<<ATTA-ARTIFACT", "ATTA-ARTIFACT>>>"
 
 
 def load_models(runtime: str = RUNTIME) -> dict:
-    """Tier → model map for `runtime` from the packaged models.json."""
-    return json.loads(MODELS_FILE.read_text(encoding="utf-8"))[runtime]
+    """Tier → model map for `runtime` from the packaged models.json (no project overrides)."""
+    return mdl.default_tiers(runtime)
 
 
 # ---------------------------------------------------------------- helpers
@@ -135,8 +139,8 @@ def _reviewer_agent(name: str) -> str:
 # ---------------------------------------------------------------- the decision
 
 class _Ctx:
-    def __init__(self, job: dict, job_dir: Path, root: Path, cfg: dict, models: dict):
-        self.job, self.cfg, self.models = job, cfg, models
+    def __init__(self, job: dict, job_dir: Path, root: Path, cfg: dict, table: mdl.Table):
+        self.job, self.cfg, self.table = job, cfg, table
         self.jid = job["id"]
         self.dir = Path(job_dir).resolve()
         self.root = Path(root).resolve()
@@ -151,10 +155,23 @@ class _Ctx:
     def fresh(self, path: Path) -> bool:
         return _fresh(path, self.job)
 
+    def model(self, role: str, **how) -> str:
+        return self.table.resolve(role, **how)
 
-def decide(job: dict, job_dir: str | Path, root: str | Path, cfg: dict, models: dict) -> dict:
-    """The next action for `job` (pure: reads files, writes nothing)."""
-    c = _Ctx(job, Path(job_dir), Path(root), cfg, models)
+
+def _table(cfg: dict, models) -> mdl.Table:
+    if models is None:
+        return mdl.table(cfg)
+    if isinstance(models, mdl.Table):
+        return models
+    return mdl.Table(models)  # a bare tier map (no role overrides)
+
+
+def decide(job: dict, job_dir: str | Path, root: str | Path, cfg: dict,
+           models: "mdl.Table | dict | None" = None) -> dict:
+    """The next action for `job` (pure: reads files, writes nothing). Models resolve with the
+    project's config unless `models` (a Table or a bare tier map) is given."""
+    c = _Ctx(job, Path(job_dir), Path(root), cfg, _table(cfg, models))
     stage = job["stage"]
     if stage in machine.TERMINAL:
         return {"action": "done", "stage": stage}
@@ -167,7 +184,7 @@ def decide(job: dict, job_dir: str | Path, root: str | Path, cfg: dict, models: 
 def _intake(c: _Ctx) -> dict:
     path = c.dir / INTAKE_FILE
     if not c.fresh(path):
-        return _spawn("atta-exploradora", c.models["T1"], (
+        return _spawn("atta-exploradora", c.model("exploradora"), (
             f"{c.head()} Repository root: {c.root}. {DATA_NOTE} "
             "Decide the intake for this issue as your instructions describe. You do not write "
             f"files: reply with the full intake.md between the lines {OPEN_MARK} and "
@@ -198,7 +215,7 @@ def _spec(c: _Ctx) -> dict:
         review = c.dir / SPEC_REVIEW_FILE
         extra = (f" Fix every factual error listed in {review} (the Vigía's review of your "
                  "previous spec).") if review.exists() else ""
-        return _spawn("atta-guia", c.models["T2"], (
+        return _spawn("atta-guia", c.model("guia"), (
             f"{c.head()} Repository root: {c.root}. {DATA_NOTE} Read intake.md (binding scope) "
             f"and the real code, then write the spec to {spec} and nothing else.{extra}"))
     if c.worktree is None:
@@ -207,18 +224,10 @@ def _spec(c: _Ctx) -> dict:
     return _run("advance", c.jid, nxt)
 
 
-def _vigia_model(models: dict) -> str:
-    guia = models["T2"]
-    for tier in ("T2", "T1", "T3", "T0"):
-        if models.get(tier) and models[tier] != guia:
-            return models[tier]
-    return guia
-
-
 def _spec_review(c: _Ctx) -> dict:
     review = c.dir / SPEC_REVIEW_FILE
     if not c.fresh(review):
-        return _spawn("atta-vigia", _vigia_model(c.models), (
+        return _spawn("atta-vigia", c.table.agent_model("vigia"), (
             f"{c.head()} Repository root: {c.root}. {DATA_NOTE} Check {c.dir / SPEC_FILE} "
             f"against the real code and write your review to {review} and nothing else."))
     verdict = _first_line(review)
@@ -242,11 +251,11 @@ def _build(c: _Ctx) -> dict:
         return _run("worktree", c.jid)
     build = c.round_dir / "build.md"
     if not c.fresh(build):
-        tier = "T3" if c.job["total_rounds"] >= 2 or _risk(c.job) == "high" else "T2"
+        escalate = c.job["total_rounds"] >= 2 or _risk(c.job) == "high"
         previous = _previous_files(c)
         read = (" Before touching code, read these files from earlier rounds and human "
                 "feedback: " + ", ".join(str(p) for p in previous) + ".") if previous else ""
-        return _spawn("atta-cortadora", c.models[tier], (
+        return _spawn("atta-cortadora", c.model("cortadora", escalate=escalate), (
             f"{c.head()} Round: {c.round}. Worktree: {c.worktree}. Base: {c.base}. "
             f"Round folder: {c.round_dir}. {DATA_NOTE} Build spec.md test-first inside the "
             f"worktree and write {build} and nothing else outside it.{read}"))
@@ -269,7 +278,9 @@ def _gate(c: _Ctx) -> dict:
 
 
 def _reviewer_spawn(c: _Ctx, spec: dict, out: Path) -> dict:
-    return {"agent": _reviewer_agent(spec["reviewer"]), "model": c.models[spec["tier"]],
+    agent = _reviewer_agent(spec["reviewer"])
+    model = c.model(agent[len("atta-"):], tier=spec["tier"], escalate=spec["tier"] == "T3")
+    return {"agent": agent, "model": model,
             "prompt": (f"{c.head()} Round: {c.round}. Worktree: {c.worktree}. Base: {c.base}. "
                        f"Lenses: {', '.join(spec['lenses'])}. {DATA_NOTE} Write your review "
                        f"to {out} and nothing else.")}
@@ -307,8 +318,8 @@ def _review(c: _Ctx) -> dict:
 def _approve(c: _Ctx) -> dict:
     decision = c.dir / DECISION_FILE
     if not c.fresh(decision):
-        tier = "T3" if _risk(c.job) == "high" else "T2"
-        return _spawn("atta-reina", c.models[tier], (
+        escalate = _risk(c.job) == "high"
+        return _spawn("atta-reina", c.model("reina", escalate=escalate), (
             f"{c.head()} Worktree: {c.worktree}. Base: {c.base}. {DATA_NOTE} Read the whole "
             f"job folder and the diff, then write {decision} and nothing else. You never merge."))
     if _first_line(decision) == "APPROVE":
@@ -410,7 +421,11 @@ def cmd_save_artifact(args, cfg, jobs) -> int:
 
 def cmd_next(args, cfg, jobs) -> int:
     job = jobs.load(args.job)
-    action = decide(job, jobs.job_dir(job["id"]), Path(args.root), cfg, load_models())
+    try:
+        action = decide(job, jobs.job_dir(job["id"]), Path(args.root), cfg)
+    except mdl.ModelsError as exc:
+        print(str(exc), file=sys.stderr)
+        return REFUSED
     print(json.dumps(action, ensure_ascii=False))
     return OK
 

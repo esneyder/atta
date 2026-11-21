@@ -384,7 +384,71 @@ class RestingStagesTest(NextBase):
                 self.assertEqual(self.decide(), {"action": "done", "stage": stage})
 
 
+class ProjectModelsTest(NextBase):
+    """S12: `atta next` resolves through models.resolve with the project's `models` config."""
+
+    def use(self, **entry):
+        self.cfg = config.with_defaults({"models": {"claude-code": entry}})
+
+    def decide_cfg(self):
+        self.jobs.save(self.job)
+        return nxt.decide(self.jobs.load(JID), self.dir, self.root, self.cfg)
+
+    def test_without_models_config_uses_the_packaged_defaults(self):
+        self.assertEqual(self.decide_cfg()["model"], "haiku")
+
+    def test_role_override_reaches_the_spawn(self):
+        self.use(roles={"exploradora": "sonnet"})
+        self.assertSpawn(self.decide_cfg(), "atta-exploradora", "sonnet")
+
+    def test_tier_override_reaches_the_spawn(self):
+        self.use(tiers={"T1": "claude-haiku-4-5"})
+        self.assertEqual(self.decide_cfg()["model"], "claude-haiku-4-5")
+
+    def test_cortadora_override_still_escalates_to_t3(self):
+        self.use(roles={"cortadora": "haiku"})
+        self.routed(risk="low")
+        self.with_worktree()
+        self.job["stage"] = "build"
+        self.assertEqual(self.decide_cfg()["model"], "haiku")
+        self.job["total_rounds"] = 2
+        self.assertEqual(self.decide_cfg()["model"], "opus")
+
+    def test_vigia_avoids_the_overridden_guia(self):
+        self.use(roles={"guia": "haiku"})
+        self.routed(risk="medium", spec_review=True)
+        self.with_worktree()
+        self.job["stage"] = "spec-review"
+        self.write("spec.md", "STATUS: READY\n")
+        self.assertEqual(self.decide_cfg()["model"], "sonnet")
+
+    def test_reviewer_override_and_router_t3(self):
+        self.use(roles={"jardinera-code": "opus", "soldado": "haiku"})
+        self.routed(risk="high", reviewers=(CODE, SECURITY, UX))
+        self.with_worktree()
+        self.job.update(stage="review", pr=7)
+        got = [(a["agent"], a["model"]) for a in self.decide_cfg()["agents"]]
+        self.assertEqual(got, [("atta-jardinera-code", "opus"), ("atta-soldado", "opus"),
+                               ("atta-jardinera-ux", "haiku")])
+
+    def test_reina_override_and_escalation(self):
+        self.use(roles={"reina": "haiku"})
+        self.routed(risk="low")
+        self.with_worktree()
+        self.job.update(stage="approve", pr=7)
+        self.assertEqual(self.decide_cfg()["model"], "haiku")
+        self.routed(risk="high")
+        self.assertEqual(self.decide_cfg()["model"], "opus")
+
+
 class CommandTest(NextBase):
+    def test_next_command_emits_the_overridden_model(self):
+        self.cfg = config.with_defaults({"models": {"claude-code": {"tiers": {"T1": "sonnet"}}}})
+        self.jobs.save(self.job)
+        code, out, err = self.call("next", JID)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["model"], "sonnet")
+
     def call(self, *argv):
         parser = argparse.ArgumentParser(prog="atta")
         nxt.register(parser.add_subparsers(dest="command"))

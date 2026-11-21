@@ -8,7 +8,7 @@ import support  # noqa: F401  (adds the repo root to sys.path)
 from atta.spine import cli
 
 F2_COMMANDS = ("init", "next", "save-artifact", "guard", "queue", "start", "refresh",
-               "worktree", "publish", "comment", "label", "merge")
+               "worktree", "publish", "comment", "label", "merge", "models")
 
 
 class WiringTests(unittest.TestCase):

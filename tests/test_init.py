@@ -222,6 +222,49 @@ class ExistingFilesTest(InitBase):
         self.assertIn("ya existe, la dejé igual: atta/config.json", out)
 
 
+class ProjectModelsTest(InitBase):
+    """S12: init resolves each agent's model with the project's `models` config."""
+
+    def model_of(self, role):
+        text = self.agent(f"atta-{role}")
+        return [ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("model:")]
+
+    def test_agents_follow_the_resolution_of_atta_models(self):
+        code, _, err = self.run_init(templates=project.TEMPLATES_DIR)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.model_of("exploradora"), ["haiku"])
+        self.assertEqual(self.model_of("guia"), ["sonnet"])
+        self.assertEqual(self.model_of("vigia"), ["haiku"])  # never the Guía's model
+
+    def test_force_keeps_the_project_overrides(self):
+        cfg = self.root / "atta" / "config.json"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text(json.dumps({"models": {"claude-code": {
+            "tiers": {"T2": "haiku"}, "roles": {"soldado": "opus"}}}}), encoding="utf-8")
+        before = cfg.read_bytes()
+        self.assertEqual(self.run_init(templates=project.TEMPLATES_DIR)[0], 0)
+        (self.root / ".claude" / "agents" / "atta-guia.md").write_text("mío\n", encoding="utf-8")
+        code, _, err = self.run_init(templates=project.TEMPLATES_DIR, force=True)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.model_of("guia"), ["haiku"])
+        self.assertEqual(self.model_of("cortadora"), ["haiku"])
+        self.assertEqual(self.model_of("soldado"), ["opus"])
+        self.assertEqual(self.model_of("exploradora"), ["haiku"])
+        self.assertEqual(cfg.read_bytes(), before)
+
+    def test_invalid_models_config_exits_2_and_writes_nothing(self):
+        cfg = self.root / "atta" / "config.json"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text(json.dumps({"models": {"claude-code": {"tiers": {"T2": "gpt-4"}}}}),
+                       encoding="utf-8")
+        before = tree(self.root)
+        code, out, err = self.run_init(templates=project.TEMPLATES_DIR)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("config.json: models.claude-code.tiers.T2: «gpt-4» no es un modelo válido",
+                      err)
+        self.assertEqual(tree(self.root), before)
+
+
 class SettingsMergeTest(InitBase):
     def settings(self):
         return self.root / ".claude" / "settings.json"

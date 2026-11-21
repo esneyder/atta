@@ -465,6 +465,27 @@ independientes y `/atta` avanza uno mientras los agentes de otro trabajan.
 Opus solo entra donde hace falta. La regla «el revisor nunca usa el modelo de la Cortadora» llega con
 el ruteo de F4, y el tope del ciclo spec ⇄ spec-review con F3.
 
+**Calibrar los modelos de un proyecto** (`atta models`, sección 7.3). Las tablas de arriba son los
+valores de fábrica; cada proyecto puede cambiarlos en la clave `models` de `atta/config.json`:
+
+```json
+"models": {"claude-code": {"tiers": {"T2": "haiku"}, "roles": {"soldado": "opus"}}}
+```
+
+- `atta models set T2 haiku` cambia el modelo de un tier: todos los roles de ese tier lo usan.
+- `atta models set --role soldado opus` fija el modelo de un rol: **reemplaza** su tier (también el
+  que le asigna el router a Jardineras y Soldado).
+- La **escalada** no cambia: la Cortadora (ronda 3 o riesgo `high`), la Reina (riesgo `high`) y todo
+  reviewer con tier T3 corren con el modelo de **T3**, aunque su rol tenga un modelo propio.
+- La Vigía sigue la regla «distinta de la Guía»: si queda con el mismo modelo, sube a otro tier
+  (T2, T1, T3, T0, en ese orden).
+- Modelos válidos en `claude-code`: `haiku`, `sonnet`, `opus` o un id completo `claude-[a-z0-9.-]+`
+  (por ejemplo `claude-sonnet-4-5`).
+- `atta next`, `atta init` (también con `--force`) y `atta models` resuelven igual (`atta/spine/models.py`),
+  así que la línea `model:` de `.claude/agents/atta-*.md` y el `model` que imprime `atta next`
+  coinciden. `/atta` nunca elige un modelo: usa el que trae `atta next`.
+- `atta/config.json` es ruta protegida: solo una persona lo cambia, con `atta models`.
+
 ---
 
 ## 6. Recorrido a mano
@@ -681,6 +702,56 @@ Decide, sin red y sin escribir nada, la siguiente acción del job e imprime una 
 {"action": "spawn", "agent": "atta-exploradora", "model": "haiku", "prompt": "Job: 7-agregar-la-funcion-de. Job folder: …"}
 ```
 
+#### `models [--runtime claude-code]` · `models set <T0|T1|T2|T3> <modelo>` · `models set --role <rol> <modelo>` · `models unset --role <rol>` · `models reset`
+
+Muestra o calibra qué modelo corre cada rol en este proyecto (sección 5.4). Sin acción imprime la
+tabla; en un proyecto recién preparado:
+
+```text
+Modelos de Atta en C:\code\mi-app (runtime claude-code):
+ROL                   TIER  MODELO  ORIGEN
+exploradora           T1    haiku   tier
+guia                  T2    sonnet  tier
+vigia                 T2    haiku   regla ≠ guía
+cortadora             T2    sonnet  tier · escala a T3 (opus)
+jardinera-code        T2    sonnet  tier
+jardinera-resilience  T2    sonnet  tier
+jardinera-ux          T2    sonnet  tier
+jardinera-ui          T1    haiku   tier
+soldado               T2    sonnet  tier · escala a T3 (opus)
+reina                 T2    sonnet  tier · escala a T3 (opus)
+Tiers: T0 haiku · T1 haiku · T2 sonnet · T3 opus
+Las Jardineras y el Soldado corren en el tier que les asigna el router; un modelo por rol lo reemplaza.
+Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o `atta models set --role <rol> <modelo>`.
+— Atta
+```
+
+`ORIGEN`: `tier` (modelo del tier), `rol` (modelo propio del rol), `regla ≠ guía` (la Vigía subió de
+tier para no repetir el modelo de la Guía) y `escala a T3` (Cortadora, Soldado y Reina, cuando
+escalan). Un tier cambiado en el proyecto sale como `T2 haiku (proyecto)` en la línea `Tiers`.
+
+Cada cambio valida, escribe `atta/config.json` de forma atómica (las demás claves quedan igual y en su
+orden) y luego cambia **solo** la línea `model:` de cada `.claude/agents/atta-<rol>.md`:
+
+```text
+$ atta models set --role soldado opus
+Atta: soldado ahora usa opus en atta/config.json (claude-code).
+  actualicé: .claude/agents/atta-soldado.md → opus
+  sin cambios: 9 agentes
+Revisa la tabla con `atta models`.
+— Atta
+```
+
+`atta models set T2 haiku` cambia todos los roles de T2 (y la Vigía sube a `opus`, porque T2 y T1
+quedan en `haiku` como la Guía). `unset --role <rol>` devuelve el rol a su tier; `reset` quita la
+clave `models` y vuelve a los modelos de fábrica. Si falta un agente, lo dice («falta:
+.claude/agents/atta-reina.md; corre `atta init` para crearlo.»). Un modelo, rol o tier inválido
+sale `2` sin escribir nada, por ejemplo:
+
+```text
+«gpt-4» no es un modelo válido para claude-code: usa haiku, sonnet u opus, o un id completo que cumpla claude-[a-z0-9.-]+ (p. ej. claude-sonnet-4-5). No cambié nada.
+```
+
 #### `save-artifact <job> intake --from-reply <archivo>`
 
 Extrae el texto entre `<<<ATTA-ARTIFACT` y `ATTA-ARTIFACT>>>` de la respuesta de la Exploradora
@@ -847,6 +918,7 @@ falló.
 | `protected_paths` | `atta/**`, `.claude/**`, `.pi/**`, `.github/workflows/**` | Rutas que ningún job puede tocar. No puede estar vacía |
 | `prices_usd_per_mtok` | `{}` | Precio por millón de tokens por modelo. Sin precio, el costo queda `null` con un aviso (nunca corta) |
 | `routing` | tabla de la sección 2.6 | Reviewers, lentes y tier por riesgo y por superficie |
+| `models` | sin clave (opcional) | Modelos por tier y por rol del proyecto, por runtime. Se cambia con `atta models` (sección 5.4) |
 | `merge_method` | `"merge"` (opcional) | Método de `gh pr merge`: `merge`, `squash` o `rebase` |
 | `guard.deny_commands` | lista interna (opcional) | Comandos de despliegue que el guard bloquea. **Reemplaza** la lista por defecto (sección 14.2) |
 

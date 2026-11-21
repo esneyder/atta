@@ -2,8 +2,9 @@
 
 What it does, on the project root:
 
-- `.claude/agents/atta-*.md` from the packaged templates, with `{{model:Tn}}` resolved through
-  `templates/claude/models.json` for the runtime (S5: T1 haiku, T2 sonnet, T3 opus), and
+- `.claude/agents/atta-*.md` from the packaged templates, with `{{model:Tn}}` resolved per role by
+  models.py with the project's config (S5 defaults T1 haiku, T2 sonnet, T3 opus; S12 overrides
+  from `models` in atta/config.json survive `--force`; the Vigía avoids the Guía's model), and
   `.claude/skills/atta/SKILL.md` when that template exists.
 - `.claude/settings.json`: created from the template, or the template hooks are appended to the
   user's file when missing (idempotent; user entries are never removed or reordered).
@@ -24,18 +25,16 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
-from . import config, github, project
+from . import config, github, models, project
 
 OK, WARNING, REFUSED = 0, 1, 2
-RUNTIMES = ("claude-code",)
+RUNTIMES = models.RUNTIMES
 GH_ENV = github.ENV_VAR
 GITIGNORE_ENTRIES = ("/atta/jobs/", "/.worktrees/")
 NET_TIMEOUT_S = 60
-_MODEL_RE = re.compile(r"\{\{model:([A-Za-z0-9]+)\}\}")
 # Label key in config["labels"] → (color, description) for `gh label create`.
 LABEL_STYLE = {
     "queue": ("0e8a16", "Atta: issue en la cola de la colonia"),
@@ -62,24 +61,27 @@ def _read_json(path: Path, label: str):
                         "`atta init`; no cambié nada.") from exc
 
 
-def _models(templates: Path, runtime: str) -> dict:
-    path = templates / "claude" / "models.json"
-    table = _read_json(path, "la plantilla models.json")
-    models = table.get(runtime) if isinstance(table, dict) else None
-    if not isinstance(models, dict):
-        raise InitError(f"models.json no define el runtime «{runtime}». No cambié nada.")
-    return models
+def _table(templates: Path, runtime: str, cfg: dict | None) -> "models.Table":
+    try:
+        return models.table(cfg, runtime, templates)
+    except models.ModelsError as exc:
+        raise InitError(f"{exc} No cambié nada.") from None
 
 
-def _resolve(text: str, models: dict, name: str) -> str:
-    def sub(match: re.Match) -> str:
+def _resolve(text: str, table: "models.Table", name: str) -> str:
+    """`{{model:Tn}}` → the role's model (models.py) for a colony role, else the tier model."""
+    role = name[len("atta-"):-len(".md")] if name.endswith(".md") else ""
+
+    def sub(match) -> str:
         tier = match.group(1)
-        model = models.get(tier)
+        model = table.tiers.get(tier)
         if not isinstance(model, str) or not model:
             raise InitError(f"La plantilla {name} pide {{{{model:{tier}}}}}, que models.json no "
                             "define. No cambié nada.")
+        if role in models.ROLES and table.defaults.get(role) == tier:
+            return table.agent_model(role)
         return model
-    return _MODEL_RE.sub(sub, text)
+    return models.PLACEHOLDER.sub(sub, text)
 
 
 def _read_text(path: Path) -> str:
@@ -156,13 +158,14 @@ class _Plan:
         self.lines.append(f"{'creé' if created else 'actualicé'}: {_rel(self.root, path)}")
 
 
-def _plan(root: Path, templates: Path, runtime: str, force: bool) -> _Plan:
+def _plan(root: Path, templates: Path, runtime: str, force: bool,
+          cfg: dict | None = None) -> _Plan:
     plan = _Plan(root, force)
     claude_t = templates / "claude"
-    models = _models(templates, runtime)
+    table = _table(templates, runtime, cfg)
     agents_dst = root / ".claude" / "agents"
     for src in sorted((claude_t / "agents").glob("atta-*.md")):
-        text = _resolve(_read_text(src), models, src.name)
+        text = _resolve(_read_text(src), table, src.name)
         plan.file(agents_dst / src.name, text.encode("utf-8"), replaceable=True)
     skill = claude_t / "skills" / "atta" / "SKILL.md"
     if skill.is_file():
@@ -262,7 +265,7 @@ def run(root: str | Path, *, force: bool = False, no_github: bool = False,
     templates = Path(templates_dir) if templates_dir is not None else project.TEMPLATES_DIR
     try:
         cfg = cfg if cfg is not None else project.load_config(root)
-        plan = _plan(root, templates, runtime, force)
+        plan = _plan(root, templates, runtime, force, cfg)
         for path, data in plan.writes:
             _write(path, data)
     except InitError as exc:

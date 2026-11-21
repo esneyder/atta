@@ -59,6 +59,8 @@ DEFAULTS = {
     "prices_usd_per_mtok": {},
     "routing": DEFAULT_ROUTING,
 }
+# Optional key, never defaulted: `models` (per-runtime tier and role overrides, S12; see
+# models.py and `atta models`).
 
 
 class ConfigError(ValueError):
@@ -133,6 +135,11 @@ def validate(cfg: dict) -> dict:
             for k in ("input", "output")
         ):
             raise _err(f"prices_usd_per_mtok[«{model}»] debe tener input y output numéricos.")
+    if "models" in cfg:
+        from . import models  # lazy: models.py reads config lazily too
+        problem = models.config_error(cfg["models"])
+        if problem:
+            raise _err(problem)
     branch = cfg["integration_branch"]
     if is_forbidden_branch(branch, cfg):
         raise _err(
