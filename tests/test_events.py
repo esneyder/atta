@@ -5,7 +5,7 @@ import warnings
 import support  # noqa: F401
 from support import TempDirMixin, T0
 
-from spine import events
+from atta.spine import events
 
 
 PRICES = {"claude-sonnet": {"input": 3.0, "output": 15.0}}

@@ -1,7 +1,7 @@
 import unittest
 
 import support  # noqa: F401
-from spine import ids
+from atta.spine import ids
 
 
 class SlugTests(unittest.TestCase):

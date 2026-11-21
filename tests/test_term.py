@@ -10,7 +10,7 @@ from unittest import mock
 import support  # noqa: F401
 from support import REPO_ROOT
 
-from spine import term
+from atta.spine import term
 
 CONTRACT = json.loads((REPO_ROOT / "design" / "hormiguero" / "terminal-frames.json")
                       .read_text(encoding="utf-8"))

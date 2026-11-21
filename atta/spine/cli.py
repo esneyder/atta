@@ -1,5 +1,7 @@
-"""CLI `atta` (arquitectura §4.1): `python atta/bin/atta.py <comando>`.
+"""CLI `atta` (arquitectura §4.1): the `atta` console script, or `python atta/bin/atta.py <comando>`.
 
+It works on the project resolved by spine/project.py (`--project`, $ATTA_PROJECT, git top level
+or cwd): config and checks from `<root>/atta/`, jobs in `<root>/atta/jobs` unless `--jobs-dir`.
 F1 commands are local and deterministic (no GitHub, no network). Exit codes:
 0 ok, 1 negative verdict (the Filtro did not pass), 2 refused or usage error.
 """
@@ -10,12 +12,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import branches, config, gate, intake, issue, machine, router, store, term, voice
+from . import (branches, config, gate, intake, issue, machine, project, router, store, term,
+               voice)
 from .ids import InvalidId
 from .lock import LockTimeout, job_lock
 from .timeutil import from_iso, utcnow
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 INTAKE_FILE = "intake.md"
 OK, NEGATIVE, REFUSED = 0, 1, 2
 
@@ -97,7 +99,7 @@ def cmd_gate(args, cfg, jobs: store.JobStore) -> int:
     round_dir = jobs.job_dir(job["id"]) / f"round-{job['total_rounds'] + 1}"
     with term.ant("Filtro", "corriendo los checks"):
         try:
-            result = gate.run_gate(REPO_ROOT, Path(args.worktree), job, round_dir,
+            result = gate.run_gate(args.root, Path(args.worktree), job, round_dir,
                                    base_ref=args.base, config=cfg, kind=args.kind)
         except gate.GateError as exc:
             error = str(exc)
@@ -193,8 +195,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Atta, tu colonia de agentes: espina determinista (F1, sin GitHub).",
         epilog="Códigos de salida: 0 ok, 1 veredicto negativo, 2 rechazado o error de uso.",
     )
-    p.add_argument("--jobs-dir", default=str(store.JOBS_DIR),
-                   help="carpeta de los jobs (por defecto: atta/jobs)")
+    p.add_argument("--project", metavar="<carpeta>",
+                   help=f"raíz del proyecto (por defecto: ${project.ENV_VAR}, la raíz git de la "
+                        "carpeta actual o la carpeta actual)")
+    p.add_argument("--jobs-dir",
+                   help="carpeta de los jobs (por defecto: atta/jobs del proyecto)")
     sub = p.add_subparsers(dest="command", metavar="<comando>", required=True)
 
     c = sub.add_parser("create", help="Crea un job para un issue e imprime su id.",
@@ -247,15 +252,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    project.utf8_streams()
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else REFUSED
     try:
-        cfg = config.load_config()
-        return args.func(args, cfg, store.JobStore(args.jobs_dir))
-    except (Refusal, config.ConfigError, store.StoreError, InvalidId, machine.Refused,
+        args.root = project.find_root(args.project)
+        cfg = project.load_config(args.root)
+        jobs_dir = args.jobs_dir or project.jobs_dir(args.root)
+        return args.func(args, cfg, store.JobStore(jobs_dir))
+    except (Refusal, project.ProjectError, config.ConfigError, store.StoreError, InvalidId, machine.Refused,
             intake.IntakeError, router.RoutingError, branches.BranchRefused, LockTimeout) as exc:
         _err(str(exc))
         return REFUSED
+
+
+if __name__ == "__main__":
+    sys.exit(main())

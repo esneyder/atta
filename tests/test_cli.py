@@ -14,7 +14,7 @@ from unittest import mock
 import support  # noqa: F401
 from support import ATTA_DIR, REPO_ROOT, TempDirMixin, snapshot
 
-from spine import cli, config, gate, router
+from atta.spine import cli, config, gate, router
 
 ATTA_BIN = ATTA_DIR / "bin" / "atta.py"
 JID = "12-agregar-exportacion-a-csv"

@@ -3,7 +3,7 @@ import unittest
 import support  # noqa: F401
 from support import TempDirMixin
 
-from spine import issue
+from atta.spine import issue
 
 
 class IssueTests(TempDirMixin, unittest.TestCase):

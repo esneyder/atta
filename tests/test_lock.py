@@ -4,7 +4,7 @@ import unittest
 import support  # noqa: F401
 from support import TempDirMixin
 
-from spine import lock
+from atta.spine import lock
 
 
 class LockTests(TempDirMixin, unittest.TestCase):

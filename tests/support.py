@@ -1,4 +1,4 @@
-"""Shared helpers for spine tests: put atta/ on sys.path and build temp job stores."""
+"""Shared helpers for spine tests: put the repo root on sys.path (package `atta`) and build temp job stores."""
 
 import sys
 import tempfile
@@ -7,8 +7,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ATTA_DIR = REPO_ROOT / "atta"
-if str(ATTA_DIR) not in sys.path:
-    sys.path.insert(0, str(ATTA_DIR))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 T0 = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 

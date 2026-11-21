@@ -5,7 +5,7 @@ import warnings
 import support  # noqa: F401
 from support import TempDirMixin, T0, at, snapshot
 
-from spine import config, events, machine, store
+from atta.spine import config, events, machine, store
 
 
 class MachineTestBase(TempDirMixin, unittest.TestCase):

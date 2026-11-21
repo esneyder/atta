@@ -17,7 +17,7 @@ from pathlib import Path
 import support  # noqa: F401
 from support import TempDirMixin
 
-from spine import config, gate
+from atta.spine import config, gate
 
 GIT_ID = ["-c", "user.name=Atta Test", "-c", "user.email=atta@example.invalid",
           "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"]

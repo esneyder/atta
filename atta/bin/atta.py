@@ -1,26 +1,19 @@
-"""Entry point of the `atta` CLI: `python atta/bin/atta.py <comando>` (see spine/cli.py)."""
+"""Entry point of the `atta` CLI from a checkout: `python atta/bin/atta.py <comando>`.
+
+Installed, the same CLI is the `atta` console script (atta.spine.cli:main).
+"""
 
 import sys
 from pathlib import Path
 
-ATTA_DIR = Path(__file__).resolve().parents[1]
-if str(ATTA_DIR) not in sys.path:
-    sys.path.insert(0, str(ATTA_DIR))
+BIN_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BIN_DIR.parents[1]
+# This script is named atta.py: drop its own folder from sys.path so `import atta` finds the
+# package at the repo root, not this file.
+sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != BIN_DIR]
+sys.path.insert(0, str(REPO_ROOT))
 
-from spine import cli  # noqa: E402
-
-
-def _utf8_when_redirected() -> None:
-    # Pipes and files get UTF-8 on every OS (Windows would default to the ANSI code page and fail
-    # on «→» or «◐»). Interactive consoles keep their own encoding; term.py falls back to ASCII.
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            if not stream.isatty():
-                stream.reconfigure(encoding="utf-8")
-        except (AttributeError, ValueError, OSError):
-            pass
-
+from atta.spine import cli  # noqa: E402
 
 if __name__ == "__main__":
-    _utf8_when_redirected()
     sys.exit(cli.main(sys.argv[1:]))

@@ -4,7 +4,7 @@ import unittest
 import support  # noqa: F401  (adds atta/ to sys.path)
 from support import TempDirMixin
 
-from spine import config
+from atta.spine import config
 
 
 class ConfigTests(TempDirMixin, unittest.TestCase):
@@ -37,7 +37,7 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
         self.assertEqual(cfg["integration_branch"], "develop")
 
     def test_missing_routing_takes_default_table(self):
-        from spine import router
+        from atta.spine import router
         cfg = config.load_config(self.write({"concurrency": 1}))
         self.assertEqual(set(cfg["routing"]["risk"]), {"low", "medium", "high"})
         self.assertEqual(router.plan("low", [], cfg)["reviewers"][0]["reviewer"], "code")
