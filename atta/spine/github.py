@@ -164,6 +164,12 @@ def comment(kind: str, number: int, body: str) -> None:
     run([kind, "comment", str(int(number)), "--body-file", "-"], input=body)
 
 
+def close_issue(number: int, comment: str) -> None:
+    """Close the issue as completed with a comment. GitHub only closes issues through «Closes #n»
+    when the PR lands on the default branch; Atta integrates into develop, so it closes them."""
+    run(["issue", "close", str(int(number)), "--reason", "completed", "--comment", comment])
+
+
 def edit_label(number: int, action: str, name: str) -> None:
     flags = {"add": "--add-label", "remove": "--remove-label"}
     if action not in flags:

@@ -27,6 +27,14 @@ def intake_accepted(issue: int, risk: str) -> str:
     return f"La Exploradora aceptó el issue #{issue} (riesgo {_risk(risk)})."
 
 
+def intake_accepted_comment(issue: int, risk: str, summary: str | None = None) -> str:
+    """The Exploradora's ACCEPT comment on the issue (T11): decision, risk and the scope."""
+    text = f"{intake_accepted(issue, risk)} La Guía sigue con la spec."
+    if summary:
+        text += f"\n\nAlcance: {summary}"
+    return text
+
+
 def intake_rejected(issue: int) -> str:
     return f"La Exploradora descartó el issue #{issue} (REJECT)."
 
@@ -61,6 +69,16 @@ def reina_escalates(reason: str) -> str:
 
 def merged(pr: int, branch: str) -> str:
     return f"La Reina integró el PR #{pr} en {branch}."
+
+
+def pr_opened(pr: int, branch: str) -> str:
+    """The Cortadora's comment on the issue when `atta publish` opens the PR (T11)."""
+    return f"La Cortadora abrió el PR #{pr} contra {branch}."
+
+
+def merged_issue(pr: int, branch: str, issue: int) -> str:
+    """The Reina's closing comment on the issue after the merge (T11)."""
+    return f"La Reina mergeó el PR #{pr} a {branch}. El issue #{issue} queda resuelto."
 
 
 def for_transition(job: dict, frm: str, to: str, integration_branch: str = "develop") -> str | None:

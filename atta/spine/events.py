@@ -1,4 +1,10 @@
-"""`events.jsonl`: one JSON line per transition, plus cost computation."""
+"""`events.jsonl`: one JSON line per transition, plus cost computation.
+
+T12: when an agent did the stage being left, the event carries `model`, `tier` and `agent` (or
+`models`, a list of {agent, model, tier}, for the parallel reviewers), taken from the
+`pending_agent` that `atta next` recorded. `cost_usd` stays null: Claude Code does not report
+tokens to the spine yet; F4 reads them from the session transcripts.
+"""
 
 from __future__ import annotations
 
@@ -38,7 +44,8 @@ def cost(model: str | None, usage: dict, prices: dict) -> float | None:
 def make_event(job: str, from_stage: str, to_stage: str, duration_s: float,
                now: datetime | None = None, *, model: str | None = None,
                tier: str | None = None, tokens_in: int | None = None,
-               tokens_out: int | None = None, cost_usd: float | None = None) -> dict:
+               tokens_out: int | None = None, cost_usd: float | None = None,
+               agent: str | None = None, models: list[dict] | None = None) -> dict:
     event = {
         "ts": to_iso(now or utcnow()),
         "job": job,
@@ -46,12 +53,12 @@ def make_event(job: str, from_stage: str, to_stage: str, duration_s: float,
         "to": to_stage,
         "duration_s": duration_s,
     }
-    for key, value in (("model", model), ("tier", tier),
+    for key, value in (("model", model), ("tier", tier), ("agent", agent), ("models", models),
                        ("tokens_in", tokens_in), ("tokens_out", tokens_out)):
         if value is not None:
             event[key] = value
-    # cost_usd is explicit null when a model ran but had no price.
-    if cost_usd is not None or model is not None:
+    # cost_usd is explicit null when a model ran but had no price (or no token data).
+    if cost_usd is not None or model is not None or models is not None:
         event["cost_usd"] = cost_usd
     return event
 

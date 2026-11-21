@@ -82,13 +82,27 @@ def apply(job: dict, to: str, now: datetime) -> dict:
     return new
 
 
+def _from_pending(pending, stage: str) -> tuple:
+    """(model, tier, agent, models) from a pending_agent recorded during `stage`."""
+    if isinstance(pending, dict) and pending.get("stage") == stage:
+        return pending.get("model"), pending.get("tier"), pending.get("agent"), None
+    if isinstance(pending, list):
+        entries = [{"agent": p.get("agent"), "model": p.get("model"), "tier": p.get("tier")}
+                   for p in pending if isinstance(p, dict) and p.get("stage") == stage]
+        if entries:
+            return None, None, None, entries
+    return None, None, None, None
+
+
 def advance(store: JobStore, jid: str, to: str, *, now: datetime | None = None,
             model: str | None = None, tier: str | None = None,
             tokens_in: int | None = None, tokens_out: int | None = None,
             cost_usd: float | None = None) -> dict:
     """Move job `jid` to stage `to` under its lock; append the event, then save job.json.
 
-    Refused leaves job.json and events.jsonl untouched.
+    T12: the `pending_agent` that `atta next` recorded for the stage being left gives the event
+    its `model`, `tier` and `agent` (a list gives `models`) unless `model`/`tier` are passed;
+    it is cleared on every transition. Refused leaves job.json and events.jsonl untouched.
     """
     now = now or utcnow()
     job_dir = store.job_dir(jid)
@@ -96,12 +110,16 @@ def advance(store: JobStore, jid: str, to: str, *, now: datetime | None = None,
         job = store.load(jid)
         check(job, to)
         new = apply(job, to, now)
+        pending = new.pop("pending_agent", None)
+        agent = models = None
+        if model is None and tier is None:
+            model, tier, agent, models = _from_pending(pending, job["stage"])
         if cost_usd is not None:
             new["cost_usd"] = round((job.get("cost_usd") or 0) + cost_usd, 6)
         event = make_event(
             job["id"], job["stage"], to, seconds_between(job["stage_since"], now), now,
             model=model, tier=tier, tokens_in=tokens_in, tokens_out=tokens_out,
-            cost_usd=cost_usd,
+            cost_usd=cost_usd, agent=agent, models=models,
         )
         append_event(job_dir, event)
         store.save(new)

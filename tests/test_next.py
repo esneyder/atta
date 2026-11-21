@@ -113,7 +113,10 @@ class IntakeTest(NextBase):
     def test_decisions_after_route(self):
         intake_md = str(self.dir / "intake.md")
         cases = {
-            "ACCEPT": self.run_action("advance", JID, "spec"),
+            # T11: the Exploradora's acceptance is announced on the issue before advancing.
+            "ACCEPT": self.run_action(
+                "comment", JID, "--role", "exploradora", "--on", "issue",
+                "--voice", "intake-accepted", then=[["atta", "advance", JID, "spec"]]),
             "NEEDS-INFO": self.run_action(
                 "label", JID, "add", "atta:needs-info",
                 then=[["atta", "comment", JID, "--role", "exploradora", "--file", intake_md],
@@ -458,6 +461,83 @@ class CommandTest(NextBase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = args.func(args, self.cfg, self.jobs)
         return code, out.getvalue(), err.getvalue()
+
+    # ---- T12: telemetry of the decided model
+
+    def pending(self):
+        return self.jobs.load(JID).get("pending_agent")
+
+    def test_spawn_records_pending_agent(self):
+        self.jobs.save(self.job)
+        code, out, err = self.call("next", JID)
+        self.assertEqual((code, err), (0, ""))
+        action = json.loads(out)
+        self.assertEqual(set(action), {"action", "agent", "model", "prompt"})
+        pending = self.pending()
+        self.assertTrue(pending.pop("at").endswith("Z"))
+        self.assertEqual(pending, {"stage": "intake", "role": "exploradora",
+                                   "agent": "atta-exploradora", "model": "haiku",
+                                   "tier": "T1"})
+
+    def test_pending_agent_follows_overrides_and_escalation(self):
+        self.cfg = config.with_defaults({"models": {"claude-code": {"roles": {"cortadora": "haiku"}}}})
+        self.routed(risk="low")
+        self.with_worktree()
+        self.job["stage"] = "build"
+        self.jobs.save(self.job)
+        self.call("next", JID)
+        self.assertEqual({k: self.pending()[k] for k in ("role", "model", "tier")},
+                         {"role": "cortadora", "model": "haiku", "tier": "T2"})
+        self.job["total_rounds"] = 2
+        self.jobs.save(self.job)
+        self.call("next", JID)
+        self.assertEqual({k: self.pending()[k] for k in ("role", "model", "tier")},
+                         {"role": "cortadora", "model": "opus", "tier": "T3"})
+
+    def test_spawn_group_records_a_list_and_keeps_finished_reviewers(self):
+        self.routed(risk="high", reviewers=(CODE, SECURITY))
+        self.with_worktree()
+        self.job.update(stage="review", pr=7)
+        self.jobs.save(self.job)
+        self.call("next", JID)
+        got = [{k: e[k] for k in ("stage", "role", "agent", "model", "tier")}
+               for e in self.pending()]
+        self.assertEqual(got, [
+            {"stage": "review", "role": "jardinera-code", "agent": "atta-jardinera-code",
+             "model": "sonnet", "tier": "T2"},
+            {"stage": "review", "role": "soldado", "agent": "atta-soldado", "model": "opus",
+             "tier": "T3"}])
+        # The code reviewer finished; only the Soldado is spawned again. Both stay recorded.
+        self.write("round-1/review-code.md", PASS)
+        code, out, _ = self.call("next", JID)
+        self.assertEqual([a["agent"] for a in json.loads(out)["agents"]], ["atta-soldado"])
+        self.assertEqual([e["agent"] for e in self.pending()],
+                         ["atta-jardinera-code", "atta-soldado"])
+
+    def test_vigia_tier_is_the_tier_of_its_model(self):
+        self.routed(risk="medium", spec_review=True)
+        self.with_worktree()
+        self.job["stage"] = "spec-review"
+        self.write("spec.md", "STATUS: READY\n")
+        self.jobs.save(self.job)
+        code, out, _ = self.call("next", JID)
+        pending = self.pending()
+        self.assertEqual((pending["role"], pending["model"]), ("vigia", json.loads(out)["model"]))
+        self.assertEqual(nxt.mdl.table(self.cfg).tier_model(pending["tier"]), pending["model"])
+
+    def test_non_spawn_action_writes_nothing(self):
+        self.write("intake.md", INTAKE.format(d="ACCEPT", r="low"))
+        self.jobs.save(self.job)
+        before = (self.dir / "job.json").read_bytes()
+        code, out, _ = self.call("next", JID)
+        self.assertEqual(json.loads(out)["argv"], ["atta", "route", JID])
+        self.assertEqual((self.dir / "job.json").read_bytes(), before)
+
+    def test_decide_stays_pure(self):
+        self.jobs.save(self.job)
+        before = (self.dir / "job.json").read_bytes()
+        self.assertEqual(self.decide()["agent"], "atta-exploradora")
+        self.assertEqual((self.dir / "job.json").read_bytes(), before)
 
     def test_next_prints_one_json_line(self):
         self.jobs.save(self.job)

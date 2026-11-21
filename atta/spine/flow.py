@@ -10,6 +10,13 @@ Branch policy (arquitectura §12, D3): every push goes through branches.check_pu
 explicit `refs/heads/<b>:refs/heads/<b>` refspec and never `--force`; every PR create/merge goes
 through branches.check_pr_base with the PR's real `baseRefName`; `gh pr merge` uses
 `--match-head-commit` with the sha that passed `merge-checks` after syncing with develop.
+
+Closing the loop on GitHub (T11): `publish` announces a new PR on the issue (Cortadora), and a
+successful `merge` closes the issue with the Reina's comment (GitHub only honours «Closes #n» on
+the default branch), removes the queue label, deletes the remote `atta/<id>` through
+`delete_remote_branch` (the one deletion Atta runs; agents never can, the guard denies it) and
+removes the local worktree and branch when clean. Those post-merge steps only warn: the merge
+already happened, so they exit 0 and are listed under `## Avisos` in merge.md.
 """
 
 from __future__ import annotations
@@ -21,7 +28,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import branches, gate, github, issue, machine, voice
+from . import branches, gate, github, intake, issue, machine, voice
+from .board import summary as artifact_summary
 from .github import GhError
 from .ids import InvalidId
 from .lock import LockTimeout, job_lock
@@ -80,6 +88,16 @@ def _push(worktree: Path, branch: str, cfg: dict) -> None:
     """Push `branch` to origin under the branch policy: explicit refspec, never forced."""
     branches.check_push_target(branch, cfg)
     git(worktree, "push", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
+
+
+def delete_remote_branch(cwd, jid: str, branch: str, cfg: dict) -> None:
+    """Delete origin's `atta/<jid>` after its merge: only this job's work branch, never the
+    integration or a forbidden branch (same policy as a push), by its full ref."""
+    expected = branches.work_branch(jid, cfg)
+    if branch != expected:
+        raise FlowError(f"La rama {branch} no es la rama de trabajo de {jid}; no la borro.")
+    branches.check_push_target(branch, cfg)
+    git(cwd, "push", "origin", "--delete", f"refs/heads/{branch}")
 
 
 # ---------------------------------------------------------------- job helpers
@@ -337,18 +355,57 @@ def cmd_publish(args, cfg, jobs: JobStore) -> int:
             raise FlowError(_fork_message(pr.get("number")))
         branches.check_pr_base(pr.get("baseRefName") or "", cfg)
         message = f"PR #{pr['number']} abierto en borrador contra {integration}: {pr['url']}"
+        opened = True
     else:
         message = f"PR #{pr['number']} ya existe contra {integration}: {pr['url']}"
+        opened = False
     _update(jobs, jid, pr=int(pr["number"]), pr_url=pr["url"])
     print(message)
+    if opened:
+        try:
+            github.comment("issue", job["issue"], github.sign(
+                "cortadora", voice.pr_opened(int(pr["number"]), integration)))
+        except GhError as exc:
+            _err(f"Aviso: no se pudo comentar en el issue #{job['issue']}: {exc}")
     return OK
 
 
 # ---------------------------------------------------------------- comment / label
 
+def _intake_accepted_text(job: dict, jobs: JobStore) -> str:
+    """The Exploradora's ACCEPT comment, built from intake.md (risk and `## Summary`)."""
+    path = jobs.job_dir(job["id"]) / "intake.md"
+    try:
+        header = intake.parse_file(path)
+    except intake.IntakeError as exc:
+        raise FlowError(str(exc)) from None
+    if header["decision"] != "ACCEPT":
+        raise FlowError(f"intake.md de {job['id']} no es ACCEPT ({header['decision']}): no "
+                        "publico la aceptación.")
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return voice.intake_accepted_comment(job["issue"], header["risk"], artifact_summary(text))
+
+
+VOICES = {"intake-accepted": _intake_accepted_text}
+
+
 def cmd_comment(args, cfg, jobs: JobStore) -> int:
     job = jobs.load(args.job)
-    path = Path(args.file)
+    if args.voice:
+        text = VOICES[args.voice](job, jobs)
+    else:
+        text = _read_comment_file(Path(args.file))
+    body = github.sign(args.role, text)
+    target = args.on or ("pr" if job.get("pr") else "issue")
+    number = job.get("pr") if target == "pr" else job["issue"]
+    if not number:
+        raise FlowError(f"El job {job['id']} no tiene PR todavía.")
+    github.comment(target, number, body)
+    print(f"Comentario publicado en el {'PR' if target == 'pr' else 'issue'} #{number}.")
+    return OK
+
+
+def _read_comment_file(path: Path) -> str:
     try:
         raw = path.read_bytes()
     except OSError as exc:
@@ -363,14 +420,7 @@ def cmd_comment(args, cfg, jobs: JobStore) -> int:
                         "Set-Content -Encoding utf8).") from None
     if not text.strip():
         raise FlowError(f"{path} está vacío: no se publica un comentario vacío.")
-    body = github.sign(args.role, text)
-    target = args.on or ("pr" if job.get("pr") else "issue")
-    number = job.get("pr") if target == "pr" else job["issue"]
-    if not number:
-        raise FlowError(f"El job {job['id']} no tiene PR todavía.")
-    github.comment(target, number, body)
-    print(f"Comentario publicado en el {'PR' if target == 'pr' else 'issue'} #{number}.")
-    return OK
+    return text
 
 
 def cmd_label(args, cfg, jobs: JobStore) -> int:
@@ -414,11 +464,14 @@ def _check_pr(pr: dict, branch: str, cfg: dict) -> None:
         raise _MergeFailure(f"El PR #{pr.get('number')} no está abierto ({pr.get('state')}).")
 
 
-def _write_merge_md(job_dir: Path, verdict: str, summary: str, commit: str | None = None) -> None:
+def _write_merge_md(job_dir: Path, verdict: str, summary: str, commit: str | None = None,
+                    warnings: list[str] | None = None) -> None:
     lines = [f"MERGE: {verdict}"]
     if commit:
         lines.append(f"COMMIT: {commit}")
     lines += ["", "## Summary", "", summary, ""]
+    if warnings:
+        lines += ["## Avisos", "", *(f"- {w}" for w in warnings), ""]
     with open(job_dir / MERGE_FILE, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(lines))
 
@@ -494,6 +547,53 @@ def _sync_gate_push(args, cfg, jobs: JobStore, job: dict, wt: Path) -> str:
     return result.commit
 
 
+def _remove_local(root, wt: Path, branch: str, sha: str) -> list[str]:
+    """Remove the job's worktree and local branch when clean; warnings otherwise."""
+    status = git(wt, "status", "--porcelain", check=False)
+    if status.returncode != 0:
+        detail = (status.stderr or status.stdout).strip()
+        return [f"No se pudo revisar el worktree {wt}: {detail}; lo dejé."]
+    if status.stdout.strip():
+        return [f"El worktree {wt} tiene cambios sin commitear: lo dejé, junto con la rama "
+                f"local {branch}."]
+    try:
+        git(root, "worktree", "remove", str(wt))
+    except FlowError as exc:
+        return [f"No se pudo quitar el worktree {wt}: {exc}"]
+    # `git branch -d` compares with the local HEAD, which is behind origin/<integration>; the
+    # proof here is stronger: the branch still points at the exact sha GitHub merged.
+    tip = git(root, "rev-parse", "--verify", "-q", f"refs/heads/{branch}", check=False)
+    if tip.stdout.strip() != sha:
+        return [f"La rama local {branch} ya no apunta al commit mergeado ({sha}); la dejé."]
+    try:
+        git(root, "branch", "-D", branch)
+    except FlowError as exc:
+        return [f"No se pudo borrar la rama local {branch}: {exc}"]
+    return []
+
+
+def _after_merge(args, cfg, job: dict, wt: Path, sha: str) -> list[str]:
+    """Close the loop on GitHub after a merge (T11); every failure is a warning."""
+    warnings: list[str] = []
+    number, pr, branch = job["issue"], job["pr"], job["branch"]
+    integration, queue = cfg["integration_branch"], cfg["labels"]["queue"]
+    try:
+        github.close_issue(number, github.sign("reina", voice.merged_issue(pr, integration,
+                                                                          number)))
+    except GhError as exc:
+        warnings.append(f"No se pudo cerrar el issue #{number}: {exc}")
+    try:
+        github.edit_label(number, "remove", queue)
+    except GhError as exc:
+        warnings.append(f"No se pudo quitar la label {queue} del issue #{number}: {exc}")
+    try:
+        delete_remote_branch(args.root, job["id"], branch, cfg)
+    except (FlowError, branches.BranchRefused) as exc:
+        warnings.append(f"No se pudo borrar la rama remota {branch}: {exc}")
+    warnings += _remove_local(args.root, wt, branch, sha)
+    return warnings
+
+
 def cmd_merge(args, cfg, jobs: JobStore) -> int:
     job = jobs.load(args.job)
     jid = job["id"]
@@ -534,8 +634,13 @@ def cmd_merge(args, cfg, jobs: JobStore) -> int:
         return _escalate(jobs, job, str(exc), NEGATIVE, cfg)
     line = voice.merged(number, integration)
     _write_merge_md(jobs.job_dir(jid), "DONE", line, sha)
-    machine.advance(jobs, jid, "merged")
+    job = machine.advance(jobs, jid, "merged")
     print(line)
+    warnings = _after_merge(args, cfg, job, wt, sha)
+    if warnings:
+        _write_merge_md(jobs.job_dir(jid), "DONE", line, sha, warnings)
+        for warning in warnings:
+            _err(f"Aviso: {warning}")
     return OK
 
 
@@ -600,11 +705,16 @@ def register(subparsers) -> None:
     p.set_defaults(func=_guarded(cmd_publish))
 
     c = subparsers.add_parser("comment", help="Comenta en el issue o PR, firmado por un rol.",
-                              description="Publica el archivo como comentario con el marcador "
+                              description="Publica el archivo (o un texto de la espina con "
+                                          "--voice) como comentario con el marcador "
                                           f"{github.MARKER} y la firma del rol.")
     c.add_argument("job", help="id del job")
     c.add_argument("--role", required=True, help="rol que firma: " + ", ".join(github.ROLES))
-    c.add_argument("--file", required=True, help="archivo UTF-8 con el texto (no vacío)")
+    text = c.add_mutually_exclusive_group(required=True)
+    text.add_argument("--file", help="archivo UTF-8 con el texto (no vacío)")
+    text.add_argument("--voice", choices=tuple(VOICES),
+                      help="texto que arma la espina: intake-accepted (aceptación de la "
+                           "Exploradora con el riesgo y el ## Summary de intake.md)")
     c.add_argument("--on", choices=("issue", "pr"),
                    help="dónde comentar (por defecto: el PR si existe, si no el issue)")
     c.set_defaults(func=_guarded(cmd_comment))
@@ -622,7 +732,10 @@ def register(subparsers) -> None:
                                           "origin/<integración> en el worktree, corre el Filtro "
                                           "merge-checks, empuja, verifica la base del PR y usa "
                                           "gh pr merge --match-head-commit. Cualquier fallo deja "
-                                          "el job en needs-human con el motivo. Sale 0 si "
+                                          "el job en needs-human con el motivo. Tras el merge "
+                                          "cierra el issue, quita la label de la cola y borra "
+                                          "la rama atta/<id> (remota y local) y el worktree si "
+                                          "está limpio; esos pasos solo avisan. Sale 0 si "
                                           "mergea, 1 si no pasó, 2 si se rechaza.")
     m.add_argument("job", help="id del job")
     m.set_defaults(func=_guarded(cmd_merge))

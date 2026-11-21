@@ -149,8 +149,15 @@ class FlowBase(FakeGhMixin, unittest.TestCase):
         git(self.wt(), "commit", "-q", "-m", "feature")
         return git(self.wt(), "rev-parse", "HEAD")
 
+    # T11: the only deletions Atta runs, after a successful merge, inside `atta merge`.
+    def allowed_deletions(self):
+        return (["push", "origin", "--delete", f"refs/heads/{BRANCH}"],
+                ["branch", "-D", BRANCH])
+
     def assert_never_forced(self):
         for args in self.git_calls:
+            if args in self.allowed_deletions():
+                continue
             self.assertFalse({"-f", "--force", "--force-with-lease", "--force-if-includes",
                               "--mirror", "--delete", "-d"} & set(args), args)
             if args and args[0] == "push":
@@ -552,6 +559,35 @@ class PublishTests(FlowBase):
                          ["push", "origin", f"refs/heads/{BRANCH}:refs/heads/{BRANCH}"])
         self.assert_never_forced()
 
+    def issue_comments(self):
+        return [c for c in self.state().get("comments", []) if c["on"] == "issue"]
+
+    def test_new_pr_is_announced_on_the_issue_once(self):
+        # T11: the Cortadora signs a comment on the issue when she opens the PR.
+        self.commit_in_wt()
+        self.ok("publish", JID)
+        self.assertEqual(self.issue_comments(), [{
+            "on": "issue", "number": "12",
+            "body": "<!-- atta -->\nLa Cortadora abrió el PR #101 contra develop.\n\n"
+                    "— La Cortadora · Atta\n"}])
+        self.assertEqual(self.gh_by("issue", "comment"),
+                         [["issue", "comment", "12", "--body-file", "-"]])
+        self.ok("publish", JID)
+        self.assertEqual(len(self.issue_comments()), 1)
+
+    def test_failed_issue_comment_after_opening_the_pr_is_a_warning(self):
+        st = self.state()
+        st["fail"] = {"issue comment": "boom"}
+        self.write_state(st)
+        self.commit_in_wt()
+        code, out, err = self.run_cmd("publish", JID)
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "PR #101 abierto en borrador contra develop: "
+                              "https://github.com/o/r/pull/101\n")
+        self.assertEqual(err, "Aviso: no se pudo comentar en el issue #12: gh issue comment "
+                              "falló: boom\n")
+        self.assertEqual(self.job()["pr"], 101)
+
     def test_existing_pr_against_main_is_refused(self):
         st = self.state()
         st["prs"] = [{"number": 7, "url": "https://github.com/o/r/pull/7", "state": "OPEN",
@@ -636,6 +672,61 @@ class CommentLabelTests(FlowBase):
         self.assertEqual(self.state()["calls"][-1]["stdin"],
                          "<!-- atta -->\nListo.\n\n— La Reina · Atta\n")
 
+    def write_intake(self, text):
+        write(self.store.job_dir(JID) / "intake.md", text)
+
+    def test_intake_accepted_voice_comment_on_issue(self):
+        # T11: the ACCEPT comment is built by the spine from intake.md (risk + ## Summary).
+        self.set_job(pr=101)  # --on issue wins over the PR default
+        self.write_intake("DECISION: ACCEPT\nRISK: medium\nSURFACES: none\n\n## Summary\n\n"
+                          "Exportar pedidos\na CSV.\n\n## Plan\n\nNo va.\n")
+        out = self.ok("comment", JID, "--role", "exploradora", "--on", "issue",
+                      "--voice", "intake-accepted")
+        self.assertEqual(out, "Comentario publicado en el issue #12.\n")
+        call = self.state()["calls"][-1]
+        self.assertEqual(call["argv"], ["issue", "comment", "12", "--body-file", "-"])
+        self.assertEqual(call["stdin"],
+                         "<!-- atta -->\nLa Exploradora aceptó el issue #12 (riesgo medio). "
+                         "La Guía sigue con la spec.\n\nAlcance: Exportar pedidos a CSV.\n\n"
+                         "— La Exploradora · Atta\n")
+
+    def test_intake_accepted_voice_without_summary_has_no_scope_line(self):
+        self.write_intake("DECISION: ACCEPT\nRISK: low\nSURFACES: none\n")
+        self.ok("comment", JID, "--role", "exploradora", "--voice", "intake-accepted")
+        self.assertEqual(self.state()["calls"][-1]["stdin"],
+                         "<!-- atta -->\nLa Exploradora aceptó el issue #12 (riesgo bajo). "
+                         "La Guía sigue con la spec.\n\n— La Exploradora · Atta\n")
+
+    def test_intake_accepted_voice_refused_without_an_accepted_intake(self):
+        cases = {
+            "sin intake": (None, "intake.md"),
+            "no ACCEPT": ("DECISION: REJECT\nRISK: low\nSURFACES: none\n",
+                          f"intake.md de {JID} no es ACCEPT (REJECT): no publico la "
+                          "aceptación.\n"),
+        }
+        for name, (text, needle) in cases.items():
+            with self.subTest(name):
+                path = self.store.job_dir(JID) / "intake.md"
+                path.unlink(missing_ok=True)
+                if text is not None:
+                    self.write_intake(text)
+                calls = len(self.gh_calls())
+                code, out, err = self.run_cmd("comment", JID, "--role", "exploradora",
+                                              "--voice", "intake-accepted")
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(needle, err)
+                self.assertEqual(len(self.gh_calls()), calls)
+                self.assertNotIn("comments", self.state())
+
+    def test_file_and_voice_are_mutually_exclusive_and_one_is_required(self):
+        note = self.tmp / "nota.md"
+        write(note, "x")
+        for argv in (["--file", str(note), "--voice", "intake-accepted"], []):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.run_cmd("comment", JID, "--role", "reina", *argv)
+        self.assertEqual(self.gh_calls()[2:], [])
+
     def test_label_add_and_remove_on_issue(self):
         self.assertEqual(self.ok("label", JID, "add", "atta:needs-info"),
                          "Label atta:needs-info agregada al issue #12.\n")
@@ -684,10 +775,14 @@ class MergeTests(FlowBase):
         self.push_to_develop("src/otro.py", "y = 2\n")
         code, out, err = self.merge()
         self.assertEqual((code, err), (0, ""), out)
-        sha = git(self.wt(), "rev-parse", "HEAD")
-        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), sha)
+        # T11: the worktree and atta/<id> are gone after the merge; the sha is the one gh merged
+        # (tied to the Filtro by merge-checks.md below) and it reached origin.
+        sha = self.gh_by("pr", "merge")[0][-1]
+        git(self.origin, "cat-file", "-e", sha + "^{commit}")
+        self.assertIn(["push", "origin", f"refs/heads/{BRANCH}:refs/heads/{BRANCH}"],
+                      self.pushes())
         # The synced commit contains the new develop.
-        git(self.wt(), "merge-base", "--is-ancestor", self.origin_sha("develop"), sha)
+        git(self.root, "merge-base", "--is-ancestor", self.origin_sha("develop"), sha)
         self.assertEqual(self.gh_by("pr", "merge"),
                          [["pr", "merge", "101", "--merge", "--match-head-commit", sha]])
         calls = self.gh_calls()
@@ -702,11 +797,109 @@ class MergeTests(FlowBase):
                         .startswith("MERGE: DONE\n"))
         self.assert_never_forced()
 
+    def test_after_merge_closes_issue_drops_label_and_deletes_branches(self):
+        # T11 (L20): GitHub does not close the issue on a non-default branch; Atta does.
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        sha = self.gh_by("pr", "merge")[0][-1]
+        closing = ("<!-- atta -->\nLa Reina mergeó el PR #101 a develop. El issue #12 queda "
+                   "resuelto.\n\n— La Reina · Atta\n")
+        self.assertEqual(self.gh_by("issue", "close"),
+                         [["issue", "close", "12", "--reason", "completed", "--comment",
+                           closing]])
+        it = self.state()["issues"]["12"]
+        self.assertEqual(it["state"], "CLOSED")
+        self.assertEqual([lb["name"] for lb in it["labels"]], [])
+        self.assertIn(["issue", "edit", "12", "--remove-label", "atta"], self.gh_calls())
+        calls = self.gh_calls()
+        self.assertLess(calls.index(["pr", "merge", "101", "--merge", "--match-head-commit",
+                                     sha]), calls.index(self.gh_by("issue", "close")[0]))
+        # Remote work branch deleted through the one dedicated call; develop untouched.
+        self.assertIn(["push", "origin", "--delete", f"refs/heads/{BRANCH}"], self.git_calls)
+        refs = git(self.origin, "for-each-ref", "--format=%(refname)", "refs/heads").split()
+        self.assertEqual(sorted(refs), ["refs/heads/develop", "refs/heads/main"])
+        # Local worktree and branch removed.
+        self.assertFalse(self.wt().exists())
+        self.assertIn(["worktree", "remove", str(self.wt())], self.git_calls)
+        local = git(self.root, "for-each-ref", "--format=%(refname)", f"refs/heads/{BRANCH}")
+        self.assertEqual(local, "")
+        merge_md = (self.store.job_dir(JID) / "merge.md").read_text(encoding="utf-8")
+        self.assertEqual(merge_md, f"MERGE: DONE\nCOMMIT: {sha}\n\n## Summary\n\n"
+                                   "La Reina integró el PR #101 en develop.\n")
+        self.assertEqual(out, "La Reina aprobó el PR #101 (APPROVE).\n"
+                              "La Reina integró el PR #101 en develop.\n")
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assert_never_forced()
+
+    def test_post_merge_failures_are_warnings_recorded_in_merge_md(self):
+        st = self.state()
+        st["fail"] = {"issue close": "cerrar falló", "issue edit": "label falló"}
+        self.write_state(st)
+        real = flow.git
+
+        def no_remote_delete(cwd, *args, **kw):
+            if args[:3] == ("push", "origin", "--delete"):
+                self.git_calls.append(list(args))
+                raise flow.FlowError("git push falló: remoto caído")
+            return real(cwd, *args, **kw)
+
+        with mock.patch.object(flow, "git", side_effect=no_remote_delete):
+            code, out, err = self.merge()
+        self.assertEqual(code, 0)
+        warnings = [
+            "No se pudo cerrar el issue #12: gh issue close falló: cerrar falló",
+            "No se pudo quitar la label atta del issue #12: gh issue edit falló: label falló",
+            f"No se pudo borrar la rama remota {BRANCH}: git push falló: remoto caído",
+        ]
+        self.assertEqual(err, "".join(f"Aviso: {w}\n" for w in warnings))
+        self.assertEqual(self.job()["stage"], "merged")
+        merge_md = (self.store.job_dir(JID) / "merge.md").read_text(encoding="utf-8")
+        self.assertTrue(merge_md.startswith("MERGE: DONE\nCOMMIT: "), merge_md)
+        self.assertTrue(merge_md.endswith("## Avisos\n\n" + "".join(f"- {w}\n" for w in warnings)),
+                        merge_md)
+        # The local cleanup still ran.
+        self.assertFalse(self.wt().exists())
+
+    def test_dirty_worktree_is_kept_after_merge(self):
+        real_merge = flow.github.merge_pr
+
+        def merge_then_dirty(*a, **kw):
+            real_merge(*a, **kw)
+            write(self.wt() / "notas.txt", "sin commitear\n")
+
+        with mock.patch.object(flow.github, "merge_pr", side_effect=merge_then_dirty):
+            code, out, err = self.merge()
+        self.assertEqual(code, 0)
+        warning = (f"El worktree {self.wt()} tiene cambios sin commitear: lo dejé, junto con la "
+                   f"rama local {BRANCH}.")
+        self.assertEqual(err, f"Aviso: {warning}\n")
+        self.assertTrue((self.wt() / "notas.txt").exists())
+        self.assertEqual(git(self.root, "for-each-ref", "--format=%(refname)",
+                             f"refs/heads/{BRANCH}"), f"refs/heads/{BRANCH}")
+        self.assertFalse(any(c[:2] == ["worktree", "remove"] for c in self.git_calls))
+        self.assertIn(f"- {warning}\n", (self.store.job_dir(JID) / "merge.md")
+                      .read_text(encoding="utf-8"))
+        # The remote branch is still deleted and the issue closed.
+        self.assertIn(["push", "origin", "--delete", f"refs/heads/{BRANCH}"], self.git_calls)
+        self.assertEqual(self.state()["issues"]["12"]["state"], "CLOSED")
+
+    def test_failed_merge_does_not_close_or_delete_anything(self):
+        st = self.state()
+        st["fail"] = {"pr merge": "Head branch was modified"}
+        self.write_state(st)
+        self.assertEqual(self.merge()[0], 1)
+        self.assertEqual(self.gh_by("issue", "close"), [])
+        self.assertNotIn(["issue", "edit", "12", "--remove-label", "atta"], self.gh_calls())
+        self.assertFalse(any("--delete" in c or c[:2] == ["worktree", "remove"]
+                             for c in self.git_calls))
+        self.assertTrue(self.wt().is_dir())
+
     def test_merge_method_from_config(self):
         cfg = config.with_defaults({"merge_method": "squash"})
         code, out, err = self.merge(cfg)
         self.assertEqual((code, err), (0, ""), out)
-        sha = git(self.wt(), "rev-parse", "HEAD")
+        report = (self.store.job_dir(JID) / "round-1" / "merge-checks.md").read_text(encoding="utf-8")
+        sha = report.splitlines()[1].removeprefix("COMMIT: ")
         self.assertEqual(self.gh_by("pr", "merge"),
                          [["pr", "merge", "101", "--squash", "--match-head-commit", sha]])
 
@@ -840,6 +1033,33 @@ class MergeTests(FlowBase):
         code, out, err = self.merge()
         self.assertEqual((code, err), (2, FORK.format(n=101) + "\n"))
         self.assert_needs_human(FORK.format(n=101))
+
+
+class RemoteBranchDeletionTests(FlowBase):
+    """T11: the dedicated deletion only accepts this job's atta/<id>."""
+
+    def test_only_the_jobs_work_branch_can_be_deleted(self):
+        cases = {
+            "develop": "La rama develop no es la rama de trabajo de " + JID + "; no la borro.",
+            "main": "La rama main no es la rama de trabajo de " + JID + "; no la borro.",
+            "atta/99-otro": "La rama atta/99-otro no es la rama de trabajo de " + JID
+                            + "; no la borro.",
+            "refs/heads/" + BRANCH: "La rama refs/heads/" + BRANCH
+                                    + " no es la rama de trabajo de " + JID + "; no la borro.",
+        }
+        for branch, message in cases.items():
+            with self.subTest(branch=branch):
+                with self.assertRaises(flow.FlowError) as ctx:
+                    flow.delete_remote_branch(self.root, JID, branch, self.cfg)
+                self.assertEqual(str(ctx.exception), message)
+        self.assertEqual(self.git_calls, [])
+
+    def test_forbidden_work_branch_prefix_is_refused(self):
+        cfg = config.with_defaults({"branch_prefix": "atta/", "forbidden_branches":
+                                    ["main", "master", f"atta/{JID}"]})
+        with self.assertRaises(flow.branches.BranchRefused):
+            flow.delete_remote_branch(self.root, JID, BRANCH, cfg)
+        self.assertEqual(self.git_calls, [])
 
 
 class CliDescriptionTests(unittest.TestCase):

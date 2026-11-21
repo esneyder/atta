@@ -169,5 +169,69 @@ class StoredEventsJsonTests(MachineTestBase):
         self.assertEqual([json.loads(l)["job"] for l in lines], [self.jid, self.jid])
 
 
+
+class PendingAgentTests(MachineTestBase):
+    """T12: the model `atta next` decided for a stage lands on the event that leaves it."""
+
+    def set_pending(self, pending):
+        job = self.store.load(self.jid)
+        job["pending_agent"] = pending
+        self.store.save(job)
+
+    def test_event_gets_model_tier_and_agent_then_pending_is_cleared(self):
+        self.set_pending({"stage": "intake", "role": "exploradora", "agent": "atta-exploradora",
+                          "model": "haiku", "tier": "T1", "at": "2025-01-01T12:00:01Z"})
+        job = self.go("spec")
+        ev = events.read_events(self.dir)[-1]
+        self.assertEqual(ev, {"ts": "2025-01-01T12:00:10Z", "job": self.jid, "from": "intake",
+                              "to": "spec", "duration_s": 10, "model": "haiku", "tier": "T1",
+                              "agent": "atta-exploradora", "cost_usd": None})
+        self.assertNotIn("pending_agent", job)
+        self.assertNotIn("pending_agent", self.store.load(self.jid))
+        self.assertIsNone(job["cost_usd"])
+        # The next transition has no agent: no model fields.
+        self.go("build")
+        self.assertEqual(set(events.read_events(self.dir)[-1]),
+                         {"ts", "job", "from", "to", "duration_s"})
+
+    def test_group_attaches_models_list(self):
+        self.walk("spec", "build", "gate", "review")
+        self.set_pending([
+            {"stage": "review", "role": "jardinera-code", "agent": "atta-jardinera-code",
+             "model": "sonnet", "tier": "T2", "at": "x"},
+            {"stage": "review", "role": "soldado", "agent": "atta-soldado", "model": "opus",
+             "tier": "T3", "at": "x"}])
+        job = self.go("approve")
+        ev = events.read_events(self.dir)[-1]
+        self.assertEqual(ev["models"], [
+            {"agent": "atta-jardinera-code", "model": "sonnet", "tier": "T2"},
+            {"agent": "atta-soldado", "model": "opus", "tier": "T3"}])
+        self.assertIsNone(ev["cost_usd"])
+        self.assertNotIn("model", ev)
+        self.assertNotIn("pending_agent", job)
+
+    def test_pending_from_another_stage_is_dropped_without_attaching(self):
+        self.go("spec")
+        self.set_pending({"stage": "intake", "role": "exploradora", "agent": "atta-exploradora",
+                          "model": "haiku", "tier": "T1", "at": "x"})
+        job = self.go("build")
+        self.assertNotIn("model", events.read_events(self.dir)[-1])
+        self.assertNotIn("pending_agent", job)
+
+    def test_explicit_model_wins_over_pending(self):
+        self.set_pending({"stage": "intake", "role": "exploradora", "agent": "atta-exploradora",
+                          "model": "haiku", "tier": "T1", "at": "x"})
+        self.go("spec", model="m", tier="T9")
+        ev = events.read_events(self.dir)[-1]
+        self.assertEqual((ev["model"], ev["tier"]), ("m", "T9"))
+
+    def test_refused_transition_keeps_pending(self):
+        self.set_pending({"stage": "intake", "role": "exploradora", "agent": "atta-exploradora",
+                          "model": "haiku", "tier": "T1", "at": "x"})
+        self.assertRefused("build", "Transición ilegal en 12-exportar-csv: intake → build. "
+                                    "Desde intake solo se puede ir a: spec, needs-info, rejected.")
+        self.assertEqual(self.store.load(self.jid)["pending_agent"]["model"], "haiku")
+
+
 if __name__ == "__main__":
     unittest.main()

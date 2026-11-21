@@ -84,6 +84,18 @@ def main(argv):
         state["comments"] = state.get("comments", [])
         state["comments"].append({"on": argv[0], "number": argv[2], "body": stdin})
         sys.stdout.write(f"https://github.com/o/r/issues/{argv[2]}#issuecomment-1\n")
+    elif key == "issue close":
+        issue = state["issues"].get(str(argv[2]))
+        if issue is None:
+            sys.stderr.write(f"Could not resolve to an issue with the number of {argv[2]}.\n")
+            return 1
+        issue["state"] = "CLOSED"
+        issue["state_reason"] = _opt(argv, "--reason")
+        text = _opt(argv, "--comment")
+        if text is not None:
+            state["comments"] = state.get("comments", [])
+            state["comments"].append({"on": "issue", "number": argv[2], "body": text,
+                                      "via": "close"})
     elif key in ("issue edit", "pr edit"):
         target = state["issues"].setdefault(str(argv[2]), {"number": int(argv[2]), "labels": []})
         labels = target.setdefault("labels", [])
