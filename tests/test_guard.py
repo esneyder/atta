@@ -29,8 +29,21 @@ def write(path, text="x"):
 
 
 class GuardBase(TempDirMixin, unittest.TestCase):
+    """Project under a test temp folder. The system temp dir allowed for writes (L17 b) is
+    pinned to `<tmp>/systmp` so the rest of the test temp folder counts as «outside the project»;
+    TempDirWriteTests uses the real system temp dir."""
+
+    real_temp = False
+
     def setUp(self):
         super().setUp()
+        self.systmp = Path(os.path.realpath(self.tmp / "systmp"))
+        self.systmp.mkdir()
+        if not self.real_temp:
+            patcher = mock.patch.object(guard, "temp_roots", create=True,
+                                        return_value=[self.systmp])
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.root = Path(os.path.realpath(self.tmp / "proj"))
         self.root.mkdir()
         self.make_job(JID, "build")
@@ -181,6 +194,14 @@ class WriteTests(GuardBase):
                 h = self.hook("Write")
                 h["tool_input"] = tool_input
                 self.assertDenied(guard.evaluate(h, root=self.root))
+
+    def test_system_temp_dir_allowed_rest_outside_denied(self):
+        for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                self.assertAllowed(self.write_reason(self.systmp / "scratchpad" / "r.txt", tool))
+                self.assertDenied(self.write_reason(self.tmp / "fuera.txt", tool),
+                                  "fuera del proyecto")
+        self.assertDenied(self.write_reason(str(self.systmp) + "/../fuera.txt"))
 
     def test_other_tools_allowed(self):
         self.assertAllowed(guard.evaluate(self.hook("Read", file_path=str(self.root / "x")),
@@ -532,6 +553,150 @@ class ShellWriteScopeTests(GuardBase):
     def test_expected_allow_controls(self):
         self.assertAllowed(self.bash_reason(f"git push origin atta/{JID}"))
         self.assertAllowed(self.bash_reason("gh pr create --base develop --fill"))
+
+
+RUN_BODY = (
+    "Aquí está el intake.\n"
+    "<<<ATTA-ARTIFACT\n"
+    "<<<ATTA-ARTIFACT\n"
+    "DECISION: ACCEPT\nRISK: low\nSURFACES: none\n\n## Summary\n\n"
+    "La Exploradora aceptó el issue: agregar la función de resta.\n\n## Scope\n\n"
+    "- Dentro: `def subtract(a: float, b: float) -> float:` en calculator.py.\n"
+    "def subtract(a: float, b: float) -> float:\n"
+    "    return a - b\n"
+    "Si x > y el resultado es positivo.\n"
+    "python -m unittest | tee salida.txt\n"
+    "git push origin main\n"
+    "</ATTA-ARTIFACT>>>\n"
+    "DECISION: ACCEPT"
+)
+
+
+class HeredocTests(GuardBase):
+    """L17 (a): heredoc and here-string bodies are data unless they feed a shell/interpreter."""
+
+    def denied_all(self, cmds, tool="Bash", cwd=None):
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd, tool=tool, cwd=cwd))
+
+    def allowed_all(self, cmds, tool="Bash", cwd=None):
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertAllowed(self.bash_reason(cmd, tool=tool, cwd=cwd))
+
+    def test_run_command_from_l17_allowed(self):
+        cmd = (f'cd "{self.root}" && atta save-artifact 1-agregar-la-funcion-de intake '
+               f"--from-reply - <<'ATTA_REPLY_END'\n{RUN_BODY}\nATTA_REPLY_END")
+        self.assertAllowed(self.bash_reason(cmd, cwd=self.root))
+        self.assertAllowed(self.bash_reason(cmd + "\n", cwd=self.root))
+
+    def test_heredoc_bodies_are_data(self):
+        self.allowed_all((
+            "cat <<EOF\ngit push origin main\nx > y\nEOF",
+            'cat <<"EOF"\ngh pr merge 1\n-> float\nEOF',
+            "cat <<-EOF\n\tgit push origin main\n\tEOF",
+            "cat << 'EOF' > out.txt\ngit push origin main | tee x\nEOF",
+            "cat <<EOF\nx > y\nEOF\necho listo",
+            "cat <<A <<B\ngit push origin main\nA\ngh pr merge 1\nB",
+            "python x.py <<EOF\ngit push origin main\nEOF",
+            "cat <<'EOF'\n$(gh pr merge 1) `gh pr merge 1`\nEOF",
+        ), cwd=self.wt)
+
+    def test_heredoc_feeding_a_shell_or_interpreter_denied(self):
+        self.denied_all((
+            "bash <<EOF\ngit push origin main\nEOF",
+            "sh <<'EOF'\ngh pr merge 1\nEOF",
+            "env bash <<EOF\nls\nEOF",
+            "cat <<EOF | bash\nls\nEOF",
+            "pwsh <<EOF\nGet-Date\nEOF",
+            "python <<EOF\nprint(1)\nEOF",
+            "python3 - <<'EOF'\nprint(1)\nEOF",
+            "py -3 - <<EOF\nprint(1)\nEOF",
+            "node <<EOF\nconsole.log(1)\nEOF",
+            "env perl <<EOF\nprint 1\nEOF",
+            "cat <<EOF | ruby\nputs 1\nEOF",
+            "source /dev/stdin <<EOF\ngit push origin main\nEOF",
+            "while read l; do $l; done <<EOF\ngit push origin main\nEOF",
+            "bash -c \"$(cat <<'EOF'\ngh pr merge 1\nEOF\n)\"",
+            "read -r -d '' X <<'EOF'\ngh pr merge 1\nEOF\neval \"$X\"",
+        ), cwd=self.wt)
+
+    def test_heredoc_redirects_and_trailing_commands_still_checked(self):
+        self.denied_all(("cat <<EOF > atta/checks.json\n{}\nEOF",
+                         "tee atta/checks.json <<EOF\n{}\nEOF",
+                         "cat <<'EOF' >> .claude/settings.json\nx\nEOF"), cwd=self.root)
+        self.denied_all((
+            "cat <<EOF\nx\nEOF\ngit push origin main",
+            "cat <<EOF\n$(gh pr merge 1)\nEOF",
+            "cat <<EOF\n`gh pr merge 1`\nEOF",
+            "cat <<EOF\ngit push origin main",
+            'echo "<<X"\ngit push origin main\nX',
+            "echo '<<X'\ngh pr merge 1\nX",
+            "# <<X\ngh pr merge 1\nX",
+        ), cwd=self.wt)
+
+    def test_powershell_here_strings(self):
+        self.allowed_all((
+            f"@'\n{RUN_BODY}\n'@ | atta save-artifact {JID} intake --from-reply -",
+            "$t = @'\ngit push origin main\nx > y\n'@",
+            '@"\ngh pr merge 1 -> float\n"@ | Out-Null',
+        ), tool="PowerShell", cwd=self.root)
+        self.denied_all((
+            "@'\ngh pr merge 1\n'@ | Invoke-Expression",
+            "Invoke-Expression @'\ngh pr merge 1\n'@",
+            "@'\ngh pr merge 1\n'@ | pwsh -Command -",
+            "$s = @'\ngh pr merge 1\n'@; iex $s",
+            "Set-Content -Path atta/checks.json -Value @'\n{}\n'@",
+            '@"\n$(gh pr merge 1)\n"@ | Out-Null',
+            "@'\nx\n'@\ngh pr merge 1",
+            "echo 'a@'\ngh pr merge 1\n'@",
+            "@'\ngh pr merge 1",
+        ), tool="PowerShell", cwd=self.root)
+
+
+class TempDirWriteTests(GuardBase):
+    """L17 (b): Write/Edit into the system temp dir are allowed; the rest outside stays denied."""
+
+    real_temp = True
+
+    def test_scratchpad_under_system_temp_allowed(self):
+        scratch = Path(tempfile.gettempdir()) / "claude" / "scratchpad" / "atta-reply.txt"
+        for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                self.assertAllowed(self.write_reason(scratch, tool))
+        self.assertAllowed(self.bash_reason(f"echo x > {scratch.as_posix()}", cwd=self.root))
+
+    def test_tmpdir_variable_counts_as_temp(self):
+        other = Path(os.path.realpath(self.tmp / "otro-temp"))
+        other.mkdir()
+        system = Path(os.path.realpath(tempfile.gettempdir()))
+        for var in ("TMPDIR", "TEMP", "TMP"):
+            with self.subTest(var=var):
+                roots = guard.temp_roots({var: str(other)})
+                self.assertIn(system, roots)
+                self.assertIn(other, roots)
+        roots = guard.temp_roots({"TEMP": str(Path.home()), "TMPDIR": Path.home().anchor or "/",
+                                  "TMP": "relativo"})
+        self.assertEqual(roots, [system])
+        h = self.hook("Write", file_path=str(other / "a.txt"))
+        self.assertAllowed(guard.evaluate(h, root=self.root, environ={"TMPDIR": str(other)}))
+
+    def test_home_files_stay_denied(self):
+        bashrc = Path.home() / ".bashrc"
+        for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                self.assertDenied(self.write_reason(bashrc, tool), "fuera del proyecto")
+        h = self.hook("Write", file_path=str(bashrc))
+        for env in ({"TEMP": str(Path.home())}, {"TMPDIR": Path.home().anchor or "/"}):
+            with self.subTest(env=env):
+                self.assertDenied(guard.evaluate(h, root=self.root, environ=env))
+
+    def test_project_rules_still_apply_inside_temp(self):
+        # The test project itself lives under the system temp dir: its own rules win.
+        self.assertDenied(self.write_reason(self.root / "atta" / "config.json"))
+        self.assertDenied(self.write_reason(self.root / "README.md"))
+        self.assertAllowed(self.write_reason(self.wt / "src" / "a.py"))
 
 
 class OutputTests(GuardBase):

@@ -20,9 +20,25 @@ allowed only:
 - for exactly one of the job artifacts inside `<root>/atta/jobs/<id>/` of an active job:
   `intake.md`, `spec.md`, `spec-review.md`, `decision.md`, `feedback-<x>.md`,
   `round-<N>/build.md`, `round-<N>/review-<x>.md`.
+- outside the project, inside the system temp folder (`tempfile.gettempdir()` plus `$TEMP`,
+  `$TMP`, `$TMPDIR` when absolute; a folder that is a drive root, the user's home or an ancestor
+  of it never counts), e.g. the orchestrator's scratchpad. Project rules win when the project
+  itself lives under the temp folder.
 Everything else is denied: config.json, checks.json, job.json, events.jsonl, `.claude/**`, the
-main checkout, other projects. On Windows, alternate data streams (`a:b`), trailing dots/spaces,
+main checkout, other projects, the user's home (`~/.bashrc`). On Windows, alternate data streams (`a:b`), trailing dots/spaces,
 drive-relative paths (`C:src/a.py`) and device paths (`\\\\?\\`) are denied outright.
+
+Heredoc bodies (`<<DELIM`, `<<'DELIM'`, `<<"DELIM"`, `<<-DELIM`, quoting-aware, terminated by a
+line equal to DELIM) and PowerShell here-strings (`@'...'@`, `@"..."@`) are data: they are
+removed before the command is tokenised (`$(...)`/backticks inside an unquoted heredoc and
+`$(...)` inside `@"..."@` are still inspected). Exceptions, where the body stays in the command
+and is inspected as today: the pipeline fed by the heredoc reaches a shell (`bash/sh/zsh/...`,
+`pwsh/powershell`, `cmd`), `source`/`.`, `eval`, `xargs`, `Invoke-Expression`, or a compound
+command (`done <<EOF`); the heredoc sits inside `$(...)`, backticks or `<(...)`; the line ends
+in `|`, `&&`, `||` or `\\`; or the command contains dynamic execution anywhere (a shell,
+`eval`, `source`, `iex`, `Invoke-Command`, `[scriptblock]`, `Start-Process`, a `$var` as command
+word). An interpreter fed code through a heredoc (`python`, `python3`, `py`, `node`, `perl`,
+`ruby` with no script, or `-`/`/dev/stdin`) is denied. An unterminated heredoc is not stripped.
 
 Shell commands (Bash and PowerShell) first get their line continuations joined (`\\` + newline
 in Bash, backtick + newline in PowerShell), then are tokenised with shlex (tolerant: unbalanced
@@ -79,9 +95,11 @@ Known limits (best effort, not detected):
   extensions defined outside the session, GraphQL queries passed through files
   (`-F query=@q.graphql`, `--input`), `gh api -X PATCH pulls/<n>` changing a PR base;
 - heavily obfuscated shell code.
+- a heredoc stored in a variable and run later without a dynamic-execution word in the same
+  command (`read X <<EOF` then, in a later call, `$X`).
 The Filtro (gate) still rejects any diff that touches protected paths, and branch protection on
-GitHub remains the last line. Text that merely mentions a denied command (here-docs, quoted args,
-here-strings) may be denied.
+GitHub remains the last line. Text that merely mentions a denied command (quoted args, heredocs
+that stay inspected per the exceptions above) may be denied.
 
 Wiring: the hook command is `atta guard`. If `atta` is not on PATH the hook command itself fails
 (non-zero exit, no JSON) and Claude Code treats that as a non-blocking hook error, i.e. the tool
@@ -98,6 +116,7 @@ import os
 import re
 import shlex
 import sys
+import tempfile
 from pathlib import Path
 
 from . import branches, config, machine, project, store
@@ -147,6 +166,14 @@ _GIT_ENV = (re.compile(r"(?i)(?<![\w.])GIT_(?:CONFIG|ALIAS)\w*['\"]?\s*[=,]"),
 _KEYWORDS = {"if", "then", "elif", "else", "fi", "do", "done", "while", "until", "!", "{", "}"}
 _HEADER_KEYWORDS = {"for", "select", "case", "esac", "function", "in"}
 _FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
+INTERPRETERS = {"python", "python3", "py", "pythonw", "node", "perl", "ruby"}
+_INTERP_CODE_FLAGS = {"-c", "-m", "-e", "-E", "-p", "--eval", "--print"}
+_INTERP_VALUED = {"-W", "-X", "-r", "--require"}
+_STDIN_FILES = {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
+# Command words whose presence anywhere keeps heredoc bodies inspected as commands.
+_DYNAMIC = {"eval", "source", ".", "iex", "invoke-expression", "invoke-command", "icm",
+            "start-process", "saps", "start-job", "xargs"}
+_HERE_MARK = "ATTA_HEREDOC_DATA"
 
 POSIX_SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "ash", "fish", "mksh"}
 _SH_VALUED = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
@@ -256,7 +283,7 @@ def _evaluate(hook, root, explicit, environ) -> None:
     rules = deny_rules(cfg)
     base = _real(cwd) if cwd is not None else root
     if tool in WRITE_TOOLS:
-        check_write(tool_input.get(WRITE_TOOLS[tool]), root, base, cfg)
+        check_write(tool_input.get(WRITE_TOOLS[tool]), root, base, cfg, environ=environ)
         return
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
@@ -369,15 +396,43 @@ def _active_job(root: Path, jid: str) -> dict:
     return job
 
 
-def check_write(raw, root: Path, base: Path, cfg: dict) -> None:
+def temp_roots(environ=None) -> list[Path]:
+    """System temp folders where writes outside the project are allowed (see module docstring)."""
+    env = os.environ if environ is None else environ
+    raw = [tempfile.gettempdir()] + [env.get(k) for k in ("TEMP", "TMP", "TMPDIR")]
+    try:
+        home = _real(Path.home())
+    except (RuntimeError, OSError, KeyError):
+        home = None
+    roots: list[Path] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip() or "\0" in item:
+            continue
+        path = Path(item.strip())
+        if not path.is_absolute():
+            continue
+        try:
+            path = _real(path)
+        except (OSError, ValueError):
+            continue
+        if path.parent == path or (home is not None and _relparts(home, path) is not None):
+            continue
+        if all(_relparts(path, r) != () for r in roots):
+            roots.append(path)
+    return roots
+
+
+def check_write(raw, root: Path, base: Path, cfg: dict, environ=None) -> None:
     """Raise Deny unless writing `raw` is allowed (see module docstring)."""
     if not isinstance(raw, str) or not raw.strip():
         raise Deny("Entrada del hook inválida: falta la ruta del archivo.")
     target = _target(raw, base)
     rel = _relparts(target, root)
     if rel is None:
+        if any(_relparts(target, t) is not None for t in temp_roots(environ)):
+            return
         raise Deny(f"Atta solo deja escribir dentro del worktree del job; «{raw}» queda fuera "
-                   "del proyecto.")
+                   "del proyecto y de la carpeta temporal del sistema.")
     keys = [_key(p) for p in rel]
     if len(rel) >= 3 and keys[0] == _key(WORKTREES_DIR):
         _check_worktree_rel(rel, root, cfg)
@@ -470,10 +525,327 @@ def _segments(tokens: list[str]):
         yield seg
 
 
+# ---------------------------------------------------------------- heredocs and here-strings
+
+class _Doc:
+    """One heredoc/here-string: operator span, body span, terminator end, expansion."""
+
+    def __init__(self, op_start, op_end, body_start, body_end, term_end, expand, line_nl):
+        self.op_start, self.op_end = op_start, op_end
+        self.body_start, self.body_end, self.term_end = body_start, body_end, term_end
+        self.expand, self.line_nl = expand, line_nl
+
+
+def _read_delim(s: str, j: int):
+    """(delimiter, quoted, end) of the heredoc word at `j`; ('', False, j) when there is none."""
+    out, quoted, n = [], False, len(s)
+    while j < n:
+        c = s[j]
+        if c in " \t\r\n;&|<>()":
+            break
+        if c in "'\"":
+            k = s.find(c, j + 1)
+            if k == -1 or "\n" in s[j + 1:k]:
+                return "", False, j
+            out.append(s[j + 1:k])
+            quoted, j = True, k + 1
+        elif c == "\\" and j + 1 < n:
+            out.append(s[j + 1])
+            quoted, j = True, j + 2
+        else:
+            out.append(c)
+            j += 1
+    return "".join(out), quoted, j
+
+
+def _find_heredocs(s: str) -> list[_Doc]:
+    """Bash heredocs outside quotes and comments; stops at the first unterminated one."""
+    docs: list[_Doc] = []
+    pending = []
+    state, i, n = None, 0, len(s)
+    while i < n:
+        c = s[i]
+        if state == "'":
+            state = None if c == "'" else state
+            i += 1
+            continue
+        if state in ('"', "$'"):
+            if c == "\\":
+                i += 2
+                continue
+            if c == ("'" if state == "$'" else '"'):
+                state = None
+            i += 1
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c == "$" and s.startswith("$'", i):
+            state, i = "$'", i + 2
+            continue
+        if c in "'\"":
+            state, i = c, i + 1
+            continue
+        if c == "#" and (i == 0 or s[i - 1] in " \t\n;&|()"):
+            nl = s.find("\n", i)
+            i = n if nl == -1 else nl
+            continue
+        if s.startswith("((", i) or s.startswith("$((", i):
+            # Arithmetic: `<<` is a shift there, never a heredoc.
+            j, level = i + (3 if c == "$" else 2), 2
+            while j < n and level:
+                level += {"(": 1, ")": -1}.get(s[j], 0)
+                j += 1
+            i = j
+            continue
+        if s.startswith("<<", i) and not s.startswith("<<<", i) and (i == 0 or s[i - 1] != "<"):
+            j = i + 2
+            dash = j < n and s[j] == "-"
+            j += 1 if dash else 0
+            while j < n and s[j] in " \t":
+                j += 1
+            delim, quoted, end = _read_delim(s, j)
+            if delim:
+                pending.append((i, end, delim, dash, not quoted))
+                i = end
+            else:
+                i += 2
+            continue
+        if c == "\n" and pending:
+            pos = i + 1
+            for op_start, op_end, delim, dash, expand in pending:
+                body_start, found = pos, False
+                while pos <= n:
+                    nl = s.find("\n", pos)
+                    end = n if nl == -1 else nl
+                    line = s[pos:end].rstrip("\r")
+                    if (line.lstrip("\t") if dash else line) == delim:
+                        docs.append(_Doc(op_start, op_end, body_start, pos, end, expand, i))
+                        pos, found = (n if nl == -1 else nl), True
+                        break
+                    if nl == -1:
+                        break
+                    pos = nl + 1
+                if not found:
+                    return docs
+            pending, i = [], pos
+            continue
+        i += 1
+    return docs
+
+
+def _find_herestrings(s: str) -> list[_Doc]:
+    """PowerShell here-strings `@'`/`@"` outside quotes and comments."""
+    docs: list[_Doc] = []
+    state, i, n = None, 0, len(s)
+    while i < n:
+        c = s[i]
+        if state == "'":
+            if c == "'":
+                if s.startswith("''", i):
+                    i += 2
+                    continue
+                state = None
+            i += 1
+            continue
+        if state == '"':
+            if c == "`":
+                i += 2
+                continue
+            if c == '"':
+                if s.startswith('""', i):
+                    i += 2
+                    continue
+                state = None
+            i += 1
+            continue
+        if c == "`":
+            i += 2
+            continue
+        if c == "#":
+            nl = s.find("\n", i)
+            i = n if nl == -1 else nl
+            continue
+        if c == "@" and i + 1 < n and s[i + 1] in "'\"":
+            quote = s[i + 1]
+            nl = s.find("\n", i + 2)
+            if nl != -1 and not s[i + 2:nl].strip():
+                pos, found = nl + 1, False
+                while pos <= n:
+                    nxt = s.find("\n", pos)
+                    end = n if nxt == -1 else nxt
+                    if s.startswith(quote + "@", pos):
+                        docs.append(_Doc(i, i + 2, nl + 1, pos, pos + 2, quote == '"', None))
+                        found = True
+                        break
+                    if nxt == -1:
+                        break
+                    pos = nxt + 1
+                if not found:
+                    return docs
+                i = docs[-1].term_end
+                continue
+        if c in "'\"":
+            state = c
+        i += 1
+    return docs
+
+
+def _pipelines(tokens: list[str]):
+    """Statements as lists of pipeline stages; each stage is (words, has_heredoc_marker)."""
+    stmts = [[[[], False]]]
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        stage = stmts[-1][-1]
+        if t != "{}" and _is_punct(t):
+            if set(t) & set("<>") and not set(t) & _SEPARATOR_MARKS:
+                if t == "<<" or (i + 1 < len(tokens) and tokens[i + 1] == _HERE_MARK):
+                    stage[1] = True
+                i += 2
+                continue
+            if t in ("|", "|&"):
+                stmts[-1].append([[], False])
+            else:
+                stmts.append([[[], False]])
+            i += 1
+            continue
+        if t == _HERE_MARK:
+            stage[1] = True
+        stage[0].append(t)
+        i += 1
+    return stmts
+
+
+def _resolve(words: list[str]):
+    """(command name, args) after assignments, keywords and wrappers; ('', []) for compounds."""
+    while words and _ASSIGN.match(words[0]):
+        words = words[1:]
+    if not words or words[0] in _KEYWORDS or words[0] in _HEADER_KEYWORDS:
+        return "", []
+    name, args = _cmd_name(words[0]), words[1:]
+    if name in ("sudo", "doas"):
+        return _resolve(_skip_flags(args, ("-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t")))
+    if name == "env":
+        if any(a in ("-S", "--split-string") for a in args):
+            return "eval", args
+        return _resolve(_skip_flags(args, ("-u", "--unset", "-C", "--chdir")))
+    if name in WRAPPERS:
+        return _resolve(_skip_flags(args, ("-n", "-s", "-k", "-c"), numeric=True))
+    return name, args
+
+
+def _is_dynamic(words: list[str], powershell: bool) -> bool:
+    if not words:
+        return False
+    if any("scriptblock" in w.lower() for w in words):
+        return True
+    first = words[0]
+    if powershell and first.startswith("$"):
+        return len(words) == 1 or not re.fullmatch(r"[-+*/%?]?=", words[1])
+    if not powershell and any(c in first for c in "$`") and not _ASSIGN.match(first):
+        return True
+    name, _args = _resolve(words)
+    return name in _DYNAMIC or name in POSIX_SHELLS or name in PS_SHELLS or name == "cmd"
+
+
+def _interpreter_fed(args: list[str]) -> bool:
+    """True when an interpreter would read its program from stdin."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in _STDIN_FILES:
+            return True
+        if a in _INTERP_CODE_FLAGS or a.startswith(("--eval=", "--print=")):
+            return False
+        if a.startswith("-"):
+            i += 2 if a in _INTERP_VALUED else 1
+            continue
+        return False
+    return True
+
+
+def _is_interpreter(name: str) -> bool:
+    return name in INTERPRETERS or bool(re.fullmatch(r"python[0-9][0-9.]*w?", name))
+
+
+def _feeding(line: str, powershell: bool) -> bool:
+    """True when the heredoc on `line` feeds a shell/dynamic consumer (keep it inspected).
+    Raises Deny when it feeds code to an interpreter."""
+    for stmt in _pipelines(_tokenize(line, powershell)):
+        marked = [k for k, (_w, has) in enumerate(stmt) if has]
+        if not marked:
+            continue
+        for words, _has in stmt[marked[0]:]:
+            name, args = _resolve(words)
+            if not name or _is_dynamic(words, powershell):
+                return True
+            if _is_interpreter(name) and _interpreter_fed(args):
+                raise Deny(f"Atta no deja pasar código a {name} por un heredoc: no puede "
+                           "verificarlo. Escribe el script en un archivo y ejecútalo.")
+    return False
+
+
+def _strip_heredocs(command: str, ctx: "_Ctx", powershell: bool, depth: int) -> str:
+    """`command` with data heredoc/here-string bodies removed (see module docstring)."""
+    docs = _find_herestrings(command) if powershell else _find_heredocs(command)
+    if not docs:
+        return command
+    keep: set[int] = set()
+    groups: dict[int, list[int]] = {}
+    for k, d in enumerate(docs):
+        groups.setdefault(d.line_nl if d.line_nl is not None else -1 - k, []).append(k)
+    for members in groups.values():
+        first, last = docs[members[0]], docs[members[-1]]
+        if powershell:
+            start = command.rfind("\n", 0, first.op_start) + 1
+            nl = command.find("\n", last.term_end)
+            line = (command[start:first.op_start] + _HERE_MARK + " "
+                    + command[last.term_end:len(command) if nl == -1 else nl])
+            prefix = command[start:first.op_start]
+        else:
+            start = command.rfind("\n", 0, first.op_start) + 1
+            line = command[start:first.line_nl]
+            prefix = command[start:first.op_start]
+        tail = line.rstrip()
+        if ("$(" in prefix or "`" in prefix or "<(" in prefix
+                or tail.endswith(("|", "&&", "||", "\\", "`"))
+                or _feeding(line, powershell)):
+            keep.update(members)
+    out, last_end = [], 0
+    stripped = [d for k, d in enumerate(docs) if k not in keep]
+    for d in stripped:
+        if powershell:
+            out.append(command[last_end:d.op_start] + _HERE_MARK + " ")
+        else:
+            out.append(command[last_end:d.body_start])
+        last_end = d.term_end
+    out.append(command[last_end:])
+    result = "".join(out)
+    tokens = _tokenize(result, powershell)
+    if any(_is_dynamic(words, powershell) for stmt in _pipelines(tokens) for words, _h in stmt):
+        keep, stripped, result = set(range(len(docs))), [], command
+    for k in sorted(keep):
+        # Kept bodies are code: inspect them as commands (a here-string is quoted in the text).
+        d = docs[k]
+        check_command(command[d.body_start:d.body_end], ctx, powershell=powershell,
+                      depth=depth + 1)
+    for d in stripped:
+        if d.expand:
+            body = command[d.body_start:d.body_end]
+            for inner in _SUBST_DOLLAR.findall(body):
+                check_command(inner, ctx, powershell=powershell, depth=depth + 1)
+            if not powershell:
+                for inner in _SUBST_BACKTICK.findall(body):
+                    check_command(inner, ctx, powershell=False, depth=depth + 1)
+    return result
+
+
 def check_command(command: str, ctx: _Ctx, *, powershell: bool = False, depth: int = 0) -> None:
     """Raise Deny when any part of `command` is refused."""
     if depth > MAX_DEPTH:
         raise Deny("Comando demasiado anidado para verificarlo; Atta bloquea por seguridad.")
+    command = _strip_heredocs(command, ctx, powershell, depth)
     command = (_CONTINUATION_PS if powershell else _CONTINUATION_BASH).sub("", command)
     if any(p.search(command) for p in _GIT_ENV):
         raise Deny("Atta no deja definir variables GIT_CONFIG_* / GIT_ALIAS*: podrían crear alias "

@@ -438,6 +438,55 @@ class CommandTest(NextBase):
                 self.assertEqual((code, out, err), (2, "", message))
                 self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["job.json"])
 
+    def test_save_artifact_tolerates_the_l17_malformed_reply(self):
+        """L17 (c): Haiku sent the opening marker twice and closed with `</ATTA-ARTIFACT>>>`."""
+        body = ("DECISION: ACCEPT\nRISK: low\nSURFACES: none\n\n## Summary\n\n"
+                "La Exploradora aceptó el issue: agregar la función de resta.\n")
+        replies = {
+            "L17": f"<<<ATTA-ARTIFACT\n<<<ATTA-ARTIFACT\n{body}</ATTA-ARTIFACT>>>\nDECISION: ACCEPT\n",
+            "cerco": f"Listo.\n<<<ATTA-ARTIFACT\n\n```markdown\n{body}```\n\nATTA-ARTIFACT>>>\n",
+            "cerco fuera": f"```text\n<<<ATTA-ARTIFACT\n{body}\n</ATTA-ARTIFACT>>>\n```\n",
+        }
+        for name, text in replies.items():
+            with self.subTest(name):
+                self.job["stage"] = "intake"
+                self.jobs.save(self.job)
+                (self.dir / "intake.md").unlink(missing_ok=True)
+                code, out, err = self.call("save-artifact", JID, "intake",
+                                           "--from-reply", self.reply(text))
+                self.assertEqual((code, err), (0, ""))
+                self.assertEqual(out, f"La Exploradora decidió ACCEPT en {JID}: intake.md guardado.\n")
+                self.assertEqual((self.dir / "intake.md").read_text(encoding="utf-8"), body)
+                self.assertEqual(sorted(p.name for p in self.dir.iterdir()),
+                                 ["intake.md", "job.json"])
+
+    def test_save_artifact_l17_shape_still_validates_and_refuses(self):
+        self.jobs.save(self.job)
+        missing = ("La respuesta no trae el artefacto entre «<<<ATTA-ARTIFACT» y "
+                   "«ATTA-ARTIFACT>>>». No se escribió intake.md.\n")
+        cases = {
+            "cabecera inválida": (
+                "<<<ATTA-ARTIFACT\n<<<ATTA-ARTIFACT\nDECISION: ACCEPT\nRISK: banana\n"
+                "SURFACES: none\n</ATTA-ARTIFACT>>>\nDECISION: ACCEPT\n",
+                "intake.md: línea 2: RISK «banana» no es válido; usa low, medium o high. "
+                "No se escribió intake.md.\n"),
+            "cierre antes de la última apertura": (
+                "<<<ATTA-ARTIFACT\nDECISION: ACCEPT\nRISK: low\nSURFACES: none\n"
+                "</ATTA-ARTIFACT>>>\n<<<ATTA-ARTIFACT\nDECISION: ACCEPT\n", missing),
+            "vacío": ("<<<ATTA-ARTIFACT\n\n```\n```\n</ATTA-ARTIFACT>>>\n", missing),
+            "cabecera no primero": (
+                "<<<ATTA-ARTIFACT\nHola.\nDECISION: ACCEPT\nRISK: low\nSURFACES: none\n"
+                "</ATTA-ARTIFACT>>>\n",
+                "intake.md: la primera línea debe ser «DECISION: ACCEPT|REJECT|NEEDS-INFO». "
+                "No se escribió intake.md.\n"),
+        }
+        for name, (text, message) in cases.items():
+            with self.subTest(name):
+                code, out, err = self.call("save-artifact", JID, "intake",
+                                           "--from-reply", self.reply(text))
+                self.assertEqual((code, out, err), (2, "", message))
+                self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["job.json"])
+
     def test_save_artifact_missing_reply_file(self):
         self.jobs.save(self.job)
         code, out, err = self.call("save-artifact", JID, "intake",
