@@ -2,7 +2,7 @@
 
 > Tu colonia de agentes de software. Fuente de diseño: [`docs/design/arquitectura.md`](design/arquitectura.md).
 > Identidad: [`brand/README.md`](../brand/README.md).
-> Estado: diseño, sin código todavía. Atta se escribe desde cero.
+> Estado: F1 (la espina) hecha; F2 (la colonia en Claude Code) en curso. Atta se escribe desde cero.
 
 ## 1. Concepto aplicado a la arquitectura
 

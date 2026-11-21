@@ -37,6 +37,17 @@ def git_init(path: Path) -> None:
                    stdin=subprocess.DEVNULL)
 
 
+def git_worktree(repo: Path, name: str) -> Path:
+    """A first commit in `repo` and a linked worktree at `repo/.worktrees/<name>`."""
+    ident = ["-c", "user.name=Atta Test", "-c", "user.email=atta@example.invalid",
+             "-c", "commit.gpgsign=false"]
+    for args in ([*ident, "commit", "-q", "--allow-empty", "-m", "inicio"],
+                 ["worktree", "add", "-q", "-b", f"atta/{name}", f".worktrees/{name}"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
+                       stdin=subprocess.DEVNULL)
+    return repo / ".worktrees" / name
+
+
 class PackageTest(unittest.TestCase):
     def test_version(self):
         self.assertEqual(atta.__version__, "0.2.0")
@@ -80,6 +91,22 @@ class FindRootTest(TempDirMixin, unittest.TestCase):
         sub.mkdir(parents=True)
         git_init(repo)
         self.assertTrue(same(project.find_root(cwd=sub, environ={}), repo))
+
+    @unittest.skipUnless(HAS_GIT, "git no disponible")
+    def test_linked_worktree_resolves_to_the_main_checkout(self):
+        # L14 (2): inside .worktrees/<id> the project is the main checkout, not the worktree.
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        git_init(repo)
+        wt = git_worktree(repo, "7-hola")
+        sub = wt / "src"
+        sub.mkdir()
+        self.assertTrue(same(project.find_root(cwd=wt, environ={}), repo))
+        self.assertTrue(same(project.find_root(cwd=sub, environ={}), repo))
+        self.assertTrue(same(project.find_root(cwd=repo, environ={}), repo))
+        # --project and ATTA_PROJECT still win as given.
+        self.assertTrue(same(project.find_root(str(wt), cwd=repo, environ={}), wt))
+        self.assertTrue(same(project.find_root(cwd=wt, environ={project.ENV_VAR: str(wt)}), wt))
 
     def test_missing_git_falls_back_to_cwd(self):
         with mock.patch.object(project.subprocess, "run", side_effect=FileNotFoundError("git")):
@@ -167,6 +194,22 @@ class CliProjectTest(TempDirMixin, unittest.TestCase):
         self.assertEqual((code, out, err), (0, "7-hola-mundo\n", ""))
         self.assertTrue((repo / "atta" / "jobs" / "7-hola-mundo" / "job.json").is_file())
         self.assertFalse((sub / "atta").exists())
+
+    @unittest.skipUnless(HAS_GIT, "git no disponible")
+    def test_status_inside_a_job_worktree_sees_the_jobs(self):
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        git_init(repo)
+        wt = git_worktree(repo, "7-hola-mundo")
+        self.assertEqual(self.run_atta("create", "7", "--title", "Hola mundo", cwd=repo),
+                         (0, "7-hola-mundo\n", ""))
+        code, out, err = self.run_atta("status", cwd=wt)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("7-hola-mundo", out)
+        self.assertFalse((wt / "atta").exists())
+        # An explicit --project pointing at the worktree is used as given.
+        self.assertEqual(self.run_atta("--project", str(wt), "status", cwd=repo),
+                         (0, "No hay jobs.\n", ""))
 
     def test_project_option_and_env_var(self):
         proj = self.tmp / "proj"

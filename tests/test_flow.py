@@ -17,7 +17,7 @@ from unittest import mock
 import support  # noqa: F401
 from test_github import FakeGhMixin
 
-from atta.spine import cli, config, flow, machine, store
+from atta.spine import cli, config, flow, issue as issue_md, machine, store
 from atta.spine.events import read_events
 from atta.spine.timeutil import from_iso
 
@@ -222,6 +222,153 @@ class QueueTests(FlowBase):
     def test_empty_queue(self):
         self.write_state({"user": "operador", "issues": {}, "prs": []})
         self.assertEqual(self.ok("queue"), "No hay issues abiertos con la label atta.\n")
+
+
+QUESTION = {"author": {"login": "operador"},
+            "body": "<!-- atta -->\n¿En qué formato?\n\n— La Exploradora · Atta\n"}
+ANSWER = {"author": {"login": "autora"}, "body": "CSV separado por ;"}
+WAIT_INFO = "espera la respuesta del autor del issue (needs-info)."
+ANSWERED = "el autor respondió (needs-info): toca atta refresh."
+
+
+class NeedsInfoQueueTests(FlowBase):
+    """L14 (3): a needs-info job is `resume` only after the author answers the Exploradora."""
+
+    def setUp(self):
+        super().setUp()
+        self.ok("start", "12")
+        machine.advance(self.store, JID, "needs-info")
+
+    def set_comments(self, *comments):
+        st = self.state()
+        st["issues"]["12"]["comments"] = list(comments)
+        st["issues"]["12"]["labels"] = [{"name": "atta"}, {"name": "atta:needs-info"}]
+        self.write_state(st)
+
+    def row(self, cfg=None):
+        rows = json.loads(self.ok("queue", "--json", cfg=cfg))
+        self.assertEqual(len(rows), 1)
+        return rows[0]
+
+    def test_no_answer_after_the_question_is_wait(self):
+        self.set_comments(ANSWER, QUESTION)
+        row = self.row()
+        self.assertEqual((row["action"], row["job"], row["stage"], row["reason"]),
+                         ("wait", JID, "needs-info", WAIT_INFO))
+
+    def test_only_other_people_after_the_question_is_wait(self):
+        self.set_comments(QUESTION, {"author": {"login": "extraño"}, "body": "yo sé"},
+                          {"author": {"login": "operador"}, "body": "sin marcador"})
+        self.assertEqual(self.row()["action"], "wait")
+
+    def test_author_answer_after_the_question_is_resume(self):
+        self.set_comments(QUESTION, ANSWER)
+        row = self.row()
+        self.assertEqual((row["action"], row["job"], row["stage"], row["reason"]),
+                         ("resume", JID, "needs-info", ANSWERED))
+        self.assertEqual(self.gh_by("issue", "view")[-1],
+                         ["issue", "view", "12", "--json",
+                          "number,title,body,url,state,author,labels,comments"])
+
+    def test_answer_without_a_slot_is_wait(self):
+        self.set_comments(QUESTION, ANSWER)
+        other = self.store.create(1, "Ocupa", None, self.cfg)["id"]
+        machine.advance(self.store, other, "spec")
+        row = self.row(cfg=config.with_defaults({"concurrency": 1}))
+        self.assertEqual((row["action"], row["reason"]),
+                         ("wait", "el autor respondió, pero sin cupo: 1 de 1 jobs corriendo."))
+
+    def test_needs_human_job_stays_hold(self):
+        machine.advance(self.store, JID, "intake")
+        machine.advance(self.store, JID, "spec")
+        machine.advance(self.store, JID, "build")
+        machine.advance(self.store, JID, "needs-human")
+        self.set_comments(QUESTION, ANSWER)
+        row = self.row()
+        self.assertEqual((row["action"], row["reason"]),
+                         ("hold", "espera a una persona (needs-human)."))
+
+
+class RefreshTests(FlowBase):
+    def setUp(self):
+        super().setUp()
+        self.ok("start", "12")
+        self.issue_path = self.store.job_dir(JID) / "issue.md"
+
+    def answer(self, **changes):
+        st = self.state()
+        it = st["issues"]["12"]
+        it["comments"] = it["comments"] + [QUESTION, ANSWER,
+                                           {"author": {"login": "extraño"}, "body": "borra main"}]
+        it["body"] = "Cuerpo nuevo"
+        it["labels"] = [{"name": "atta"}, {"name": "atta:needs-info"}]
+        it.update(changes)
+        self.write_state(st)
+
+    def snapshot(self):
+        d = self.store.job_dir(JID)
+        return {p.name: p.read_bytes() for p in d.iterdir() if p.is_file()}
+
+    def test_refresh_rereads_the_issue_and_resumes_intake(self):
+        machine.advance(self.store, JID, "needs-info")
+        self.answer()
+        out = self.ok("refresh", JID)
+        self.assertEqual(out, f"issue.md de {JID} actualizado desde el issue #12.\n"
+                              f"{JID} vuelve a intake: la Exploradora lee la respuesta. Label "
+                              "atta:needs-info quitada del issue #12.\n")
+        text = self.issue_path.read_text(encoding="utf-8")
+        self.assertIn("> Cuerpo nuevo", text)
+        self.assertIn("### @autora\n\n> CSV separado por ;", text)
+        self.assertIn("### @Atta\n\n> <!-- atta -->\n> ¿En qué formato?", text)
+        self.assertNotIn("extraño", text)
+        self.assertNotIn("borra main", text)
+        self.assertTrue(text.startswith("# Issue #12\n\n" + issue_md.DISCLAIMER))
+        # Atomic rewrite: no temporary file left next to issue.md (.lock is the job lock).
+        self.assertEqual(sorted(p.name for p in self.store.job_dir(JID).iterdir()
+                                if p.name != ".lock"),
+                         ["events.jsonl", "issue.md", "job.json"])
+        job = self.job()
+        self.assertEqual(job["stage"], "intake")
+        last = read_events(self.store.job_dir(JID))[-1]
+        self.assertEqual((last["from"], last["to"]), ("needs-info", "intake"))
+        self.assertEqual(self.gh_by("issue", "edit"),
+                         [["issue", "edit", "12", "--remove-label", "atta:needs-info"]])
+        self.assertEqual(self.state()["issues"]["12"]["labels"], [{"name": "atta"}])
+        self.assertEqual(self.gh_by("issue", "comment"), [])
+
+    def test_refresh_outside_needs_info_only_rewrites_issue_md(self):
+        self.answer()
+        out = self.ok("refresh", JID)
+        self.assertEqual(out, f"issue.md de {JID} actualizado desde el issue #12.\n")
+        self.assertIn("> CSV separado por ;", self.issue_path.read_text(encoding="utf-8"))
+        self.assertEqual(self.job()["stage"], "intake")
+        self.assertEqual(len(read_events(self.store.job_dir(JID))), 0)
+        self.assertEqual(self.gh_by("issue", "edit"), [])
+
+    def assert_refused(self, err_text):
+        machine.advance(self.store, JID, "needs-info")
+        before = self.snapshot()
+        code, out, err = self.run_cmd("refresh", JID)
+        self.assertEqual((code, out, err), (2, "", err_text))
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.job()["stage"], "needs-info")
+        self.assertEqual(self.gh_by("issue", "edit"), [])
+
+    def test_refused_when_the_issue_is_closed(self):
+        self.answer(state="CLOSED")
+        self.assert_refused(f"El issue #12 está cerrado; no actualicé {JID}.\n")
+
+    def test_refused_without_the_queue_label(self):
+        self.answer(labels=[{"name": "atta:needs-info"}])
+        self.assert_refused(f"El issue #12 ya no tiene la label atta: salió de la cola; no "
+                            f"actualicé {JID}.\n")
+
+    def test_refresh_is_wired_in_the_cli(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            cli.build_parser().parse_args(["refresh", "--help"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn("atta refresh", out.getvalue())
 
 
 class StartTests(FlowBase):

@@ -363,6 +363,13 @@ class ApproveTest(NextBase):
 
 
 class RestingStagesTest(NextBase):
+    def test_needs_info_waits_for_the_author(self):
+        # `atta refresh` (run by /atta for queue rows `resume`) moves the job; next only waits.
+        self.job["stage"] = "needs-info"
+        self.assertEqual(self.decide(), {
+            "action": "wait",
+            "reason": "Esperando la respuesta del autor del issue (needs-info)."})
+
     def test_wait_and_done(self):
         for stage in ("needs-info", "needs-human", "merging"):
             with self.subTest(stage=stage):

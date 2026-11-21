@@ -88,7 +88,8 @@ def cmd_route(args, cfg, jobs: store.JobStore) -> int:
         job["agents"] = plan
         jobs.save(job)
     reviewers = ", ".join(f"{r['reviewer']} {r['tier']}" for r in plan["reviewers"])
-    print(f"El router asignó {len(plan['reviewers'])} reviewers a {jid} "
+    count = len(plan["reviewers"])
+    print(f"El router asignó {count} reviewer{'' if count == 1 else 's'} a {jid} "
           f"(riesgo {voice.RISK_ES[plan['risk']]}, spec-review {'sí' if plan['spec_review'] else 'no'}): "
           f"{reviewers}.")
     return OK
@@ -193,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="atta",
         description="Atta, tu colonia de agentes: espina determinista y flujo con GitHub (init, "
-                    "queue, start, worktree, next, publish, comment, label, guard y merge "
+                    "queue, start, refresh, worktree, next, publish, comment, label, guard y merge "
                     "seguro a develop).",
         epilog="Códigos de salida: 0 ok, 1 veredicto negativo, 2 rechazado o error de uso.",
     )

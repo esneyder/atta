@@ -10,12 +10,14 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from support import TempDirMixin, snapshot
 
 from atta.spine import config, initcmd, project
 
 HAS_GIT = shutil.which("git") is not None
+FAKEGH = Path(__file__).resolve().parent / "fakegh" / "fakegh.py"
 
 ATTA_HOOK = {"matcher": "Write|Edit|Bash", "hooks": [{"type": "command", "command": "atta guard"}]}
 USER_HOOK = {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo mio"}]}
@@ -100,11 +102,15 @@ class InitBase(TempDirMixin, unittest.TestCase):
         self.tdir = make_templates(self.tmp)
 
     def run_init(self, *, force=False, no_github=True, templates=None, environ=None):
+        """Run init with exactly `environ`'s ATTA_GH/FAKEGH_STATE in os.environ (gh reads it)."""
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with mock.patch.dict(os.environ, {}), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            for key in ("ATTA_GH", "FAKEGH_STATE"):
+                os.environ.pop(key, None)
+            os.environ.update(environ or {})
             code = initcmd.run(self.root, force=force, no_github=no_github,
-                               templates_dir=templates or self.tdir,
-                               environ=environ if environ is not None else {})
+                               templates_dir=templates or self.tdir)
         return code, out.getvalue(), err.getvalue()
 
     def agent(self, name):
@@ -326,6 +332,29 @@ class GithubTest(InitBase):
                                      environ={"ATTA_GH": str(self.tmp / "no-existe-gh")})
         self.assertEqual(code, 1)
         self.assertIn("no encontré gh", err)
+
+    def test_python_atta_gh_runs_with_this_interpreter(self):
+        # L14 (1): ATTA_GH ending in .py runs like every other command (github.command()).
+        git("push", "-q", "origin", "HEAD:develop", cwd=self.root)
+        script = self.gh.parent / "fake_gh.py"
+        code, out, err = self.run_init(no_github=False, environ={"ATTA_GH": str(script)})
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(gh_calls(self.log), LABEL_ARGS)
+        self.assertIn("label lista: atta:needs-human", out)
+
+    def test_atta_gh_fakegh_py_receives_the_label_calls(self):
+        git("push", "-q", "origin", "HEAD:develop", cwd=self.root)
+        state = self.tmp / "fakegh.json"
+        state.write_text(json.dumps({"user": "operador"}), encoding="utf-8")
+        code, _, err = self.run_init(no_github=False, environ={
+            "ATTA_GH": str(FAKEGH), "FAKEGH_STATE": str(state)})
+        calls = [c["argv"] for c in json.loads(state.read_text(encoding="utf-8"))["calls"]]
+        self.assertEqual(calls, LABEL_ARGS)
+        # The fake gh has no `label create`: the warning is its stderr, not «no encontré gh».
+        self.assertEqual(code, 1)
+        self.assertNotIn("no encontré gh", err)
+        self.assertIn("Atta: no pude crear la label «atta» con gh: fakegh: comando no "
+                      "soportado: label create atta", err)
 
     def test_no_github_skips_network(self):
         code, out, err = self.run_init(no_github=True, environ=self.env())

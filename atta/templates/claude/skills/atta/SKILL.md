@@ -25,9 +25,13 @@ Spanish; relay them as they are.
 ## `/atta run [n]`
 
 1. Run `atta queue`. For every row marked `new`, run `atta start <issue>` (at most `n` new
-   starts when `n` is given). Rows marked `resume` are jobs to work on; `wait`, `hold` and
-   `skip` rows are left alone. `atta queue` already respects `concurrency` from
-   `atta/config.json`; never work on more than `concurrency` jobs at the same time.
+   starts when `n` is given). Rows marked `resume` are jobs to work on; for a `resume` row
+   whose stage is `needs-info` (the issue author answered the Exploradora), run
+   `atta refresh <job>` first: it re-reads the issue into `issue.md`, removes the
+   `atta:needs-info` label and moves the job back to intake. If it exits non-zero, report its
+   stderr and leave that job alone. `wait`, `hold` and `skip` rows are left alone.
+   `atta queue` already respects `concurrency` from `atta/config.json`; never work on more
+   than `concurrency` jobs at the same time.
 2. Run `atta status` to list the jobs. Every job whose stage is not `merged` or `rejected` is
    active. Drive each active job with the loop below. Jobs are independent: while one job's
    agents run in the background, you may advance another job.

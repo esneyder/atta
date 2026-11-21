@@ -217,12 +217,12 @@ Cada comando trabaja sobre la raíz de un proyecto, que se resuelve en este orde
 
 1. `--project <carpeta>` (va **antes** del comando: `atta --project C:\code\mi-app status`).
 2. La variable de entorno `ATTA_PROJECT`.
-3. La raíz git de la carpeta actual (`git rev-parse --show-toplevel`).
+3. La raíz git de la carpeta actual (`git rev-parse --show-toplevel`). Dentro de un worktree de job
+   (`.worktrees/<id>`) es el checkout principal, así que `atta status` ahí también ve los jobs.
 4. La carpeta actual.
 
 Desde ahí: `atta/config.json` (si falta, valores por defecto), `atta/checks.json` y `atta/jobs/`.
-Corre los comandos desde el checkout principal: dentro de un worktree de job (`.worktrees/<id>`), la
-raíz git es el worktree y `atta status` no ve los jobs (usa `--project`).
+`--project` y `ATTA_PROJECT` se usan tal cual, aunque apunten a un worktree.
 
 ### Desde un checkout de Atta
 
@@ -335,7 +335,8 @@ Abre Claude Code en la raíz del proyecto, ponle la label `atta` a un issue y co
 `/atta` no decide nada: el estado y el siguiente paso salen de la espina. Por cada corrida:
 
 1. `atta queue`: por cada fila `new`, `atta start <issue>` (máximo `n`). Las filas `resume` son jobs
-   para trabajar; `wait`, `hold` y `skip` se dejan quietas.
+   para trabajar; si la etapa es `needs-info` (el autor respondió), antes corre
+   `atta refresh <job>` (sección 5.3). `wait`, `hold` y `skip` se dejan quietas.
 2. `atta status`: todo job que no esté `merged` ni `rejected` está activo.
 3. Por cada job activo: `atta next <job>` imprime **una** acción en JSON y `/atta` la ejecuta tal
    cual; luego vuelve a `atta next`.
@@ -382,9 +383,11 @@ independientes y `/atta` avanza uno mientras los agentes de otro trabajan.
 ### 5.3 Cuando un job te necesita
 
 - **`needs-info`** (la Exploradora pidió información): el issue queda con la label `atta:needs-info` y
-  un comentario de la Exploradora. Cuando el autor responda, quita la label y devuelve el job a
-  intake: `atta label <job> remove atta:needs-info` y `atta advance <job> intake`. En F2 `issue.md` no
-  se vuelve a leer de GitHub: si la respuesta importa, pásala como feedback.
+  un comentario de la Exploradora. No tienes que hacer nada más: mientras el autor no comente después
+  de esa pregunta, `atta queue` muestra el job como `wait`; cuando comenta, sale `resume` y `/atta run`
+  corre `atta refresh <job>`, que vuelve a leer el issue (con la respuesta) en `issue.md`, quita la
+  label y devuelve el job a intake, donde la Exploradora decide otra vez. También puedes correr
+  `atta refresh <job>` a mano.
 - **`needs-human`** (la Cortadora se bloqueó, se acabaron las rondas, una revisión salió inválida, la
   Reina escaló o el merge falló): corre `/atta <tu respuesta>`. `/atta` copia tu texto, sin cambios, a
   `atta/jobs/<job>/feedback-<k>.md` (`k` = 1, 2, …) y corre `atta advance <job> build`. La Cortadora
@@ -549,13 +552,15 @@ new     #9     -                        -       sin job; hay cupo (1 de 3 corrie
 | Acción | Cuándo |
 |---|---|
 | `new` | Sin job y hay cupo |
-| `wait` | Sin job y sin cupo («sin cupo: 3 de 3 jobs corriendo.») |
-| `resume` | Tiene un job en curso |
-| `hold` | Su job espera a una persona (`needs-info`, `needs-human`) o el issue tiene una label de espera |
+| `wait` | Sin job y sin cupo («sin cupo: 3 de 3 jobs corriendo.»); o su job está en `needs-info` y el autor todavía no respondió («espera la respuesta del autor del issue (needs-info).») o no hay cupo para retomarlo |
+| `resume` | Tiene un job en curso; o su job está en `needs-info` y el autor comentó después de la pregunta de la Exploradora («el autor respondió (needs-info): toca atta refresh.»), lo que ocupa un cupo |
+| `hold` | Su job espera una decisión humana (`needs-human`), o no tiene job y el issue tiene una label de espera |
 | `skip` | Su job ya terminó (`merged` o `rejected`) |
 
 Sin issues: «No hay issues abiertos con la label atta.». `--json` imprime una lista de filas con
-`issue`, `title`, `job`, `stage`, `action` y `reason`. Sale `0`; `2` si `gh` falla.
+`issue`, `title`, `job`, `stage`, `action` y `reason`. Sale `0`; `2` si `gh` falla. Para los jobs en
+`needs-info` lee además los comentarios del issue (`gh issue view`): cuenta solo los del autor que
+vienen después del último comentario de Atta (el del operador con el marcador).
 
 #### `start <issue>`
 
@@ -568,6 +573,22 @@ en 64 KB. Rechaza con `2` (sin crear nada) si:
 - el issue está cerrado;
 - no tiene la label `atta` («… Atta solo toma issues de la cola.»);
 - tiene `atta:needs-info` o `atta:needs-human` («… espera a una persona; quítala para empezar.»).
+
+#### `refresh <job>`
+
+Vuelve a leer el issue con `gh` y reescribe `issue.md` de una vez (escritura atómica), con el mismo
+filtro y las mismas citas que `start`: solo comentarios del autor y del operador. Si el job está en
+`needs-info`, quita la label `atta:needs-info` del issue y lo devuelve a `intake`:
+
+```text
+> atta refresh 7-agregar-la-funcion-de
+issue.md de 7-agregar-la-funcion-de actualizado desde el issue #7.
+7-agregar-la-funcion-de vuelve a intake: la Exploradora lee la respuesta. Label atta:needs-info quitada del issue #7.
+```
+
+En otra etapa solo reescribe `issue.md`. Rechaza con `2`, sin tocar nada, si el issue está cerrado
+(«El issue #7 está cerrado; no actualicé 7-agregar-la-funcion-de.») o ya no tiene la label `atta`
+(«El issue #7 ya no tiene la label atta: salió de la cola; no actualicé …»).
 
 #### `worktree <job>`
 
@@ -1016,7 +1037,7 @@ atta/
 │   ├── gate.py        el Filtro
 │   ├── initcmd.py     atta init
 │   ├── github.py      adaptador de gh
-│   ├── flow.py        queue, start, worktree, publish, comment, label, merge
+│   ├── flow.py        queue, start, refresh, worktree, publish, comment, label, merge
 │   ├── next.py        atta next y save-artifact
 │   ├── guard.py       el hook PreToolUse
 │   ├── cli.py         comandos
@@ -1069,7 +1090,8 @@ Para verificar las plantillas de los agentes: `python atta/templates/claude/chec
 | `gh` responde «Could not resolve to a Repository» o no ve un repo privado | La cuenta activa de `gh` no tiene acceso: `gh auth status` y `gh auth switch` a la cuenta correcta |
 | `atta init` sale con `1` | Un aviso de GitHub: falta `develop` en `origin` o no se pudo crear una label. Los archivos sí se crearon; arréglalo y vuelve a correrlo |
 | `atta init` sale con `2` | `.claude/settings.json` no es JSON válido: corrígelo; no se cambió nada |
-| `atta status` dice «No hay jobs.» y sí hay | Lo corriste dentro de un worktree (`.worktrees/<id>`): vuelve a la raíz del proyecto o usa `--project` |
+| `atta status` dice «No hay jobs.» y sí hay | Estás fuera del proyecto, o `--project` / `ATTA_PROJECT` apuntan a otra carpeta |
+| Un job sigue en `needs-info` aunque el autor respondió | `atta queue` lo retoma cuando el autor comenta **después** de la pregunta de la Exploradora y hay cupo; si no, corre `atta refresh <job>` a mano |
 | `atta start` rechaza el issue | Lee el motivo: ya tiene job, sin cupo, cerrado, sin la label `atta` o con una label de espera |
 | `/atta` se detuvo en un job | Un comando salió con `2`, o un agente terminó sin escribir su artefacto: lee el error que muestra y `atta next <job>` |
 | Claude Code pide permiso o una revisión antes de cada cambio | No viene de Atta: los agentes de la colonia no usan RDD ni consentimiento por cambio; trabajan en su worktree bajo el guard, el Filtro y el merge seguro. Si tu entorno agrega ese flujo, desactívalo en ese clon si quieres que la colonia corra sola |

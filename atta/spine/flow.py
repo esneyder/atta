@@ -1,4 +1,5 @@
-"""GitHub flow of a job (F2 T3): queue, start, worktree, publish, comment, label and safe merge.
+"""GitHub flow of a job (F2 T3): queue, start, refresh, worktree, publish, comment, label and safe
+merge.
 
 Commands are exposed through `register(subparsers)`; cli.py wires them. Each handler takes
 `(args, cfg, jobs)` like the F1 commands and returns the exit code: 0 ok, 1 negative verdict
@@ -17,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from . import branches, gate, github, issue, machine, voice
@@ -24,7 +26,7 @@ from .github import GhError
 from .ids import InvalidId
 from .lock import LockTimeout, job_lock
 from .next import _fresh
-from .store import JobStore, StoreError
+from .store import JobStore, StoreError, _replace
 
 OK, NEGATIVE, REFUSED = 0, 1, 2
 GIT_TIMEOUT_S = 600
@@ -118,11 +120,25 @@ def _running(job_list: list[dict]) -> int:
     return sum(1 for j in job_list if j["stage"] in RUNNING)
 
 
-def plan_queue(issues: list[dict], job_list: list[dict], cfg: dict) -> list[dict]:
+def author_answered(data: dict, operator_login: str | None) -> bool:
+    """True when the issue author commented after the last Atta comment (the Exploradora's
+    question: the operator's comment with the marker). No Atta comment means no question yet."""
+    author = github.login_of(data.get("author"))
+    kept = github.filter_comments(data.get("comments"), author, operator_login)
+    asked = [i for i, c in enumerate(kept) if c["author"] == github.ATTA_AUTHOR]
+    if not asked or not author:
+        return False
+    return any(c["author"] == author for c in kept[asked[-1] + 1:])
+
+
+def plan_queue(issues: list[dict], job_list: list[dict], cfg: dict,
+               answered=None) -> list[dict]:
     """Rows {action, issue, title, job, stage, reason}; action is new|resume|wait|hold|skip.
 
     Jobs in running stages (not terminal, not waiting for a human) hold the `concurrency` slots,
-    even when their issue left the queue; each `new` takes one.
+    even when their issue left the queue; each `new` takes one. A needs-info job is `resume`
+    (and takes a slot) only when `answered(number)` says the author answered the Exploradora;
+    otherwise it is `wait`. needs-human jobs are `hold`.
     """
     cap = cfg["concurrency"]
     running = _running(job_list)
@@ -137,6 +153,17 @@ def plan_queue(issues: list[dict], job_list: list[dict], cfg: dict) -> list[dict
             row.update(job=job["id"], stage=stage)
             if stage in machine.TERMINAL:
                 row.update(action="skip", reason=f"el job ya terminó ({stage}).")
+            elif stage == "needs-info":
+                if not (answered and answered(number)):
+                    row.update(action="wait",
+                               reason="espera la respuesta del autor del issue (needs-info).")
+                elif running < cap:
+                    row.update(action="resume",
+                               reason="el autor respondió (needs-info): toca atta refresh.")
+                    running += 1
+                else:
+                    row.update(action="wait", reason=f"el autor respondió, pero sin cupo: "
+                                                     f"{running} de {cap} jobs corriendo.")
             elif stage in WAITING_HUMAN:
                 row.update(action="hold", reason=f"espera a una persona ({stage}).")
             else:
@@ -157,7 +184,15 @@ def plan_queue(issues: list[dict], job_list: list[dict], cfg: dict) -> list[dict
 
 def cmd_queue(args, cfg, jobs: JobStore) -> int:
     label = cfg["labels"]["queue"]
-    rows = plan_queue(github.list_issues(label), _all_jobs(jobs), cfg)
+    operator_login: list[str] = []
+
+    def answered(number: int) -> bool:
+        # Only needs-info jobs need the comments: one `gh issue view` each, `gh api user` once.
+        if not operator_login:
+            operator_login.append(github.operator())
+        return author_answered(github.view_issue(number), operator_login[0])
+
+    rows = plan_queue(github.list_issues(label), _all_jobs(jobs), cfg, answered)
     if args.json:
         print(json.dumps(rows, ensure_ascii=False))
         return OK
@@ -205,6 +240,52 @@ def cmd_start(args, cfg, jobs: JobStore) -> int:
     issue.write_issue_md(jobs.job_dir(job["id"]), number, title, data.get("body"), comments,
                          allowed_authors={c["author"] for c in comments})
     print(job["id"])
+    return OK
+
+
+def _write_issue_md_atomic(job_dir: Path, text: str) -> None:
+    fd, tmp = tempfile.mkstemp(prefix=".issue.", suffix=".tmp", dir=job_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        _replace(tmp, job_dir / issue.ISSUE_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def cmd_refresh(args, cfg, jobs: JobStore) -> int:
+    """Re-read the issue into issue.md; a needs-info job goes back to intake without the label."""
+    job = jobs.load(args.job)
+    jid, number = job["id"], job["issue"]
+    data = github.view_issue(number)
+    if str(data.get("state", "OPEN")).upper() != "OPEN":
+        raise FlowError(f"El issue #{number} está cerrado; no actualicé {jid}.")
+    queue_label = cfg["labels"]["queue"]
+    if queue_label not in github.labels_of(data):
+        raise FlowError(f"El issue #{number} ya no tiene la label {queue_label}: salió de la "
+                        f"cola; no actualicé {jid}.")
+    comments = github.filter_comments(data.get("comments"), github.login_of(data.get("author")),
+                                      github.operator())
+    text = issue.render(number, data.get("title") or job.get("title") or "", data.get("body"),
+                        comments, allowed_authors={c["author"] for c in comments})
+    job_dir = jobs.job_dir(jid)
+    with job_lock(job_dir):
+        _write_issue_md_atomic(job_dir, text)
+    print(f"issue.md de {jid} actualizado desde el issue #{number}.")
+    if job["stage"] == "needs-info":
+        machine.check(job, "intake")
+        held = cfg["labels"]["needs_info"]
+        # Label first: if advance fails, running refresh again redoes both.
+        github.edit_label(number, "remove", held)
+        machine.advance(jobs, jid, "intake")
+        print(f"{jid} vuelve a intake: la Exploradora lee la respuesta. Label {held} quitada "
+              f"del issue #{number}.")
     return OK
 
 
@@ -477,11 +558,13 @@ def _guarded(func):
 
 
 def register(subparsers) -> None:
-    """Add queue, start, worktree, publish, comment, label and merge to the `atta` parser."""
+    """Add queue, start, refresh, worktree, publish, comment, label and merge to the parser."""
     q = subparsers.add_parser("queue", help="Cola de issues abiertos con la label de Atta.",
                               description="Lista los issues abiertos con la label de la cola y "
                                           "qué hacer con cada uno (new, resume, wait, hold, "
-                                          "skip), respetando concurrency.")
+                                          "skip), respetando concurrency. Un job en needs-info "
+                                          "sale resume solo cuando el autor comentó después "
+                                          "de la pregunta de la Exploradora.")
     q.add_argument("--json", action="store_true", help="salida JSON (una lista de filas)")
     q.set_defaults(func=_guarded(cmd_queue))
 
@@ -492,6 +575,16 @@ def register(subparsers) -> None:
                                           "espera y respeta concurrency.")
     s.add_argument("issue", type=int, help="número del issue")
     s.set_defaults(func=_guarded(cmd_start))
+
+    r = subparsers.add_parser("refresh", help="Vuelve a leer el issue (needs-info → intake).",
+                              description="Vuelve a leer el issue con gh y reescribe issue.md "
+                                          "(comentarios del autor y del operador, citados). Si "
+                                          "el job está en needs-info, quita la label de espera "
+                                          "y lo devuelve a intake. Rechaza (sale 2) si el "
+                                          "issue está cerrado o ya no tiene la label de la "
+                                          "cola.")
+    r.add_argument("job", help="id del job")
+    r.set_defaults(func=_guarded(cmd_refresh))
 
     w = subparsers.add_parser("worktree", help="Crea el worktree atta/<id> desde origin/develop.",
                               description="git fetch y git worktree add -b atta/<id> "

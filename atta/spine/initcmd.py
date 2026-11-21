@@ -10,8 +10,9 @@ What it does, on the project root:
 - `atta/config.json` and `atta/checks.json` from the packaged defaults, only when missing.
 - `/atta/jobs/` and `/.worktrees/` in `.gitignore` (appended, no duplicates).
 - Unless `--no-github`: checks `origin/<integration_branch>` with `git ls-remote` and creates the
-  config labels with `gh label create ... --force` (`gh` from $ATTA_GH, default `gh`). Never
-  touches main.
+  config labels with `gh label create ... --force` (`gh` is `github.command()`, like every other
+  command: $ATTA_GH, where a `.py` runs with this Python, or `gh` from the PATH). Never touches
+  main.
 
 Existing files that differ are kept (reported «ya existe, la dejé igual») unless `--force`, which
 replaces only the agents and the skill. Every check runs before the first write: an invalid
@@ -27,13 +28,11 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Mapping
-
-from . import config, project
+from . import config, github, project
 
 OK, WARNING, REFUSED = 0, 1, 2
 RUNTIMES = ("claude-code",)
-GH_ENV = "ATTA_GH"
+GH_ENV = github.ENV_VAR
 GITIGNORE_ENTRIES = ("/atta/jobs/", "/.worktrees/")
 NET_TIMEOUT_S = 60
 _MODEL_RE = re.compile(r"\{\{model:([A-Za-z0-9]+)\}\}")
@@ -214,7 +213,7 @@ def _last_line(proc: subprocess.CompletedProcess) -> str:
     return lines[-1] if lines else f"código {proc.returncode}"
 
 
-def _github(root: Path, cfg: dict, environ: Mapping[str, str]) -> tuple[list[str], list[str]]:
+def _github(root: Path, cfg: dict) -> tuple[list[str], list[str]]:
     """(summary lines, warnings). Checks origin/<integration branch> and creates the labels."""
     lines, warnings = [], []
     branch = cfg["integration_branch"]
@@ -231,11 +230,12 @@ def _github(root: Path, cfg: dict, environ: Mapping[str, str]) -> tuple[list[str
             f"Atta: no encontré la rama {branch} en origin. Atta integra solo en {branch} "
             f"(nunca en main): crea {branch} en origin y vuelve a correr `atta init`.")
 
-    gh = (environ.get(GH_ENV) or "").strip() or "gh"
+    gh_argv = github.command()
+    gh = gh_argv[-1]
     for key, (color, description) in LABEL_STYLE.items():
         name = cfg["labels"][key]
         try:
-            proc = _run([gh, "label", "create", name, "--color", color,
+            proc = _run([*gh_argv, "label", "create", name, "--color", color,
                          "--description", description, "--force"], root)
         except (OSError, subprocess.SubprocessError) as exc:
             warnings.append(f"Atta: no encontré gh ({gh}): instala GitHub CLI o define "
@@ -250,12 +250,10 @@ def _github(root: Path, cfg: dict, environ: Mapping[str, str]) -> tuple[list[str
 
 def run(root: str | Path, *, force: bool = False, no_github: bool = False,
         runtime: str = "claude-code", cfg: dict | None = None,
-        templates_dir: str | Path | None = None,
-        environ: Mapping[str, str] | None = None) -> int:
+        templates_dir: str | Path | None = None) -> int:
     """Prepare `root`; print the summary (stdout) and warnings/errors (stderr); return exit code."""
     root = Path(root).resolve()
     templates = Path(templates_dir) if templates_dir is not None else project.TEMPLATES_DIR
-    environ = os.environ if environ is None else environ
     try:
         cfg = cfg if cfg is not None else project.load_config(root)
         plan = _plan(root, templates, runtime, force)
@@ -271,7 +269,7 @@ def run(root: str | Path, *, force: bool = False, no_github: bool = False,
         print(f"No se pudo escribir en {root}: {exc.strerror or exc}.", file=sys.stderr)
         return REFUSED
 
-    gh_lines, warnings = ([], []) if no_github else _github(root, cfg, environ)
+    gh_lines, warnings = ([], []) if no_github else _github(root, cfg)
     for w in warnings:
         print(w, file=sys.stderr)
 
