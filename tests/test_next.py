@@ -373,8 +373,13 @@ class RestingStagesTest(NextBase):
             "action": "wait",
             "reason": "Esperando la respuesta del autor del issue (needs-info)."})
 
+    def test_merging_runs_merge_again_to_recover(self):
+        # L22: a merge cut halfway is finished (or resumed) by `atta merge`, never a wait.
+        self.job["stage"] = "merging"
+        self.assertEqual(self.decide(), {"action": "run", "argv": ["atta", "merge", JID]})
+
     def test_wait_and_done(self):
-        for stage in ("needs-info", "needs-human", "merging"):
+        for stage in ("needs-info", "needs-human"):
             with self.subTest(stage=stage):
                 self.job["stage"] = stage
                 action = self.decide()

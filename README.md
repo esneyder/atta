@@ -412,7 +412,8 @@ Qué pide la espina en cada etapa:
 | `gate` | `atta gate --worktree … --base origin/develop` → `PASS`: `advance review`; `FAIL`: `advance build` (o `needs-human` si se acabó el presupuesto de rondas) |
 | `review` | Reviewers en paralelo → algún `CHANGES`: vuelta a `build` (o `needs-human`); todos `PASS`: `advance approve` |
 | `approve` | Reina → `APPROVE`: `atta merge` (al terminar cierra el issue, quita la label `atta` y borra la rama; sección 8); si no: label `atta:needs-human` + comentario de la Reina + `advance needs-human` |
-| `needs-info`, `needs-human`, `merging` | `wait` |
+| `merging` | `atta merge` otra vez: termina o retoma un merge que quedó a medias (sección 8.1) |
+| `needs-info`, `needs-human` | `wait` |
 
 Reglas que aplica la espina:
 
@@ -714,7 +715,8 @@ Agrega o quita una label en el issue del job: «Label atta:needs-info agregada a
 
 #### `merge <job>`
 
-Sincroniza con `develop`, pasa el Filtro otra vez y mergea el PR. Ver sección 8.
+Sincroniza con `develop`, pasa el Filtro otra vez y mergea el PR. Se puede repetir: en `merging`
+termina o retoma el merge, en `merged` no hace nada. Ver sección 8.
 
 ### 7.3 Agentes
 
@@ -820,7 +822,8 @@ La Reina decide; **la espina mergea**. Cuando `decision.md` empieza con `APPROVE
 
 **Antes de tocar nada** (si falla, sale `2` y no cambia nada):
 
-1. El job está en la etapa `approve`.
+1. El job está en la etapa `approve` (en `merging` retoma el merge y en `merged` no hace nada;
+   sección 8.1).
 2. `decision.md` empieza con `APPROVE` y es **fresco**: escrito durante esta etapa `approve` («La
    decisión de la Reina es vieja: …; hace falta una nueva.»).
 3. La rama del job es `atta/<id>`, el job tiene PR y worktree, y `merge_method` es válido.
@@ -844,18 +847,43 @@ La Reina decide; **la espina mergea**. Cuando `decision.md` empieza con `APPROVE
 Si todo pasa: `merge.md` con `MERGE: DONE` y el `COMMIT`, el job pasa a `merged`:
 «La Reina integró el PR #N en develop.». Después cierra el ciclo:
 
-13. `gh issue close <issue> --reason completed --comment …` con el comentario de la Reina: «La Reina
-    mergeó el PR #N a develop. El issue #M queda resuelto.». GitHub no cierra el issue con
-    «Closes #M» porque `develop` no es la rama por defecto.
+13. Comenta en el issue, firmado por la Reina (`gh issue comment --body-file -`, el texto por
+    stdin): «La Reina mergeó el PR #N a develop. El issue #M queda resuelto.». Luego
+    `gh issue close <issue> --reason completed`. GitHub no cierra el issue con «Closes #M» porque
+    `develop` no es la rama por defecto.
 14. Quita la label `atta` del issue.
 15. Borra la rama remota con una llamada dedicada, `git push origin --delete refs/heads/atta/<id>`,
     solo si es la rama de trabajo de **este** job (nunca `develop` ni una rama prohibida). La corre
-    `atta merge` (la espina); el guard sigue negando `git push --delete` a los agentes.
+    `atta merge` (la espina); el guard sigue negando `git push --delete` a los agentes. Si GitHub
+    ya la borró (opción «Automatically delete head branches»), no avisa.
 16. Si el worktree está limpio, `git worktree remove` y borra la rama local `atta/<id>` (solo si
-    sigue en el commit que GitHub mergeó). Si tiene cambios sin commitear, los deja y avisa.
+    sigue en el commit que GitHub mergeó). Si tiene cambios sin commitear, los deja y avisa. Si el
+    worktree ya no existe, solo borra la rama local.
 
-Un fallo en los pasos 13-16 es solo un aviso («Aviso: …» en stderr y una sección `## Avisos` en
-`merge.md`): el merge ya ocurrió, así que `atta merge` sale `0`.
+`merge.md` y el paso a `merged` se escriben apenas GitHub confirma el merge, antes de los pasos
+13-16. Cada uno de esos pasos va aislado: cualquier fallo (de `gh`, de git o inesperado, como un
+worktree en uso en Windows) es solo un aviso («Aviso: …» en stderr y una sección `## Avisos` en
+`merge.md`) y el paso siguiente corre igual; el merge ya ocurrió, así que `atta merge` sale `0`.
+Si `gh pr merge` devuelve un error pero GitHub muestra el PR mergeado con el sha del Filtro (por
+ejemplo, un timeout), también cuenta como merge, con un aviso.
+
+### 8.1 Un merge que quedó a medias
+
+Si el proceso se corta en medio del merge (se mata la terminal, se agota el tiempo del comando,
+se cierra la sesión), el job puede quedar en `merging` sin `merge.md`. `atta merge <job>` se puede
+repetir y `atta next` lo pide solo en `merging`, así que `/atta run` se recupera sin ayuda. En
+`merging`, `atta merge` consulta el PR en GitHub (`gh pr view --json state,headRefOid,…`):
+
+| Estado del PR en GitHub | Qué hace |
+|---|---|
+| `MERGED` y su último commit es el `COMMIT:` de `round-N/merge-checks.md` (escrito en esta etapa) | «La Reina termina el merge»: `merge.md` con `MERGE: DONE`, pasa a `merged` y corre los pasos 13-16; sale `0` |
+| `OPEN` y el worktree sigue en el commit que pasó el Filtro | Retoma desde el merge: push (si hace falta) y `gh pr merge --match-head-commit`, sin sincronizar ni repetir el Filtro |
+| `OPEN` y la rama cambió (o no hay `merge-checks.md` con `PASS`) | Vuelve a sincronizar con `develop`, corre el Filtro `merge-checks` y mergea |
+| Cerrado sin merge, mergeado con otro commit o sin `merge-checks.md` que lo pruebe | Escala a `needs-human` con el motivo |
+
+Si no se puede leer el PR (red, `gh`), sale `2` y el job sigue en `merging` para otro intento. En
+un job `merged`, `atta merge` no hace nada: «El job <id> ya está mergeado: nada que hacer.»
+(sale `0`).
 
 **Si algo falla desde el paso 4**, Atta escala:
 

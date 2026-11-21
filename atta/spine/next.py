@@ -377,12 +377,16 @@ def _approve(c: _Ctx) -> dict:
         ["atta", "advance", c.jid, "needs-human"]])
 
 
+def _merging(c: _Ctx) -> dict:
+    # L22: a merge cut halfway is finished or resumed by `atta merge` (safe to re-run).
+    return _run("merge", c.jid)
+
+
 _HANDLERS = {"intake": _intake, "spec": _spec, "spec-review": _spec_review, "build": _build,
-             "gate": _gate, "review": _review, "approve": _approve}
+             "gate": _gate, "review": _review, "approve": _approve, "merging": _merging}
 _WAIT = {
     "needs-info": "Esperando la respuesta del autor del issue (needs-info).",
     "needs-human": "Esperando una decisión humana (needs-human): deja tu feedback con /atta.",
-    "merging": "Merge en curso; si quedó a medias, revisa el job con atta status.",
 }
 
 

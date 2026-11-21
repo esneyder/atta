@@ -1,7 +1,8 @@
 """Fake `gh` for tests: state and call log in the JSON file named by $FAKEGH_STATE.
 
-State keys: "user" (login), "issues" ({number: issue}), "prs" ([pr]), "fail" ({"<cmd> <sub>":
-"stderr text"} makes that command exit 1), "calls" (appended: {"argv": [...], "stdin": text|null}).
+State keys: "user" (login), "issues" ({number: issue}), "prs" ([pr]; `pr merge` sets "state"
+MERGED and "headRefOid" from --match-head-commit), "fail" ({"<cmd> <sub>": "stderr text"} makes
+that command exit 1), "calls" (appended: {"argv": [...], "stdin": text|null}).
 Only the subcommands Atta uses are implemented; anything else exits 1.
 """
 
@@ -123,7 +124,10 @@ def main(argv):
     elif key == "pr ready":
         _pr(state, argv[2])["isDraft"] = False
     elif key == "pr merge":
-        _pr(state, argv[2])["state"] = "MERGED"
+        pr = _pr(state, argv[2])
+        pr["state"] = "MERGED"
+        # GitHub keeps the head the PR had when merged (headRefOid).
+        pr["headRefOid"] = _opt(argv, "--match-head-commit", pr.get("headRefOid"))
     else:
         sys.stderr.write(f"fakegh: comando no soportado: {' '.join(argv)}\n")
         return 1

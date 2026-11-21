@@ -738,7 +738,11 @@ class CommentLabelTests(FlowBase):
         ])
 
 
-class MergeTests(FlowBase):
+CLOSING = ("<!-- atta -->\nLa Reina mergeó el PR #101 a develop. El issue #12 queda "
+           "resuelto.\n\n— La Reina · Atta\n")
+
+
+class MergeBase(FlowBase):
     def setUp(self):
         super().setUp()
         self.ok("start", "12")
@@ -755,6 +759,20 @@ class MergeTests(FlowBase):
     def stages(self):
         return [(e["from"], e["to"]) for e in read_events(self.store.job_dir(JID))]
 
+    def merge_md(self):
+        return (self.store.job_dir(JID) / "merge.md").read_text(encoding="utf-8")
+
+    def gated_sha(self):
+        report = self.store.job_dir(JID) / "round-1" / "merge-checks.md"
+        lines = report.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[0], "GATE: PASS")
+        return lines[1].removeprefix("COMMIT: ")
+
+    def set_pr(self, **fields):
+        st = self.state()
+        st["prs"][0].update(fields)
+        self.write_state(st)
+
     def assert_needs_human(self, reason):
         self.assertEqual(self.job()["stage"], "needs-human")
         self.assertEqual(self.gh_by("pr", "merge"), [])
@@ -770,6 +788,32 @@ class MergeTests(FlowBase):
         labels = [lb["name"] for lb in self.state()["issues"]["12"]["labels"]]
         self.assertIn("atta:needs-human", labels)
         self.assert_never_forced()
+
+    def assert_post_merge_done(self, sha):
+        """T11: closing comment (stdin) then close, label removed, both atta/<id> gone."""
+        calls = self.gh_calls()
+        comment = ["issue", "comment", "12", "--body-file", "-"]
+        close = ["issue", "close", "12", "--reason", "completed"]
+        self.assertEqual(self.gh_by("issue", "close"), [close])
+        merged_at = calls.index(["pr", "merge", "101", "--merge", "--match-head-commit", sha])
+        after = calls[merged_at + 1:]
+        self.assertLess(after.index(comment), after.index(close))
+        self.assertIn({"on": "issue", "number": "12", "body": CLOSING},
+                      self.state()["comments"])
+        it = self.state()["issues"]["12"]
+        self.assertEqual((it["state"], it["state_reason"]), ("CLOSED", "completed"))
+        self.assertEqual([lb["name"] for lb in it["labels"]], [])
+        self.assertIn(["issue", "edit", "12", "--remove-label", "atta"], calls)
+        self.assertIn(["push", "origin", "--delete", f"refs/heads/{BRANCH}"], self.git_calls)
+        refs = git(self.origin, "for-each-ref", "--format=%(refname)", "refs/heads").split()
+        self.assertEqual(sorted(refs), ["refs/heads/develop", "refs/heads/main"])
+        self.assertFalse(self.wt().exists())
+        self.assertIn(["worktree", "remove", str(self.wt())], self.git_calls)
+        local = git(self.root, "for-each-ref", "--format=%(refname)", f"refs/heads/{BRANCH}")
+        self.assertEqual(local, "")
+
+
+class MergeTests(MergeBase):
 
     def test_happy_path_syncs_gates_pushes_and_merges_exact_sha(self):
         self.push_to_develop("src/otro.py", "y = 2\n")
@@ -802,27 +846,8 @@ class MergeTests(FlowBase):
         code, out, err = self.merge()
         self.assertEqual((code, err), (0, ""), out)
         sha = self.gh_by("pr", "merge")[0][-1]
-        closing = ("<!-- atta -->\nLa Reina mergeó el PR #101 a develop. El issue #12 queda "
-                   "resuelto.\n\n— La Reina · Atta\n")
-        self.assertEqual(self.gh_by("issue", "close"),
-                         [["issue", "close", "12", "--reason", "completed", "--comment",
-                           closing]])
-        it = self.state()["issues"]["12"]
-        self.assertEqual(it["state"], "CLOSED")
-        self.assertEqual([lb["name"] for lb in it["labels"]], [])
-        self.assertIn(["issue", "edit", "12", "--remove-label", "atta"], self.gh_calls())
-        calls = self.gh_calls()
-        self.assertLess(calls.index(["pr", "merge", "101", "--merge", "--match-head-commit",
-                                     sha]), calls.index(self.gh_by("issue", "close")[0]))
-        # Remote work branch deleted through the one dedicated call; develop untouched.
-        self.assertIn(["push", "origin", "--delete", f"refs/heads/{BRANCH}"], self.git_calls)
-        refs = git(self.origin, "for-each-ref", "--format=%(refname)", "refs/heads").split()
-        self.assertEqual(sorted(refs), ["refs/heads/develop", "refs/heads/main"])
-        # Local worktree and branch removed.
-        self.assertFalse(self.wt().exists())
-        self.assertIn(["worktree", "remove", str(self.wt())], self.git_calls)
-        local = git(self.root, "for-each-ref", "--format=%(refname)", f"refs/heads/{BRANCH}")
-        self.assertEqual(local, "")
+        # T11 correction: the multi-line comment goes through stdin, then a plain close.
+        self.assert_post_merge_done(sha)
         merge_md = (self.store.job_dir(JID) / "merge.md").read_text(encoding="utf-8")
         self.assertEqual(merge_md, f"MERGE: DONE\nCOMMIT: {sha}\n\n## Summary\n\n"
                                    "La Reina integró el PR #101 en develop.\n")
@@ -833,7 +858,8 @@ class MergeTests(FlowBase):
 
     def test_post_merge_failures_are_warnings_recorded_in_merge_md(self):
         st = self.state()
-        st["fail"] = {"issue close": "cerrar falló", "issue edit": "label falló"}
+        st["fail"] = {"issue comment": "comentar falló", "issue close": "cerrar falló",
+                      "issue edit": "label falló"}
         self.write_state(st)
         real = flow.git
 
@@ -847,6 +873,8 @@ class MergeTests(FlowBase):
             code, out, err = self.merge()
         self.assertEqual(code, 0)
         warnings = [
+            "No se pudo comentar el cierre en el issue #12: gh issue comment falló: "
+            "comentar falló",
             "No se pudo cerrar el issue #12: gh issue close falló: cerrar falló",
             "No se pudo quitar la label atta del issue #12: gh issue edit falló: label falló",
             f"No se pudo borrar la rama remota {BRANCH}: git push falló: remoto caído",
@@ -882,6 +910,53 @@ class MergeTests(FlowBase):
         # The remote branch is still deleted and the issue closed.
         self.assertIn(["push", "origin", "--delete", f"refs/heads/{BRANCH}"], self.git_calls)
         self.assertEqual(self.state()["issues"]["12"]["state"], "CLOSED")
+
+    def test_unexpected_exception_in_a_post_merge_step_is_a_warning(self):
+        # L22: an exception after `gh pr merge` never escapes as a traceback.
+        real = flow.git
+
+        def locked(cwd, *args, **kw):
+            if args[:2] == ("worktree", "remove"):
+                raise PermissionError("[WinError 32] archivo en uso")
+            return real(cwd, *args, **kw)
+
+        with mock.patch.object(flow, "git", side_effect=locked):
+            code, out, err = self.merge()
+        warning = (f"No se pudo limpiar el worktree {self.wt()} y la rama local {BRANCH}: "
+                   "PermissionError: [WinError 32] archivo en uso")
+        self.assertEqual((code, err), (0, f"Aviso: {warning}\n"), out)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertTrue(self.merge_md().endswith(f"## Avisos\n\n- {warning}\n"))
+        self.assertEqual(self.state()["issues"]["12"]["state"], "CLOSED")
+
+    def test_merge_twice_on_a_merged_job_is_a_no_op(self):
+        self.assertEqual(self.merge()[0], 0)
+        before = self.merge_md()
+        gh_n, git_n = len(self.gh_calls()), len(self.git_calls)
+        code, out, err = self.merge()
+        self.assertEqual((code, out, err),
+                         (0, f"El job {JID} ya está mergeado: nada que hacer.\n", ""))
+        self.assertEqual((len(self.gh_calls()), len(self.git_calls)), (gh_n, git_n))
+        self.assertEqual(self.merge_md(), before)
+        self.assertEqual(self.job()["stage"], "merged")
+
+    def test_gh_error_after_github_merged_finishes_the_merge(self):
+        # `gh pr merge` fails (timeout, network) after GitHub merged: GitHub's word wins.
+        real = flow.github.merge_pr
+
+        def merged_then_error(*a, **kw):
+            real(*a, **kw)
+            raise flow.GhError("gh pr merge no respondió en 120 s.")
+
+        with mock.patch.object(flow.github, "merge_pr", side_effect=merged_then_error):
+            code, out, err = self.merge()
+        sha = self.gated_sha()
+        warning = ("gh pr merge devolvió un error (gh pr merge no respondió en 120 s.), pero "
+                   f"GitHub confirma el merge del PR #101 con {sha}.")
+        self.assertEqual((code, err), (0, f"Aviso: {warning}\n"), out)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertTrue(self.merge_md().startswith(f"MERGE: DONE\nCOMMIT: {sha}\n"))
+        self.assert_post_merge_done(sha)
 
     def test_failed_merge_does_not_close_or_delete_anything(self):
         st = self.state()
@@ -1033,6 +1108,217 @@ class MergeTests(FlowBase):
         code, out, err = self.merge()
         self.assertEqual((code, err), (2, FORK.format(n=101) + "\n"))
         self.assert_needs_human(FORK.format(n=101))
+
+
+class ResumeMergeTests(MergeBase):
+    """L22: `atta merge` on a job left in `merging` asks GitHub and finishes or resumes."""
+
+    def interrupt(self, after_github_merge):
+        """The process dies around `gh pr merge` (L22): before it or right after GitHub merged."""
+        real = flow.github.merge_pr
+
+        def killed(*a, **kw):
+            if after_github_merge:
+                real(*a, **kw)
+            raise KeyboardInterrupt
+
+        with mock.patch.object(flow.github, "merge_pr", side_effect=killed), \
+                self.assertRaises(KeyboardInterrupt):
+            self.merge()
+        self.assertEqual(self.job()["stage"], "merging")
+        self.assertFalse((self.store.job_dir(JID) / "merge.md").exists())
+        self.assertEqual(self.state()["prs"][0]["state"],
+                         "MERGED" if after_github_merge else "OPEN")
+        self.gh_n, self.git_n = len(self.gh_calls()), len(self.git_calls)
+        return self.gated_sha()
+
+    def new_git_calls(self):
+        return self.git_calls[self.git_n:]
+
+    def test_l22_state_is_finished_with_every_post_merge_step(self):
+        sha = self.interrupt(after_github_merge=True)
+        self.assertEqual(self.state()["prs"][0]["headRefOid"], sha)
+        report = self.store.job_dir(JID) / "round-1" / "merge-checks.md"
+        mtime = report.stat().st_mtime_ns
+        with mock.patch.object(flow.gate, "run_gate", side_effect=AssertionError("Filtro")):
+            code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out, "El PR #101 ya está mergeado en GitHub con el commit que pasó "
+                              f"el Filtro; la Reina termina el merge de {JID}.\n"
+                              "La Reina integró el PR #101 en develop.\n")
+        self.assertEqual(self.merge_md(), f"MERGE: DONE\nCOMMIT: {sha}\n\n## Summary\n\n"
+                                          "La Reina integró el PR #101 en develop.\n")
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertEqual(self.stages()[-2:], [("approve", "merging"), ("merging", "merged")])
+        # No second merge, no sync, no Filtro.
+        self.assertEqual(len(self.gh_by("pr", "merge")), 1)
+        self.assertNotIn(["fetch", "origin"], self.new_git_calls())
+        self.assertEqual(report.stat().st_mtime_ns, mtime)
+        self.assert_post_merge_done(sha)
+        self.assert_never_forced()
+
+    def test_second_run_after_resuming_is_a_no_op(self):
+        self.interrupt(after_github_merge=True)
+        self.assertEqual(self.merge()[0], 0)
+        before = self.merge_md()
+        gh_n, git_n = len(self.gh_calls()), len(self.git_calls)
+        code, out, err = self.merge()
+        self.assertEqual((code, out, err),
+                         (0, f"El job {JID} ya está mergeado: nada que hacer.\n", ""))
+        self.assertEqual((len(self.gh_calls()), len(self.git_calls)), (gh_n, git_n))
+        self.assertEqual(self.merge_md(), before)
+
+    def assert_single_failure(self, warning, *, gh_fail=None, git_fail=None):
+        sha = self.interrupt(after_github_merge=True)
+        if gh_fail:
+            st = self.state()
+            st["fail"] = gh_fail
+            self.write_state(st)
+        real = flow.git
+
+        def failing(cwd, *args, **kw):
+            if git_fail and args[:len(git_fail[0])] == git_fail[0]:
+                self.git_calls.append(list(args))
+                raise git_fail[1]
+            return real(cwd, *args, **kw)
+
+        with mock.patch.object(flow, "git", side_effect=failing):
+            code, out, err = self.merge()
+        self.assertEqual((code, err), (0, f"Aviso: {warning}\n"), out)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertEqual(self.merge_md(), f"MERGE: DONE\nCOMMIT: {sha}\n\n## Summary\n\n"
+                                          "La Reina integró el PR #101 en develop.\n\n"
+                                          f"## Avisos\n\n- {warning}\n")
+        return sha
+
+    def test_failed_closing_comment_alone_is_a_warning(self):
+        self.assert_single_failure("No se pudo comentar el cierre en el issue #12: gh issue "
+                                   "comment falló: boom", gh_fail={"issue comment": "boom"})
+        self.assertEqual(self.state()["issues"]["12"]["state"], "CLOSED")
+        self.assertFalse(self.wt().exists())
+
+    def test_failed_issue_close_alone_is_a_warning(self):
+        self.assert_single_failure("No se pudo cerrar el issue #12: gh issue close falló: boom",
+                                   gh_fail={"issue close": "boom"})
+        self.assertEqual(self.state()["issues"]["12"]["state"], "OPEN")
+        self.assertEqual(self.state()["issues"]["12"]["labels"], [])
+        self.assertFalse(self.wt().exists())
+
+    def test_failed_label_removal_alone_is_a_warning(self):
+        self.assert_single_failure("No se pudo quitar la label atta del issue #12: gh issue "
+                                   "edit falló: boom", gh_fail={"issue edit": "boom"})
+        self.assertEqual(self.state()["issues"]["12"]["state"], "CLOSED")
+        self.assertFalse(self.wt().exists())
+
+    def test_failed_remote_branch_deletion_alone_is_a_warning(self):
+        self.assert_single_failure(
+            f"No se pudo borrar la rama remota {BRANCH}: git push falló: remoto caído",
+            git_fail=(("push", "origin", "--delete"), flow.FlowError("git push falló: remoto "
+                                                                     "caído")))
+        self.assertFalse(self.wt().exists())
+        self.assertEqual(self.state()["issues"]["12"]["state"], "CLOSED")
+
+    def test_failed_worktree_removal_alone_is_a_warning(self):
+        # Windows: a process with its cwd inside the worktree makes `git worktree remove` fail.
+        self.assert_single_failure(
+            f"No se pudo quitar el worktree {self.wt()}: git worktree falló: Permission denied",
+            git_fail=(("worktree", "remove"), flow.FlowError("git worktree falló: Permission "
+                                                              "denied")))
+        self.assertTrue(self.wt().is_dir())
+        refs = git(self.origin, "for-each-ref", "--format=%(refname)", "refs/heads").split()
+        self.assertEqual(sorted(refs), ["refs/heads/develop", "refs/heads/main"])
+
+    def test_failed_local_branch_deletion_alone_is_a_warning(self):
+        self.assert_single_failure(
+            f"No se pudo borrar la rama local {BRANCH}: git branch falló: en uso",
+            git_fail=(("branch", "-D"), flow.FlowError("git branch falló: en uso")))
+        self.assertFalse(self.wt().exists())
+
+    def test_remote_branch_already_deleted_by_github_is_not_a_warning(self):
+        self.interrupt(after_github_merge=True)
+        git(self.origin, "update-ref", "-d", f"refs/heads/{BRANCH}")
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertNotIn("## Avisos", self.merge_md())
+        self.assertEqual(self.job()["stage"], "merged")
+
+    def test_missing_worktree_still_deletes_the_local_branch(self):
+        sha = self.interrupt(after_github_merge=True)
+        git(self.root, "worktree", "remove", str(self.wt()))
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(git(self.root, "for-each-ref", "--format=%(refname)",
+                             f"refs/heads/{BRANCH}"), "")
+        self.assertTrue(self.merge_md().startswith(f"MERGE: DONE\nCOMMIT: {sha}\n"))
+
+    def test_open_pr_resumes_from_the_merge_step_without_resyncing(self):
+        sha = self.interrupt(after_github_merge=False)
+        report = self.store.job_dir(JID) / "round-1" / "merge-checks.md"
+        mtime = report.stat().st_mtime_ns
+        with mock.patch.object(flow.gate, "run_gate", side_effect=AssertionError("Filtro")):
+            code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out, f"El PR #101 sigue abierto; la Reina retoma el merge de {JID} con "
+                              "el commit que pasó el Filtro.\n"
+                              "La Reina integró el PR #101 en develop.\n")
+        self.assertEqual(self.gh_by("pr", "merge"),
+                         [["pr", "merge", "101", "--merge", "--match-head-commit", sha]])
+        self.assertNotIn(["fetch", "origin"], self.new_git_calls())
+        self.assertFalse(any(c[:1] == ["merge"] for c in self.new_git_calls()))
+        self.assertEqual(report.stat().st_mtime_ns, mtime)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertEqual(self.job()["sync_attempts"], 1)
+        self.assertTrue(self.merge_md().startswith(f"MERGE: DONE\nCOMMIT: {sha}\n"))
+        self.assert_post_merge_done(sha)
+        self.assert_never_forced()
+
+    def test_open_pr_with_a_moved_head_resyncs_and_reruns_the_filtro(self):
+        old = self.interrupt(after_github_merge=False)
+        new = self.commit_in_wt("src/otra.py", "z = 3\n")
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertTrue(out.startswith("El PR #101 sigue abierto, pero la rama cambió desde el "
+                                       f"Filtro; la Reina vuelve a sincronizar {JID}.\n"), out)
+        self.assertNotEqual(old, new)
+        self.assertEqual(self.gated_sha(), new)
+        self.assertIn(["fetch", "origin"], self.new_git_calls())
+        self.assertEqual(self.gh_by("pr", "merge"),
+                         [["pr", "merge", "101", "--merge", "--match-head-commit", new]])
+        self.assertTrue(self.merge_md().startswith(f"MERGE: DONE\nCOMMIT: {new}\n"))
+        self.assertEqual(self.job()["stage"], "merged")
+
+    def test_closed_unmerged_pr_goes_to_needs_human(self):
+        self.interrupt(after_github_merge=False)
+        self.set_pr(state="CLOSED")
+        code, out, err = self.merge()
+        reason = "El PR #101 está cerrado en GitHub sin merge; la Reina no lo reabre."
+        self.assertEqual((code, out, err), (1, "", reason + "\n"))
+        self.assert_needs_human(reason)
+        self.assertEqual(self.stages()[-1], ("merging", "needs-human"))
+        self.assertTrue(self.wt().is_dir())
+
+    def test_merged_with_another_sha_goes_to_needs_human(self):
+        sha = self.interrupt(after_github_merge=False)
+        other = "f" * 40
+        self.set_pr(state="MERGED", headRefOid=other)
+        code, out, err = self.merge()
+        reason = (f"El PR #101 ya está mergeado en GitHub, pero con el commit {other}, no con el "
+                  f"que pasó el Filtro ({sha}); revísalo.")
+        self.assertEqual((code, out, err), (1, "", reason + "\n"))
+        self.assert_needs_human(reason)
+        self.assertEqual(self.state()["issues"]["12"]["state"], "OPEN")
+        self.assertTrue(self.wt().is_dir())
+
+    def test_merged_without_a_merge_checks_report_goes_to_needs_human(self):
+        sha = self.interrupt(after_github_merge=True)
+        (self.store.job_dir(JID) / "round-1" / "merge-checks.md").unlink()
+        code, out, err = self.merge()
+        reason = (f"El PR #101 ya está mergeado en GitHub con el commit {sha}, pero no hay un "
+                  "merge-checks.md con PASS de este merge para comprobarlo; revísalo.")
+        self.assertEqual((code, out, err), (1, "", reason + "\n"))
+        self.assertEqual(self.job()["stage"], "needs-human")
+        self.assertTrue(self.merge_md().startswith("MERGE: FAIL\n"))
+        self.assertEqual(self.state()["issues"]["12"]["state"], "OPEN")
 
 
 class RemoteBranchDeletionTests(FlowBase):
