@@ -22,7 +22,7 @@ Rama: `feat/f2-colonia` (apilada sobre `docs/readme-guia`, PR #3). Base de dise�
 | ID | Specs | Route | Estado | Commit |
 |---|---|---|---|---|
 | T1 | S1, S10, S11 | Empaquetado: paquete `atta` instalable, raíz del proyecto por `git`, entry points `atta` y `atta-board`, CI instala con pip | hecho (308 tests OK; job CI install sin correr aún) | ver commit build(package) |
-| T2 | S2 | `atta init` | pendiente | — |
+| T2 | S2 | `atta init` | hecho (21 tests; falta conectar en cli.py) | ver commit feat(init) |
 | T3 | S3, S4 | Adaptador GitHub (`gh`) + worktree + PR + merge seguro | pendiente | — |
 | T4 | S7 | `atta next` / `atta queue` + skill `/atta` | pendiente | — |
 | T5 | S8 | `atta guard` (hook PreToolUse) | pendiente | — |
@@ -42,3 +42,4 @@ Rama: `feat/f2-colonia` (apilada sobre `docs/readme-guia`, PR #3). Base de dise�
   - T4 (`atta/spine/next.py`): `atta next <job>` imprime una acción JSON: `{"action":"spawn","agent":"atta-<rol>","model":"haiku|sonnet|opus","prompt":"..."}`, `{"action":"spawn-group","agents":[...]}` (reviewers en paralelo), `{"action":"run","argv":["atta",...]}`, `{"action":"wait","reason":"..."}` o `{"action":"done","stage":"..."}`; y `atta save-artifact <job> intake --from-reply <archivo>` (extrae lo que hay entre `<<<ATTA-ARTIFACT` y `ATTA-ARTIFACT>>>`). Skill en `atta/templates/claude/skills/atta/SKILL.md`. `feedback-*.md` vive en la carpeta del job.
   - T5 (`atta/spine/guard.py`): `atta guard` lee el JSON PreToolUse de Claude Code por stdin; permite escribir solo dentro del worktree de un job activo (fuera de `protected_paths`) y solo los artefactos del job en `atta/jobs/<id>/`; bloquea `git push` fuera de `atta/*`, `gh pr merge`, despliegues y borrar ramas. Plantilla `atta/templates/claude/settings.json` con el hook.
   - T2 (`atta/spine/initcmd.py`): `atta init [--force] [--no-github]` copia plantillas resolviendo `{{model:Tn}}` con `models.json`, instala el skill, fusiona `settings.json` (sin borrar lo del usuario), crea `atta/config.json` y `atta/checks.json` si faltan, agrega `/atta/jobs/` y `/.worktrees/` al `.gitignore`, verifica `origin/develop` y crea las labels con `gh`.
+- **L7** CI run 44849180995 verde: 12/12 (spine tests + pip install en ubuntu/macos/windows × py3.10/3.12). T1 cerrado con evidencia de instalación real.
