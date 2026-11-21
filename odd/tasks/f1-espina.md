@@ -29,7 +29,7 @@ Rama: `feat/f1-espina` (desde `develop`). Diseño de referencia: `docs/design/ar
 | T4 | S8, S2 | worker + verify independiente + corrección | hecho | 043ed2e |
 | T5 | S9, S10, S12 | worker CLI + term | hecho (57 tests; smoke manual) | ver commit feat(cli) |
 | T6 | S11 | worker dashboard A + verify independiente + corrección | hecho | ver commit feat(board) |
-| T7 | S13 | CI 3 SO + docs de uso | pendiente | — |
+| T7 | S13 | CI + README | hecho (CI run 44844205944 verde: ubuntu/macos/windows × py3.10/3.12) | 1b95a75 |
 
 ## Log
 
@@ -45,3 +45,4 @@ Rama: `feat/f1-espina` (desde `develop`). Diseño de referencia: `docs/design/ar
 - **L10** (usuario) sobre el dashboard A con fixtures: «ya probe, funciona- me gusta el diseno».
 - **L11** Verify independiente T6 (Risk item 2): S11 y S12 cumplidos; B1 bloqueante: una junction NTFS (`mklink /J`, sin privilegios) dentro de jobs o round-N hace que el tablero liste y lea `.md` de fuera del job (`is_symlink()` es False para junctions en Python 3.10/3.11). Menores: m1 hardlinks servidos, m2 `STAGE_ROLE[m.stage]` con `constructor` rompe la vista, m3 Host laxo, m4 páginas de error stdlib sin headers, m5 sin timeout de socket, m6 `--host 127.0.0.2` tratado como externo, m7 symlinks de archivo sin probar. Decisión: corregir B1 con confinamiento por `resolve().parent`, m1, m2, m3, m5, m6; m4 aceptado (contenido escapado).
 - **L12** Corrección de L11 aplicada (B1 junctions/symlinks por confinamiento de ruta resuelta, m1 hardlinks, m2 mapas sin prototipo, m3 Host estricto, m5 timeout 10 s, m6 loopback 127/8); 275 tests OK, 3 skipped (symlinks sin privilegio en Windows, corren en CI POSIX). Aceptado: con `--host 127.0.0.2` ese mismo Host es válido.
+- **L13** RDD: la revisión nativa de la rama completa paró con `lens_context_budget_exceeded` (~9.200 líneas). Usuario eligió «Desactivar RDD en este clon y subir»; `gentle-ai review mode disable --scope clone` (global sigue on). Push de `feat/f1-espina`; CI run 44844205944: 6/6 success (ubuntu, macos, windows × 3.10, 3.12). F1 completa; merge a `develop` queda a decisión del usuario.
