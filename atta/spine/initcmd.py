@@ -168,6 +168,12 @@ def _plan(root: Path, templates: Path, runtime: str, force: bool) -> _Plan:
     if skill.is_file():
         plan.file(root / ".claude" / "skills" / "atta" / "SKILL.md", skill.read_bytes(),
                   replaceable=True)
+    # A slash command that points to the skill, so `/atta` works even on Claude Code
+    # versions where skills are not registered as slash commands.
+    command = claude_t / "commands" / "atta.md"
+    if command.is_file():
+        plan.file(root / ".claude" / "commands" / "atta.md", command.read_bytes(),
+                  replaceable=True)
 
     settings_t = claude_t / "settings.json"
     if settings_t.is_file():

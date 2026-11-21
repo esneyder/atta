@@ -163,6 +163,12 @@ class FreshInitTest(InitBase):
         skill = project.TEMPLATES_DIR / "claude" / "skills" / "atta" / "SKILL.md"
         self.assertEqual((self.root / ".claude" / "skills" / "atta" / "SKILL.md").exists(),
                          skill.exists())
+        # /atta must be a slash command even where skills are not slash-invocable
+        command = self.root / ".claude" / "commands" / "atta.md"
+        self.assertTrue(command.is_file())
+        text = command.read_text(encoding="utf-8")
+        self.assertIn("$ARGUMENTS", text)
+        self.assertIn(".claude/skills/atta/SKILL.md", text)
 
     def test_missing_optional_templates_are_skipped(self):
         tdir = make_templates(self.tmp / "bare", skill=False, settings=False)
