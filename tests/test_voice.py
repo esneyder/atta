@@ -1,7 +1,7 @@
 import unittest
 
 import support  # noqa: F401
-from spine import voice
+from atta.spine import voice
 
 
 class VoiceTests(unittest.TestCase):

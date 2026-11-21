@@ -5,7 +5,7 @@ from unittest import mock
 import support  # noqa: F401
 from support import TempDirMixin, T0, snapshot
 
-from spine import config, ids, store
+from atta.spine import config, ids, store
 
 
 SCHEMA_KEYS = {
@@ -74,7 +74,7 @@ class StoreTests(TempDirMixin, unittest.TestCase):
         path = self.store.job_dir(job["id"]) / "job.json"
         before = snapshot(path)
         changed = dict(job, stage="spec")
-        with mock.patch("spine.store.os.replace", side_effect=OSError("disco lleno")):
+        with mock.patch("atta.spine.store.os.replace", side_effect=OSError("disco lleno")):
             with self.assertRaises(OSError):
                 self.store.save(changed)
         self.assertEqual(snapshot(path), before)

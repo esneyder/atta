@@ -17,7 +17,7 @@ from urllib.parse import quote
 import support  # noqa: F401
 from support import REPO_ROOT, TempDirMixin
 
-from spine import board
+from atta.spine import board
 
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "jobs"
 BOARD_DIR = REPO_ROOT / "atta" / "board"

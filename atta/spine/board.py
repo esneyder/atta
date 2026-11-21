@@ -1,5 +1,9 @@
 """El hormiguero: a read-only HTTP board over the job store (arquitectura §4.1).
 
+Run it as the `atta-board` console script or `python atta/bin/board.py`. Jobs and config come
+from the project (spine/project.py: `--project`, $ATTA_PROJECT, git top level or cwd); the static
+view always comes from the installed package.
+
 Serves the static view in `atta/board/` and a JSON API built from `job.json`,
 `events.jsonl` and the first line / `## Summary` of each Markdown artifact:
 
@@ -32,11 +36,12 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
+from . import project
 from .ids import InvalidId, sanitize_id
 from .timeutil import from_iso, to_iso, utcnow
 
-ATTA_DIR = Path(__file__).resolve().parents[1]
-STATIC_DIR = ATTA_DIR / "board"
+ATTA_DIR = project.PACKAGE_DIR
+STATIC_DIR = project.BOARD_DIR
 DEFAULT_JOBS_DIR = ATTA_DIR / "jobs"
 CONFIG_FILE = ATTA_DIR / "config.json"
 DEFAULT_HOST = "127.0.0.1"
@@ -439,18 +444,18 @@ def stats(jobs: list[dict]) -> dict:
     }
 
 
-def _config() -> dict:
+def _config(path: str | Path | None = None) -> dict:
     """Display-only reads of atta/config.json; the spine validates it elsewhere."""
     try:
-        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        cfg = json.loads(Path(path or CONFIG_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return cfg if isinstance(cfg, dict) else {}
 
 
-def jobs_payload(root: Path, now: datetime) -> dict:
+def jobs_payload(root: Path, now: datetime, config_file: str | Path | None = None) -> dict:
     jobs, warnings = collect(root, now)
-    cfg = _config()
+    cfg = _config(config_file)
     branch = cfg.get("integration_branch")
     max_rounds = _int(cfg.get("max_rounds"))
     return {
@@ -518,6 +523,7 @@ class BoardHandler(BaseHTTPRequestHandler):
 
     # Set by make_server.
     jobs_dir: Path = DEFAULT_JOBS_DIR
+    config_file: Path | None = None
     static: dict = {}
     now: Callable[[], datetime] = staticmethod(utcnow)
     quiet = False
@@ -589,7 +595,7 @@ class BoardHandler(BaseHTTPRequestHandler):
         if raw in ("/", "/index.html"):
             self._static("index.html")
         elif raw == "/api/jobs":
-            self._json(200, jobs_payload(self.jobs_dir, self.now()))
+            self._json(200, jobs_payload(self.jobs_dir, self.now(), self.config_file))
         elif raw.startswith("/api/"):
             self._api(raw, parts.query)
         elif raw.startswith("/") and raw[1:] in self.static:
@@ -641,9 +647,11 @@ class _BoardServer6(_BoardServer):
 def make_server(jobs_dir: str | Path = DEFAULT_JOBS_DIR, host: str = DEFAULT_HOST,
                 port: int = DEFAULT_PORT, *, now: Callable[[], datetime] | None = None,
                 quiet: bool = False, static_dir: str | Path = STATIC_DIR,
-                request_timeout: float = REQUEST_TIMEOUT_S) -> ThreadingHTTPServer:
+                request_timeout: float = REQUEST_TIMEOUT_S,
+                config_file: str | Path | None = None) -> ThreadingHTTPServer:
     handler = type("Handler", (BoardHandler,), {
         "jobs_dir": Path(jobs_dir),
+        "config_file": Path(config_file) if config_file else None,
         "static": static_files(Path(static_dir)),
         "now": staticmethod(now or utcnow),
         "quiet": quiet,
@@ -656,29 +664,48 @@ def make_server(jobs_dir: str | Path = DEFAULT_JOBS_DIR, host: str = DEFAULT_HOS
     return server_cls((host, port), handler)
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser():
     import argparse
 
-    # A console or pipe without UTF-8 (Windows cp1252/cp437) must not crash on «·» or tildes.
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(errors="replace")
-        except (AttributeError, ValueError):
-            pass
     parser = argparse.ArgumentParser(
-        prog="python atta/bin/board.py",
+        prog="atta-board",
         description="El hormiguero: tablero de solo lectura de los jobs de Atta.",
     )
-    parser.add_argument("--jobs-dir", default=str(DEFAULT_JOBS_DIR),
-                        help="carpeta de jobs (por defecto atta/jobs)")
+    parser.add_argument("--project", metavar="<carpeta>",
+                        help=f"raíz del proyecto (por defecto ${project.ENV_VAR}, la raíz git de "
+                             "la carpeta actual o la carpeta actual)")
+    parser.add_argument("--jobs-dir",
+                        help="carpeta de jobs (por defecto atta/jobs del proyecto)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=f"puerto (por defecto {DEFAULT_PORT})")
     parser.add_argument("--host", default=DEFAULT_HOST,
                         help=f"interfaz (por defecto {DEFAULT_HOST}, solo esta máquina)")
     parser.add_argument("--quiet", action="store_true", help="no registrar cada petición")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def resolve_paths(args) -> tuple[Path, Path]:
+    """(jobs dir, config file) of the project; `--jobs-dir` overrides the jobs dir."""
+    root = project.find_root(args.project)
+    jobs_dir = Path(args.jobs_dir) if args.jobs_dir else project.jobs_dir(root)
+    return jobs_dir, project.config_path(root)
+
+
+def main(argv: list[str] | None = None) -> int:
+    # Pipes get UTF-8 (Windows would print «m?quina»); consoles never crash on «·» or tildes.
+    project.utf8_streams()
     try:
-        server = make_server(args.jobs_dir, args.host, args.port, quiet=args.quiet)
+        args = build_parser().parse_args(argv)
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else 2
+    try:
+        jobs_dir, config_file = resolve_paths(args)
+    except project.ProjectError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        server = make_server(jobs_dir, args.host, args.port, quiet=args.quiet,
+                             config_file=config_file)
     except OSError as exc:
         print(f"El hormiguero no pudo abrir {args.host}:{args.port}: {exc}", file=sys.stderr)
         return 1
@@ -696,3 +723,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         server.server_close()
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -31,3 +31,40 @@ jobs:
         env:
           PYTHONUTF8: "1"
         run: python -m unittest discover -s tests -v
+
+  install:
+    name: pip install (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Atta into a fresh venv
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/atta-venv"
+          if [ -d "$RUNNER_TEMP/atta-venv/Scripts" ]; then bin="$RUNNER_TEMP/atta-venv/Scripts"; else bin="$RUNNER_TEMP/atta-venv/bin"; fi
+          "$bin/python" -m pip install .
+          echo "$bin" >> "$GITHUB_PATH"
+      - name: Run the installed commands outside the checkout
+        shell: bash
+        run: |
+          proj="$RUNNER_TEMP/proyecto"
+          git init -q "$proj"
+          cd "$RUNNER_TEMP"
+          command -v atta atta-board
+          atta --help
+          atta-board --help
+          # S11: accents survive a pipe (UTF-8 on every OS).
+          atta-board --help | grep -q "máquina"
+          out="$(atta --project "$proj" status | tr -d '\r')"
+          echo "$out"
+          test "$out" = "No hay jobs."
+          cd "$proj"
+          test "$(atta status | tr -d '\r')" = "No hay jobs."

@@ -3,7 +3,7 @@ import unittest
 
 import support  # noqa: F401
 
-from spine import branches, config, ids
+from atta.spine import branches, config, ids
 
 
 class BranchTestBase(unittest.TestCase):

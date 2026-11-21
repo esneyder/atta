@@ -3,7 +3,7 @@ import unittest
 import support  # noqa: F401
 from support import TempDirMixin
 
-from spine import intake
+from atta.spine import intake
 
 
 def doc(*header, body="## Summary\nAlgo.\n"):

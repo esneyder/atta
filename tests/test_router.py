@@ -3,7 +3,7 @@ import unittest
 
 import support  # noqa: F401
 
-from spine import config, router
+from atta.spine import config, router
 
 
 def R(reviewer, lenses, tier):
