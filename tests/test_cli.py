@@ -255,6 +255,13 @@ class RouteTest(CliBase):
         expected = router.plan("high", ["ui"], config.load_config())
         self.assertEqual(job["agents"], expected)
         self.assertEqual(job["intake"], {"risk": "high", "surfaces": ["ui"], "decision": "ACCEPT"})
+
+    def test_route_with_one_reviewer_uses_singular(self):
+        self.write_intake("DECISION: ACCEPT\nRISK: low\nSURFACES: none\n\nResumen.\n")
+        code, out, err = self.atta("route", JID)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, f"El router asignó 1 reviewer a {JID} (riesgo bajo, spec-review no): "
+                              "code T1.\n")
         self.assertFalse((self.job_dir() / "events.jsonl").exists())
 
     def test_bad_intake_is_refused_and_job_unchanged(self):
