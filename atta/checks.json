@@ -1,0 +1,5 @@
+{
+  "_comment": "Placeholder de Atta: sin checks el Filtro siempre falla. Agrega los checks reales del proyecto en orden (ver docstring de atta/spine/gate.py). Ejemplo: {\"name\": \"tests\", \"run\": \"python -m unittest\", \"shell\": {\"windows\": \"pwsh\", \"default\": \"bash\"}}",
+  "checks": [],
+  "timeout_s": 900
+}

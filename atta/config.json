@@ -1,0 +1,66 @@
+{
+  "integration_branch": "develop",
+  "forbidden_branches": ["main", "master"],
+  "branch_prefix": "atta/",
+  "max_rounds": 3,
+  "max_total_rounds": 6,
+  "concurrency": 3,
+  "labels": {
+    "queue": "atta",
+    "needs_info": "atta:needs-info",
+    "needs_human": "atta:needs-human"
+  },
+  "protected_paths": ["atta/**", ".claude/**", ".pi/**", ".github/workflows/**"],
+  "prices_usd_per_mtok": {},
+  "routing": {
+    "risk": {
+      "low": {
+        "spec_review": false,
+        "reviewers": [
+          {"reviewer": "code", "lenses": ["reliability"], "tier": "T1"}
+        ]
+      },
+      "medium": {
+        "spec_review": true,
+        "reviewers": [
+          {"reviewer": "code", "lenses": ["reliability", "readability"], "tier": "T2"}
+        ]
+      },
+      "high": {
+        "spec_review": true,
+        "reviewers": [
+          {"reviewer": "code", "lenses": ["reliability", "readability"], "tier": "T2"},
+          {"reviewer": "security", "lenses": ["security"], "tier": "T3"},
+          {"reviewer": "resilience", "lenses": ["resilience"], "tier": "T2"}
+        ]
+      }
+    },
+    "surfaces": {
+      "ui": {
+        "low": [
+          {"reviewer": "ux", "lenses": ["ux"], "tier": "T1"},
+          {"reviewer": "ui", "lenses": ["ui"], "tier": "T0"}
+        ],
+        "medium": [
+          {"reviewer": "ux", "lenses": ["ux"], "tier": "T2"},
+          {"reviewer": "ui", "lenses": ["ui"], "tier": "T1"}
+        ],
+        "high": [
+          {"reviewer": "ux", "lenses": ["ux"], "tier": "T2"},
+          {"reviewer": "ui", "lenses": ["ui"], "tier": "T1"}
+        ]
+      },
+      "security": {
+        "low": [
+          {"reviewer": "security", "lenses": ["security"], "tier": "T2"}
+        ],
+        "medium": [
+          {"reviewer": "security", "lenses": ["security"], "tier": "T2"}
+        ],
+        "high": [
+          {"reviewer": "security", "lenses": ["security"], "tier": "T3"}
+        ]
+      }
+    }
+  }
+}

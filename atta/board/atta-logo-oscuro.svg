@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 252 100" width="504" height="200">
+  <title>Atta</title>
+  <g fill="none" stroke="#E57A52" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M56 61 L44 68 L34 85"></path>
+    <path d="M62 63 L67 74 L63 89"></path>
+    <path d="M68 60 L81 66 L90 82"></path>
+    <path d="M88 44 L98 35 L107 40"></path>
+  </g>
+  <path d="M90 56 C100 36 80 12 52 6 C50 26 64 46 90 56 Z" fill="#7CC283"></path>
+  <g fill="none" stroke="#17110D" stroke-linecap="round">
+    <path d="M87 53 C78 38 66 22 55 10" stroke-width="2.6"></path>
+    <path d="M78 39 L87 33 M78 39 L69 39 M69 27 L77 20 M69 27 L60 27" stroke-width="1.8"></path>
+  </g>
+  <g fill="#E57A52">
+    <ellipse cx="27" cy="62" rx="19" ry="15"></ellipse>
+    <circle cx="49.5" cy="60" r="4.5"></circle>
+    <ellipse cx="62" cy="57" rx="11" ry="7" transform="rotate(-14 62 57)"></ellipse>
+    <circle cx="83" cy="51" r="10"></circle>
+  </g>
+  <g fill="none" stroke="#F4EADB" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="140" cy="66" r="12.5"></circle><path d="M152.5 53 L152.5 80"></path>
+    <path d="M172 40 L172 71 Q172 80 181 80 L184 80"></path><path d="M164 54 L184 54"></path>
+    <path d="M198 40 L198 71 Q198 80 207 80 L210 80"></path><path d="M190 54 L210 54"></path>
+    <circle cx="230" cy="66" r="12.5"></circle><path d="M242.5 53 L242.5 80"></path>
+  </g>
+</svg>

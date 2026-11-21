@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atta"
+dynamic = ["version"]
+description = "Atta, tu colonia de agentes: fábrica de software dirigida por issues de GitHub."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/esneyder/atta"
+
+[project.scripts]
+atta = "atta.spine.cli:main"
+atta-board = "atta.spine.board:main"
+
+[tool.setuptools]
+packages = ["atta", "atta.spine"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+atta = ["board/*", "templates/**/*", "config.json", "checks.json"]
+
+[tool.setuptools.exclude-package-data]
+atta = ["**/__pycache__/*", "**/*.pyc"]
+
+[tool.setuptools.dynamic]
+version = { attr = "atta.__version__" }

@@ -1,0 +1,11 @@
+{
+  "title": "El hormiguero",
+  "brief": "Tablero de Atta que muestra cada job del issue al merge en develop (etapa, ronda, riesgo, revisiones, modelo/tier, costo, tiempo y artefactos con ## Summary), con la identidad de marca y la hormiga en el dashboard y en la terminal animada de la CLI",
+  "feature": "odd/tasks/f1-espina.md",
+  "artboards": [
+    { "file": "01-camino-de-hormigas.html", "title": "A · Camino de hormigas (kanban por etapa)", "tradeoff": "El flujo se lee de un vistazo y la hormiga marca dónde hay trabajo; columnas estrechas: el detalle vive en un cajón que tapa el tablero y escala mal con más de ~20 jobs", "width": 1440, "height": 900 },
+    { "file": "02-mesa-de-operacion.html", "title": "B · Mesa de operación (tabla densa + detalle fijo)", "tradeoff": "Máxima densidad, filtros y comparación de costo/tiempo/rondas entre jobs; menos narrativa visual y pide familiaridad con el pipeline", "width": 1440, "height": 900 },
+    { "file": "03-mapa-de-la-colonia.html", "title": "C · Mapa de la colonia (mapa + línea de tiempo)", "tradeoff": "Cuenta la historia: la hormiga recorre el camino del job y la línea de tiempo muestra dónde se va el tiempo; caben pocos jobs y comparar cifras exactas es más lento", "width": 1440, "height": 900 },
+    { "file": "04-terminal.html", "title": "Terminal · la hormiga en la CLI", "tradeoff": "Animación de 2 líneas que solo corre mientras trabaja una etapa (cero espera), con fallback ASCII y modo estático; ocupa 2 líneas extra mientras corre y depende de redibujar en sitio", "width": 1440, "height": 900 }
+  ]
+}
