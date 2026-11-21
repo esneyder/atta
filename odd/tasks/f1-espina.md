@@ -28,7 +28,7 @@ Rama: `feat/f1-espina` (desde `develop`). Diseño de referencia: `docs/design/ar
 | T3 | S7, S1 | worker + verify independiente + corrección | hecho | 933213b |
 | T4 | S8, S2 | worker + verify independiente + corrección | hecho | 043ed2e |
 | T5 | S9, S10, S12 | worker CLI + term | hecho (57 tests; smoke manual) | ver commit feat(cli) |
-| T6 | S11 | dashboard implementado (`atta/bin/board.py` + vista) según dirección elegida | pendiente | — |
+| T6 | S11 | worker dashboard A + verify independiente + corrección | hecho | ver commit feat(board) |
 | T7 | S13 | CI 3 SO + docs de uso | pendiente | — |
 
 ## Log
@@ -43,3 +43,5 @@ Rama: `feat/f1-espina` (desde `develop`). Diseño de referencia: `docs/design/ar
 - **L8** Corrección de L5 aplicada (B1-B3, A1-A5) con 27 pruebas de bypass en `tests/test_gate_bypass.py`; 180 tests OK (Windows). Commits: T4 `043ed2e`, T3 `933213b`. Riesgo residual: tras un timeout con hijo en background el Filtro ya no espera, pero el proceso huérfano puede seguir vivo; `--end-of-options` requiere git reciente (probado 2.49). Slice: la rama supera ~400 líneas por commit; al publicar se puede revisar por commit.
 - **L9** T5 verificado por el padre: `test_cli` + `test_term` OK; smoke: `create 12` → `12-agregar-exportacion-a-csv`, `check-pr-base main` → exit 2 con el mensaje exacto, `status` tabla en español. Decisiones aceptadas: legalidad antes que presupuesto en `advance`; `route` llena `job.intake`; `ATTA_NO_ANIM` = línea estática sin ANSI. Pendiente: probar la animación en terminales reales (Windows Terminal, macOS, Linux).
 - **L10** (usuario) sobre el dashboard A con fixtures: «ya probe, funciona- me gusta el diseno».
+- **L11** Verify independiente T6 (Risk item 2): S11 y S12 cumplidos; B1 bloqueante: una junction NTFS (`mklink /J`, sin privilegios) dentro de jobs o round-N hace que el tablero liste y lea `.md` de fuera del job (`is_symlink()` es False para junctions en Python 3.10/3.11). Menores: m1 hardlinks servidos, m2 `STAGE_ROLE[m.stage]` con `constructor` rompe la vista, m3 Host laxo, m4 páginas de error stdlib sin headers, m5 sin timeout de socket, m6 `--host 127.0.0.2` tratado como externo, m7 symlinks de archivo sin probar. Decisión: corregir B1 con confinamiento por `resolve().parent`, m1, m2, m3, m5, m6; m4 aceptado (contenido escapado).
+- **L12** Corrección de L11 aplicada (B1 junctions/symlinks por confinamiento de ruta resuelta, m1 hardlinks, m2 mapas sin prototipo, m3 Host estricto, m5 timeout 10 s, m6 loopback 127/8); 275 tests OK, 3 skipped (symlinks sin privilegio en Windows, corren en CI POSIX). Aceptado: con `--host 127.0.0.2` ese mismo Host es válido.

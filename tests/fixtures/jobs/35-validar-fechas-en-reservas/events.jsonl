@@ -1,0 +1,5 @@
+{"ts": "2025-06-04T10:00:52Z", "job": "35-validar-fechas-en-reservas", "from": "intake", "to": "spec", "duration_s": 52, "model": "google/gemini-2.5-flash", "tier": "T1", "tokens_in": 2000, "tokens_out": 300, "cost_usd": 0.005}
+{"ts": "2025-06-04T10:05:52Z", "job": "35-validar-fechas-en-reservas", "from": "spec", "to": "spec-review", "duration_s": 300, "model": "anthropic/claude-sonnet-4.5", "tier": "T2", "tokens_in": 12000, "tokens_out": 3000, "cost_usd": 0.09}
+{"ts": "2025-06-04T10:07:22Z", "job": "35-validar-fechas-en-reservas", "from": "spec-review", "to": "build", "duration_s": 90, "model": "openai/gpt-5", "tier": "T2", "tokens_in": 20000, "tokens_out": 2000, "cost_usd": 0.06}
+{"ts": "2025-06-04T10:19:22Z", "job": "35-validar-fechas-en-reservas", "from": "build", "to": "gate", "duration_s": 720, "model": "anthropic/claude-sonnet-4.5", "tier": "T2", "tokens_in": 70000, "tokens_out": 9000, "cost_usd": 0.31}
+{"ts": "2025-06-04T10:21:07Z", "job": "35-validar-fechas-en-reservas", "from": "gate", "to": "build", "duration_s": 105}
