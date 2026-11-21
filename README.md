@@ -1,11 +1,63 @@
-# Atta
+<p align="center">
+  <img src="docs/assets/atta-banner.svg" alt="Atta · Tu colonia de agentes de software" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/esneyder/atta/actions/workflows/ci.yml"><img src="https://github.com/esneyder/atta/actions/workflows/ci.yml/badge.svg?branch=develop" alt="CI"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-2F6B35" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux-A0381A" alt="Windows, macOS y Linux">
+  <img src="https://img.shields.io/badge/dependencias-solo%20stdlib-D39B2A" alt="Sin dependencias">
+  <img src="https://img.shields.io/badge/integra%20en-develop-24170F" alt="Integra en develop">
+</p>
+
+<p align="center">
+  <a href="#3-requisitos-e-instalación">Instalar</a> ·
+  <a href="#4-poner-atta-en-un-proyecto">Poner Atta en un proyecto</a> ·
+  <a href="#5-correr-la-fábrica-en-claude-code">Correr la fábrica</a> ·
+  <a href="#7-referencia-de-comandos">Comandos</a> ·
+  <a href="docs/design/arquitectura.md">Arquitectura</a>
+</p>
 
 **Tu colonia de agentes de software.** Etiquetas un issue y una colonia de agentes lo evalúa, lo
-especifica, lo construye, lo prueba, lo revisa y abre el pull request contra `develop`.
+especifica, lo construye, lo prueba, lo revisa, abre el pull request contra `develop` y lo mergea en
+`develop` cuando la Reina lo aprueba.
 
 El nombre viene de *Atta laevigata*, la hormiga culona de Santander, y de las hormigas cortadoras: no
 se comen las hojas, las cortan, las llevan al hormiguero y con ellas cultivan su alimento. Atta
 funciona igual: los issues son las hojas, el repositorio es el hormiguero y el código es el jardín.
+
+<p align="center">
+  <img src="docs/assets/atta-colonia.svg" alt="El camino de un issue por la colonia: Exploradora, Guía, Vigía, Cortadora, Filtro, Jardineras y Soldado, Reina y merge a develop" width="100%">
+</p>
+
+### En una mirada
+
+| | |
+|---|---|
+| **Lo mecánico es script** | Estados, Filtro, merge y guardas son código determinista: ningún prompt los convence. |
+| **El juicio es de los agentes** | Cada rol lee el job, escribe un solo artefacto y su primera línea es un veredicto que la espina valida. |
+| **Modelo según el riesgo** | Haiku para lo simple, Sonnet para lo normal, Opus solo cuando el riesgo o una ronda fallida lo piden. |
+| **`main` nunca** | Atta integra siempre en `develop`; el release a `main` es tuyo. |
+| **Todo queda escrito** | Cada job deja sus artefactos y un `events.jsonl` con tiempos, modelos y costo. |
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/hormiguero-claro.png" alt="El hormiguero en tema claro: jobs por etapa, la hormiga en la etapa activa y estadísticas"></td>
+    <td width="50%"><img src="docs/assets/hormiguero-detalle.png" alt="Detalle de un job escalado: rondas, tiempos por etapa y veredictos"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>El hormiguero</b>: cada job en su etapa; la hormiga marca dónde hay trabajo corriendo.</td>
+    <td align="center"><b>Detalle de un job</b>: rondas, veredictos, modelos, tiempo y costo por etapa.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/atta-terminal.svg" alt="Salida real del CLI atta con la hormiga caminando mientras corre el Filtro"></td>
+    <td width="50%"><img src="docs/assets/hormiguero-oscuro.png" alt="El hormiguero en tema oscuro"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>La terminal</b>: la hormiga camina mientras corre el Filtro, sin agregar espera.</td>
+    <td align="center"><b>Tema oscuro</b>: la misma paleta de Santander, de noche.</td>
+  </tr>
+</table>
 
 ---
 
@@ -14,40 +66,47 @@ funciona igual: los issues son las hojas, el repositorio es el hormiguero y el c
 1. [Estado actual](#1-estado-actual)
 2. [Cómo funciona la fábrica](#2-cómo-funciona-la-fábrica)
 3. [Requisitos e instalación](#3-requisitos-e-instalación)
-4. [Recorrido rápido](#4-recorrido-rápido)
-5. [Referencia de comandos](#5-referencia-de-comandos)
-6. [El Filtro](#6-el-filtro)
-7. [Configuración](#7-configuración)
-8. [Anatomía de un job](#8-anatomía-de-un-job)
-9. [El hormiguero (dashboard)](#9-el-hormiguero-dashboard)
-10. [La hormiga en la terminal](#10-la-hormiga-en-la-terminal)
-11. [Seguridad y guardas](#11-seguridad-y-guardas)
-12. [Desarrollo](#12-desarrollo)
-13. [Solución de problemas](#13-solución-de-problemas)
-14. [Hoja de ruta y documentos](#14-hoja-de-ruta-y-documentos)
+4. [Poner Atta en un proyecto](#4-poner-atta-en-un-proyecto)
+5. [Correr la fábrica en Claude Code](#5-correr-la-fábrica-en-claude-code)
+6. [Recorrido a mano](#6-recorrido-a-mano)
+7. [Referencia de comandos](#7-referencia-de-comandos)
+8. [El merge a `develop`](#8-el-merge-a-develop)
+9. [El Filtro](#9-el-filtro)
+10. [Configuración](#10-configuración)
+11. [Anatomía de un job](#11-anatomía-de-un-job)
+12. [El hormiguero (dashboard)](#12-el-hormiguero-dashboard)
+13. [La hormiga en la terminal](#13-la-hormiga-en-la-terminal)
+14. [Seguridad y guardas](#14-seguridad-y-guardas)
+15. [Desarrollo](#15-desarrollo)
+16. [Solución de problemas](#16-solución-de-problemas)
+17. [Hoja de ruta y documentos](#17-hoja-de-ruta-y-documentos)
 
 ---
 
 ## 1. Estado actual
 
-Atta se construye por fases (ver [`docs/PLAN.md`](docs/PLAN.md)). Hoy está terminada **F1**:
+Atta se construye por fases (ver [`docs/PLAN.md`](docs/PLAN.md)). **F1** está terminada y **F2** está
+en curso: todas sus piezas están construidas y probadas; falta confirmar la corrida de punta a punta
+en el repo de prueba.
 
 | Pieza | Estado |
 |---|---|
-| Espina determinista: estados, transiciones, contadores, `events.jsonl` | ✅ |
-| Filtro (`gate`): checks del proyecto + rutas protegidas | ✅ |
-| Router por riesgo y política de ramas (`develop` sí, `main` nunca) | ✅ |
-| CLI `atta` con la hormiga animada | ✅ |
-| El hormiguero (dashboard local) | ✅ |
-| CI en Windows, macOS y Linux | ✅ |
-| Agentes de la colonia (Exploradora, Guía, Cortadora, …) | ⏳ F2 |
-| Integración con GitHub (leer issues, abrir PR, mergear a `develop`) | ⏳ F2 |
-| Calidad avanzada (ratchet, ast-grep, alcance del diff) | ⏳ F3 |
-| Ruteo de modelos por etapa y riesgo, Pi como segundo runtime | ⏳ F4-F5 |
-
-Mientras no existan los agentes, los artefactos que ellos escribirían (`intake.md`, `spec.md`,
-`build.md`, `review-*.md`, `decision.md`) se crean a mano o por script, y los comandos de este README
-mueven el job por la máquina de estados exactamente como lo hará la fábrica completa.
+| Espina determinista: estados, transiciones, contadores, `events.jsonl` | ✅ F1 |
+| Filtro (`gate`): checks del proyecto + rutas protegidas | ✅ F1 |
+| Router por riesgo y política de ramas (`develop` sí, `main` nunca) | ✅ F1 |
+| CLI con la hormiga animada y el hormiguero (dashboard local) | ✅ F1 |
+| CI en Windows, macOS y Linux | ✅ F1 |
+| Herramienta instalable: comando `atta` global con `pipx` o `pip` | ✅ F2 |
+| `atta init`: prepara cualquier proyecto (agentes, skill, hook, config, labels) | ✅ F2 |
+| La colonia en Claude Code: Exploradora, Guía, Vigía, Cortadora, Jardineras, Soldado, Reina | ✅ F2 |
+| Comando `/atta` (`/atta run [n]`, `/atta <texto>`) guiado por `atta next` | ✅ F2 |
+| Guard de herramientas (`atta guard`, hook PreToolUse) | ✅ F2 |
+| Flujo con GitHub: cola, issue, worktree, PR en borrador, comentarios, labels | ✅ F2 |
+| Merge seguro a `develop` (`gh pr merge --match-head-commit`) | ✅ F2 |
+| Corrida de punta a punta en `esneyder/atta-sandbox` | ⏳ F2, pendiente de confirmar |
+| Calidad avanzada (ratchet y memoria, ast-grep, alcance del diff) | ⏳ F3 |
+| Ruteo de modelos por etapa e intento, Reina determinista en riesgo bajo | ⏳ F4 |
+| Pi como segundo runtime, benchmark, conductor sin LLM | ⏳ F5-F7 |
 
 ---
 
@@ -58,8 +117,8 @@ mueven el job por la máquina de estados exactamente como lo hará la fábrica c
 Una fábrica de software convierte una cola de pedidos en código mergeado con un pipeline fijo.
 En Atta hay dos tipos de trabajo, y nunca se mezclan:
 
-- **Lo mecánico es script** (la *espina*): mover estados, correr los checks, decidir rutas, mergear.
-  Es determinista, rápido y no se puede convencer con un prompt.
+- **Lo mecánico es script** (la *espina*): mover estados, correr los checks, decidir rutas, decidir
+  qué sigue, abrir el PR y mergear. Es determinista, rápido y no se puede convencer con un prompt.
 - **El juicio es de los agentes**: si un issue vale la pena, qué construir, el código y si está bien.
   Cada agente lee archivos, escribe **un** artefacto y su primera línea es un veredicto que la espina
   valida (`DECISION: ACCEPT`, `GATE: PASS`, `VERDICT: CHANGES`…).
@@ -68,21 +127,25 @@ Todo el estado vive en archivos (`atta/jobs/<id>/`), así que cualquier job se p
 
 ### 2.2 La colonia
 
-| Rol | Nombre técnico | Qué hace | Artefacto | Primera línea |
+| Rol | Agente de Claude Code | Qué hace | Artefacto | Primera línea |
 |---|---|---|---|---|
-| **Exploradora** | `intake` | Decide si el issue vale la pena, lo acota y mide el riesgo | `intake.md` | `DECISION: ACCEPT\|REJECT\|NEEDS-INFO` |
-| **Guía** | `spec-writer` | Escribe la especificación | `spec.md` | `STATUS: READY` |
-| **Vigía** | `spec-review` | Revisa el spec contra el código real (solo riesgo medio y alto) | `spec-review.md` | `VERDICT: READY\|REVISE` |
-| **Cortadora** | `builder` | Código, tests y commits en su rama | `build.md` | `STATUS: DONE\|BLOCKED` |
-| **Filtro** | `gate` | Corre los checks del proyecto. **Es un script, no un agente** | `checks.md` | `GATE: PASS\|FAIL` |
-| **Jardineras** | `reviewer-code`, `-ux`, `-ui`, `-resilience` | Revisan calidad con lentes | `review-<lente>.md` | `VERDICT: PASS\|CHANGES` |
-| **Soldado** | `reviewer-security` | Revisa seguridad | `review-security.md` | `VERDICT: PASS\|CHANGES` |
-| **Reina** | `approver` | Aprueba (merge a `develop`) o escala a un humano | `decision.md` | `APPROVE\|ESCALATE` |
-| **Cultivadora** | `ratchet` | Convierte lecciones de las revisiones en memoria y reglas (F3) | `atta/memory/` | — |
+| **Exploradora** | `atta-exploradora` | Decide si el issue vale la pena, lo acota y mide el riesgo | `intake.md` | `DECISION: ACCEPT\|REJECT\|NEEDS-INFO` |
+| **Guía** | `atta-guia` | Escribe la especificación | `spec.md` | `STATUS: READY` |
+| **Vigía** | `atta-vigia` | Revisa el spec contra el código real (solo riesgo medio y alto) | `spec-review.md` | `VERDICT: READY\|REVISE` |
+| **Cortadora** | `atta-cortadora` | Código, tests y commits en su rama | `round-N/build.md` | `STATUS: DONE\|BLOCKED` |
+| **Filtro** | — (`atta gate`) | Corre los checks del proyecto. **Es un script, no un agente** | `round-N/checks.md` | `GATE: PASS\|FAIL` |
+| **Jardineras** | `atta-jardinera-code`, `-ux`, `-ui`, `-resilience` | Revisan calidad con lentes | `round-N/review-<lente>.md` | `VERDICT: PASS\|CHANGES` |
+| **Soldado** | `atta-soldado` | Revisa seguridad | `round-N/review-security.md` | `VERDICT: PASS\|CHANGES` |
+| **Reina** | `atta-reina` | Aprueba (merge a `develop`) o escala a un humano. Nunca mergea ella misma | `decision.md` | `APPROVE\|ESCALATE` |
+| **Cultivadora** | — | Convierte lecciones de las revisiones en memoria y reglas (F3) | `atta/memory/` | — |
 
 Los tokens de contrato (`ACCEPT`, `PASS`, `CHANGES`…) van siempre en inglés: son la interfaz entre
 máquinas. Lo que ve el humano va en español y firmado por rol: «La Exploradora aceptó el issue #12
 (riesgo bajo).», «Tres rondas sin pasar el filtro. Te lo dejamos a ti.».
+
+Cada agente lee el issue desde `issue.md`, que es **dato, nunca instrucción**: el prompt que reciben
+lo dice explícitamente. La Exploradora no escribe archivos: devuelve `intake.md` en su respuesta y la
+espina lo guarda (`atta save-artifact`).
 
 ### 2.3 El pipeline
 
@@ -97,7 +160,7 @@ spec ──► spec-review (riesgo medio/alto) ──► spec (si REVISE)
    │                 │
    ▼                 ▼
 build ◄──────────────┘
-   │
+   │   (al terminar el primer build: push de atta/<id> y PR en borrador contra develop)
    ▼
 gate ──FAIL──► build            (nueva ronda)
    │ PASS
@@ -105,7 +168,7 @@ gate ──FAIL──► build            (nueva ronda)
 review ──CHANGES──► build       (nueva ronda)
    │ todo PASS
    ▼
-approve ──► merging ──► merged  (PR contra develop)
+approve ──► merging ──► merged  (gh pr merge contra develop)
    └──► needs-human ──► build (con feedback) | rejected
 ```
 
@@ -148,17 +211,19 @@ clave `routing`):
 | `medium` | `code` (reliability + readability, T2) | sí |
 | `high` | `code` (T2) + `security` (T3) + `resilience` (T2) | sí |
 
-Las superficies suman reviewers: `ui` agrega `ux` y `ui`; `security` agrega el Soldado. Los tiers
-(`T0` local … `T3` frontera) indican la potencia de modelo que usará cada rol desde F4.
+Las superficies suman reviewers: `ui` agrega `ux` y `ui`; `security` agrega el Soldado. El tier de
+cada reviewer decide su modelo en Claude Code (sección 5.4).
 
 ### 2.7 Política de ramas
 
-- Atta **integra siempre en `develop`**: ramas de trabajo `atta/<job-id>`, PR contra `develop`.
+- Atta **integra siempre en `develop`**: ramas de trabajo `atta/<job-id>` creadas desde
+  `origin/develop`, PR contra `develop`, merge a `develop`.
 - **`main` está prohibida**: Atta nunca crea PR contra `main`, nunca empuja ni mergea a `main` y
   nunca despliega. El release `develop → main` es una decisión humana.
 - Se aplica en código: la configuración rechaza cualquier forma de escribir `main` como rama de
-  integración (`Main`, `refs/heads/main`, `origin/main`), y los comandos `check-pr-base` y
-  `check-push` validan cada PR y cada push.
+  integración (`Main`, `refs/heads/main`, `origin/main`); `atta publish` y `atta merge` validan cada
+  push y la base real de cada PR; el guard bloquea a los agentes cualquier push fuera de `atta/*` y
+  cualquier `gh pr merge`.
 
 ---
 
@@ -166,15 +231,53 @@ Las superficies suman reviewers: `ui` agrega `ux` y `ui`; `security` agrega el S
 
 - **Python 3.10 o superior.** Solo biblioteca estándar: no hay dependencias que instalar.
 - **git** reciente (probado con 2.49; el Filtro usa `--end-of-options`).
+- **GitHub CLI (`gh`)** con sesión iniciada (`gh auth login`) y acceso al repositorio del proyecto.
+- **Claude Code**, para correr la colonia (`/atta`).
 - **Windows, macOS o Linux.** En Windows, el Filtro usa `pwsh`, si no `powershell`, si no `cmd`.
 
+### Instalar el comando `atta`
+
+Atta se instala **una vez** y da los comandos globales `atta` y `atta-board`. El código de la fábrica
+no vive en tus proyectos: cada proyecto solo guarda su configuración (sección 4).
+
 ```bash
-git clone https://github.com/esneyder/atta.git
-cd atta
-git switch develop
+pipx install git+https://github.com/esneyder/atta
+atta --help
 ```
 
-### Cómo invocar el CLI
+Sin `pipx`, en Windows:
+
+```powershell
+py -m pip install git+https://github.com/esneyder/atta
+atta --help
+```
+
+(En macOS o Linux, `python3 -m pip install git+https://github.com/esneyder/atta`.)
+
+**`atta` tiene que estar en el `PATH`.** El hook del guard llama a `atta guard`: si Claude Code no
+encuentra `atta`, el hook falla y **no bloquea nada** (sección 14.2). Con `pipx` el `PATH` queda listo
+(`pipx ensurepath`). Con `pip` en Windows, agrega al `PATH` la carpeta `Scripts` de ese Python (por
+ejemplo `...\Python311\Scripts`), que es donde queda `atta.exe`.
+
+Para actualizar: `pipx reinstall atta`, o con pip
+`py -m pip install --force-reinstall git+https://github.com/esneyder/atta`.
+
+### Qué proyecto usa cada comando
+
+Cada comando trabaja sobre la raíz de un proyecto, que se resuelve en este orden:
+
+1. `--project <carpeta>` (va **antes** del comando: `atta --project C:\code\mi-app status`).
+2. La variable de entorno `ATTA_PROJECT`.
+3. La raíz git de la carpeta actual (`git rev-parse --show-toplevel`). Dentro de un worktree de job
+   (`.worktrees/<id>`) es el checkout principal, así que `atta status` ahí también ve los jobs.
+4. La carpeta actual.
+
+Desde ahí: `atta/config.json` (si falta, valores por defecto), `atta/checks.json` y `atta/jobs/`.
+`--project` y `ATTA_PROJECT` se usan tal cual, aunque apunten a un worktree.
+
+### Desde un checkout de Atta
+
+Los lanzadores del repositorio siguen funcionando, útiles para desarrollar Atta:
 
 | Sistema | Comando |
 |---|---|
@@ -183,17 +286,195 @@ git switch develop
 | Cualquiera | `python atta/bin/atta.py <comando>` |
 
 En PowerShell el prefijo `.\` es obligatorio: PowerShell no ejecuta programas de la carpeta actual
-sin él. (El comando `atta` global llegará con el empaquetado en F2.)
+sin él.
 
 ---
 
-## 4. Recorrido rápido
+## 4. Poner Atta en un proyecto
 
-Un job de punta a punta, a mano (en F2 lo harán los agentes):
+### 4.1 `atta init`
+
+En la raíz del proyecto (un repo git con remoto `origin` en GitHub y la rama `develop`):
+
+```text
+> atta init
+Atta preparó C:\code\mi-app:
+  creé: .claude/agents/atta-cortadora.md
+  creé: .claude/agents/atta-exploradora.md
+  …
+  creé: .claude/agents/atta-vigia.md
+  creé: .claude/skills/atta/SKILL.md
+  creé: .claude/settings.json
+  creé: atta/config.json
+  creé: atta/checks.json
+  creé: .gitignore
+  origin/develop existe: ahí integra Atta.
+  label lista: atta
+  label lista: atta:needs-info
+  label lista: atta:needs-human
+Siguientes pasos:
+  1. Llena atta/checks.json con los checks reales del proyecto (sin checks el Filtro siempre falla).
+  2. Ponle la label «atta» a un issue.
+  3. En Claude Code, corre /atta run.
+— Atta
+```
+
+Qué crea:
+
+| Archivo | Contenido |
+|---|---|
+| `.claude/agents/atta-*.md` | Los 10 agentes de la colonia, con el modelo de cada tier ya resuelto (T1 `haiku`, T2 `sonnet`, T3 `opus`) |
+| `.claude/skills/atta/SKILL.md` | El comando `/atta` |
+| `.claude/settings.json` | El hook PreToolUse `atta guard` para `Write\|Edit\|MultiEdit\|NotebookEdit\|Bash\|PowerShell`. Si ya tienes un `settings.json`, agrega el hook al final **sin borrar ni reordenar** lo tuyo |
+| `atta/config.json` | Configuración por defecto (sección 10), solo si falta |
+| `atta/checks.json` | Vacío a propósito, solo si falta: el Filtro falla hasta que pongas checks reales |
+| `.gitignore` | Agrega `/atta/jobs/` y `/.worktrees/` (sin duplicar) |
+
+Y en GitHub (salvo con `--no-github`): verifica que `develop` exista en `origin` con
+`git ls-remote` y crea o actualiza las labels de `config.json` con `gh label create --force`. Nunca
+toca `main`.
+
+**Es idempotente**: correrlo otra vez no cambia nada («sin cambios: 15 archivos»). Un archivo que ya
+existe y es distinto se respeta y se reporta como «ya existe, la dejé igual: …».
+
+| Opción | Efecto |
+|---|---|
+| `--force` | Reemplaza los agentes y el skill existentes («reemplacé: …»). **Nunca** `config.json`, `checks.json` ni `settings.json` |
+| `--no-github` | No verifica `origin/develop` ni crea labels (sin red) |
+| `--runtime claude-code` | Runtime de los agentes (hoy el único) |
+
+Códigos de salida: **`0`** ok · **`1`** aviso de GitHub (falta `develop` en `origin` o no se pudo crear
+una label; los archivos sí se escribieron) · **`2`** rechazado, por ejemplo un `.claude/settings.json`
+que no es JSON válido: todo se valida antes de escribir, así que no cambia nada.
+
+Si falta `develop` en `origin`, el aviso es: «Atta: no encontré la rama develop en origin. Atta integra
+solo en develop (nunca en main): crea develop en origin y vuelve a correr `atta init`.».
+
+### 4.2 Llenar `atta/checks.json`
+
+Es lo único que tienes que escribir tú. Pon los checks reales del proyecto, de rápido a lento
+(formato → lint → tipos → tests → build). Por ejemplo, para un proyecto Python con `unittest`:
+
+```json
+{
+  "checks": [
+    {"name": "tests", "run": "python -m unittest discover -s tests -t ."}
+  ],
+  "timeout_s": 900
+}
+```
+
+El formato completo está en la sección 9. Commitea `atta/config.json`, `atta/checks.json`, `.claude/`
+y `.gitignore` en `develop`: el Filtro lee `checks.json` del checkout principal.
+
+---
+
+## 5. Correr la fábrica en Claude Code
+
+### 5.1 Los dos comandos
+
+Abre Claude Code en la raíz del proyecto, ponle la label `atta` a un issue y corre:
+
+| Comando | Qué hace |
+|---|---|
+| `/atta run` | Trabaja la cola: empieza los issues nuevos y avanza cada job activo hasta que espera o termina |
+| `/atta run <n>` | Igual, pero empieza como máximo `n` issues nuevos |
+| `/atta <texto>` | Una pregunta («¿cómo va el #12?») o tu feedback para un job (sección 5.3) |
+
+### 5.2 El bucle delgado
+
+`/atta` no decide nada: el estado y el siguiente paso salen de la espina. Por cada corrida:
+
+1. `atta queue`: por cada fila `new`, `atta start <issue>` (máximo `n`). Las filas `resume` son jobs
+   para trabajar; si la etapa es `needs-info` (el autor respondió), antes corre
+   `atta refresh <job>` (sección 5.3). `wait`, `hold` y `skip` se dejan quietas.
+2. `atta status`: todo job que no esté `merged` ni `rejected` está activo.
+3. Por cada job activo: `atta next <job>` imprime **una** acción en JSON y `/atta` la ejecuta tal
+   cual; luego vuelve a `atta next`.
+4. Cuando todos los jobs esperan o terminan, muestra `atta summary` y un reporte corto.
+
+| Acción de `atta next` | Qué hace `/atta` |
+|---|---|
+| `{"action":"spawn","agent":…,"model":…,"prompt":…}` | Lanza ese subagente en background con ese modelo y ese prompt, sin agregar nada; al terminar, otra vez `atta next` |
+| `{"action":"spawn-group","agents":[…]}` | Lanza todos los reviewers en paralelo, en un solo mensaje, y **espera a todos** antes de llamar a `atta next` |
+| `{"action":"run","argv":[…],"then":[[…],…]}` | Corre el comando y, en orden, los de `then`. Salida `1` es un veredicto ya registrado (sigue); `2` u otra detiene el job y muestra el error |
+| `{"action":"wait","reason":…}` | El job espera a una persona: muestra el motivo y pasa al siguiente |
+| `{"action":"done","stage":…}` | El job terminó (`merged` o `rejected`) |
+
+Qué pide la espina en cada etapa:
+
+| Etapa | Siguiente acción |
+|---|---|
+| `intake` | Exploradora → `atta save-artifact` → `atta route` → `advance spec`; con `NEEDS-INFO`, label `atta:needs-info` + comentario + `advance needs-info`; con `REJECT`, comentario + `advance rejected` |
+| `spec` | Guía → `atta worktree` (si falta) → `advance spec-review` (riesgo medio/alto) o `advance build` |
+| `spec-review` | Vigía → `READY`: `advance build`; si no: `advance spec` (la Guía corrige con la revisión) |
+| `build` | Cortadora → si no es `STATUS: DONE`, `advance needs-human`; la primera vez, `atta publish` (push y PR en borrador); → `advance gate` |
+| `gate` | `atta gate --worktree … --base origin/develop` → `PASS`: `advance review`; `FAIL`: `advance build` (o `needs-human` si se acabó el presupuesto de rondas) |
+| `review` | Reviewers en paralelo → algún `CHANGES`: vuelta a `build` (o `needs-human`); todos `PASS`: `advance approve` |
+| `approve` | Reina → `APPROVE`: `atta merge`; si no: label `atta:needs-human` + comentario de la Reina + `advance needs-human` |
+| `needs-info`, `needs-human`, `merging` | `wait` |
+
+Reglas que aplica la espina:
+
+- Un artefacto **solo cuenta si se escribió en la etapa actual** (fecha de modificación posterior a
+  `stage_since`): al volver a una etapa nunca se reusa la respuesta anterior.
+- Una revisión es válida si empieza con `VERDICT: PASS`, o con `VERDICT: CHANGES` y trae al menos un
+  hallazgo `- [blocker|major|minor] …` y una línea `PREVENTION:`. Una revisión inválida se reintenta
+  **una vez** en `round-N/review-<r>-retry.md`; si el reintento también es inválido, el job va a
+  `needs-human`.
+- Si `atta next` repite el mismo `spawn` justo después de que el agente terminó, el agente no escribió
+  su artefacto: `/atta` detiene ese job y lo reporta en lugar de relanzarlo.
+
+**Concurrencia.** `concurrency` (3 por defecto) es el máximo de jobs corriendo a la vez. Los jobs en
+`needs-info` o `needs-human` no ocupan cupo. `atta queue` y `atta start` lo respetan; los jobs son
+independientes y `/atta` avanza uno mientras los agentes de otro trabajan.
+
+**Reanudar** es correr otra vez `/atta run`: todo el estado vive en la espina, no en la conversación.
+
+### 5.3 Cuando un job te necesita
+
+- **`needs-info`** (la Exploradora pidió información): el issue queda con la label `atta:needs-info` y
+  un comentario de la Exploradora. No tienes que hacer nada más: mientras el autor no comente después
+  de esa pregunta, `atta queue` muestra el job como `wait`; cuando comenta, sale `resume` y `/atta run`
+  corre `atta refresh <job>`, que vuelve a leer el issue (con la respuesta) en `issue.md`, quita la
+  label y devuelve el job a intake, donde la Exploradora decide otra vez. También puedes correr
+  `atta refresh <job>` a mano.
+- **`needs-human`** (la Cortadora se bloqueó, se acabaron las rondas, una revisión salió inválida, la
+  Reina escaló o el merge falló): corre `/atta <tu respuesta>`. `/atta` copia tu texto, sin cambios, a
+  `atta/jobs/<job>/feedback-<k>.md` (`k` = 1, 2, …) y corre `atta advance <job> build`. La Cortadora
+  lee todo el feedback y las revisiones anteriores en la siguiente ronda. Si el job ya no tiene
+  arreglo: `atta advance <job> rejected`.
+
+### 5.4 Modelos por tier
+
+| Tier | Modelo en Claude Code |
+|---|---|
+| T0, T1 | `haiku` |
+| T2 | `sonnet` |
+| T3 | `opus` |
+
+| Agente | Tier |
+|---|---|
+| Exploradora | T1 |
+| Guía | T2 |
+| Vigía | Un modelo distinto al de la Guía: `haiku` por defecto |
+| Cortadora | T2; **T3** desde la tercera ronda (`total_rounds` ≥ 2) o con riesgo `high` |
+| Jardineras y Soldado | El tier del plan del router (sección 2.6): el Soldado es T3 en riesgo `high` |
+| Reina | T2; **T3** con riesgo `high` |
+
+Opus solo entra donde hace falta. La regla «el revisor nunca usa el modelo de la Cortadora» llega con
+el ruteo de F4, y el tope del ciclo spec ⇄ spec-review con F3.
+
+---
+
+## 6. Recorrido a mano
+
+Lo que hace `/atta` se puede hacer paso a paso, sin agentes ni GitHub, para entender la espina o
+probar un proyecto. Los artefactos de los agentes se escriben a mano:
 
 ```powershell
 # 1. Crear el job para el issue #12 (título y cuerpo se guardan citados como dato)
-.\atta create 12 --title "Agregar exportación a CSV"
+atta create 12 --title "Agregar exportación a CSV"
 #   → 12-agregar-exportacion-a-csv
 
 # 2. La Exploradora escribe atta/jobs/12-agregar-exportacion-a-csv/intake.md:
@@ -205,57 +486,74 @@ Un job de punta a punta, a mano (en F2 lo harán los agentes):
 #      Exportar pedidos a CSV.
 
 # 3. Rutear: decide reviewers y si corre la Vigía
-.\atta route 12-agregar-exportacion-a-csv
+atta route 12-agregar-exportacion-a-csv
 #   → El router asignó 3 reviewers a 12-agregar-exportacion-a-csv (riesgo medio, spec-review sí): code T2, ux T2, ui T1.
 
 # 4. Avanzar por el pipeline
-.\atta advance 12-agregar-exportacion-a-csv spec
+atta advance 12-agregar-exportacion-a-csv spec
 #   → La Exploradora aceptó el issue #12 (riesgo medio).
-.\atta advance 12-agregar-exportacion-a-csv spec-review
-.\atta advance 12-agregar-exportacion-a-csv build
-.\atta advance 12-agregar-exportacion-a-csv gate
+atta advance 12-agregar-exportacion-a-csv spec-review
+atta advance 12-agregar-exportacion-a-csv build
+atta advance 12-agregar-exportacion-a-csv gate
 
-# 5. Correr el Filtro sobre el worktree de la rama del job
-git worktree add -b atta/12-agregar-exportacion-a-csv .worktrees/12 origin/develop
-#   (…la Cortadora commitea en .worktrees/12…)
-.\atta gate 12-agregar-exportacion-a-csv --worktree .worktrees/12 --base origin/develop
+# 5. Crear el worktree del job y correr el Filtro sobre él
+atta worktree 12-agregar-exportacion-a-csv
+#   → Worktree listo en …\.worktrees\12-agregar-exportacion-a-csv (rama atta/12-agregar-exportacion-a-csv, desde origin/develop).
+#   (…commits en .worktrees/12-agregar-exportacion-a-csv…)
+atta gate 12-agregar-exportacion-a-csv --worktree .worktrees/12-agregar-exportacion-a-csv --base origin/develop
 
-# 6. Ver el estado
-.\atta status
-.\atta summary
+# 6. Ver el estado y qué haría la fábrica
+atta status
+atta summary
+atta next 12-agregar-exportacion-a-csv
 
-# 7. Validar antes de publicar
-.\atta check-push atta/12-agregar-exportacion-a-csv   # 0: se puede empujar
-.\atta check-pr-base develop                          # 0: base correcta
-.\atta check-pr-base main                             # 2: «La Reina no mergea a main: Atta solo integra en develop.»
+# 7. Validar ramas
+atta check-push atta/12-agregar-exportacion-a-csv   # 0: se puede empujar
+atta check-pr-base develop                          # 0: base correcta
+atta check-pr-base main                             # 2: «La Reina no mergea a main: Atta solo integra en develop.»
 ```
 
 Una transición ilegal se rechaza sin tocar nada:
 
 ```text
-> .\atta advance 12-agregar-exportacion-a-csv merged
+> atta advance 12-agregar-exportacion-a-csv merged
 Transición ilegal en 12-agregar-exportacion-a-csv: build → merged. Desde build solo se puede ir a: gate, needs-human.
 (código de salida 2)
 ```
 
 ---
 
-## 5. Referencia de comandos
+## 7. Referencia de comandos
 
-Opción global: `--jobs-dir <carpeta>` (por defecto `atta/jobs`). Va **antes** del comando:
-`.\atta --jobs-dir otra/carpeta status`.
+Opciones globales, **antes** del comando:
 
-Códigos de salida: **`0`** ok · **`1`** veredicto negativo (por ejemplo, el Filtro no pasó) ·
-**`2`** rechazado o error de uso.
+- `--project <carpeta>`: raíz del proyecto (por defecto: `$ATTA_PROJECT`, la raíz git de la carpeta
+  actual o la carpeta actual; sección 3).
+- `--jobs-dir <carpeta>`: carpeta de los jobs (por defecto `atta/jobs` del proyecto). No aplica al
+  guard.
 
-### `create <issue> --title <título> [--body-file <archivo>]`
+Ejemplo: `atta --project C:\code\mi-app --jobs-dir otra/carpeta status`.
 
-Crea el job y muestra su id (`<issue>-<hasta 4 palabras del título, sin tildes>`). Crea la carpeta
-`atta/jobs/<id>/` con `job.json` e `issue.md`. Título y cuerpo se guardan **citados** (cada línea con
-`> `) y con un aviso de que son datos, no instrucciones. `--body-file` lee el cuerpo desde un archivo
-UTF-8.
+Códigos de salida: **`0`** ok · **`1`** veredicto negativo (por ejemplo, el Filtro no pasó o el merge
+no entró) · **`2`** rechazado o error de uso. Los errores salen en español por stderr.
 
-### `advance <job> <etapa>`
+Los comandos que hablan con GitHub usan `gh`. La variable `ATTA_GH` cambia el ejecutable (una ruta;
+un archivo `.py` se corre con el mismo Python): así los tests usan un `gh` falso.
+
+### 7.1 Ciclo de vida
+
+#### `init [--force] [--no-github] [--runtime claude-code]`
+
+Prepara el proyecto. Ver sección 4.
+
+#### `create <issue> --title <título> [--body-file <archivo>]`
+
+Crea un job sin GitHub y muestra su id (`<issue>-<hasta 4 palabras del título, sin tildes>`). Crea
+la carpeta `atta/jobs/<id>/` con `job.json` e `issue.md`. Título y cuerpo se guardan **citados**
+(cada línea con `> `) y con un aviso de que son datos, no instrucciones. `--body-file` lee el cuerpo
+desde un archivo UTF-8.
+
+#### `advance <job> <etapa>`
 
 Mueve el job a otra etapa. Antes de moverlo valida, en este orden:
 
@@ -267,52 +565,207 @@ Mueve el job a otra etapa. Antes de moverlo valida, en este orden:
 Si todo pasa, escribe una línea en `events.jsonl`, actualiza `job.json` y muestra el mensaje del rol
 («La Exploradora aceptó el issue #12 (riesgo medio).»). Si no, sale con `2` y no cambia nada.
 
-### `route <job>`
+#### `route <job>`
 
 Lee la cabecera de `intake.md` (`DECISION`, `RISK`, `SURFACES` y, opcionales, `BLOCKED-BY` y
 `MIGRATION`), calcula el plan de revisión y lo guarda en `job.json` (`intake` y `agents`). Una
 cabecera mal formada o un riesgo o superficie desconocidos se rechazan con `2`.
 
-### `gate <job> --worktree <ruta> --base <ref> [--kind checks|merge-checks]`
+#### `gate <job> --worktree <ruta> --base <ref> [--kind checks|merge-checks]`
 
-Corre el Filtro (sección 6) sobre el worktree del job y escribe `round-N/checks.md` (o
+Corre el Filtro (sección 9) sobre el worktree del job y escribe `round-N/checks.md` (o
 `merge-checks.md`) y su `.log`. Muestra el resumen del Filtro con la hormiga animada mientras corre.
 Sale `0` si pasa, `1` si no pasa y `2` si la configuración o el `--base` son inválidos.
 
-### `status [job]`
+#### `status [job]`
 
 Tabla de jobs (o de uno): `JOB`, `ISSUE`, `ETAPA`, `RONDAS` (usadas / tope), `COSTO` (`-` si no hay
-precio) y `TIEMPO`.
+precio) y `TIEMPO`. Sin jobs: «No hay jobs.».
 
-### `summary`
+#### `summary`
 
 La misma tabla con todos los jobs y una línea de totales:
 `Total: 1 job · 1 en curso · 0 merged · 0 rejected · costo -`.
 
-### `check-pr-base <base>`
+### 7.2 GitHub
+
+#### `queue [--json]`
+
+Lista los issues abiertos con la label `atta` y qué hacer con cada uno, respetando `concurrency`:
+
+```text
+> atta queue
+ACCIÓN  ISSUE  JOB                      ETAPA   MOTIVO
+resume  #7     7-agregar-la-funcion-de  intake  en curso en la etapa intake.
+new     #9     -                        -       sin job; hay cupo (1 de 3 corriendo).
+```
+
+| Acción | Cuándo |
+|---|---|
+| `new` | Sin job y hay cupo |
+| `wait` | Sin job y sin cupo («sin cupo: 3 de 3 jobs corriendo.»); o su job está en `needs-info` y el autor todavía no respondió («espera la respuesta del autor del issue (needs-info).») o no hay cupo para retomarlo |
+| `resume` | Tiene un job en curso; o su job está en `needs-info` y el autor comentó después de la pregunta de la Exploradora («el autor respondió (needs-info): toca atta refresh.»), lo que ocupa un cupo |
+| `hold` | Su job espera una decisión humana (`needs-human`), o no tiene job y el issue tiene una label de espera |
+| `skip` | Su job ya terminó (`merged` o `rejected`) |
+
+Sin issues: «No hay issues abiertos con la label atta.». `--json` imprime una lista de filas con
+`issue`, `title`, `job`, `stage`, `action` y `reason`. Sale `0`; `2` si `gh` falla. Para los jobs en
+`needs-info` lee además los comentarios del issue (`gh issue view`): cuenta solo los del autor que
+vienen después del último comentario de Atta (el del operador con el marcador).
+
+#### `start <issue>`
+
+Lee el issue con `gh`, crea el job e imprime su id. `issue.md` guarda título, cuerpo y **solo** los
+comentarios del autor del issue y del operador (la cuenta de `gh`), todos citados; el cuerpo se corta
+en 64 KB. Rechaza con `2` (sin crear nada) si:
+
+- el issue ya tiene un job («El issue #7 ya tiene el job 7-agregar-la-funcion-de.»);
+- no hay cupo («El issue #7 espera: sin cupo (3 de 3 jobs corriendo).»);
+- el issue está cerrado;
+- no tiene la label `atta` («… Atta solo toma issues de la cola.»);
+- tiene `atta:needs-info` o `atta:needs-human` («… espera a una persona; quítala para empezar.»).
+
+#### `refresh <job>`
+
+Vuelve a leer el issue con `gh` y reescribe `issue.md` de una vez (escritura atómica), con el mismo
+filtro y las mismas citas que `start`: solo comentarios del autor y del operador. Si el job está en
+`needs-info`, quita la label `atta:needs-info` del issue y lo devuelve a `intake`:
+
+```text
+> atta refresh 7-agregar-la-funcion-de
+issue.md de 7-agregar-la-funcion-de actualizado desde el issue #7.
+7-agregar-la-funcion-de vuelve a intake: la Exploradora lee la respuesta. Label atta:needs-info quitada del issue #7.
+```
+
+En otra etapa solo reescribe `issue.md`. Rechaza con `2`, sin tocar nada, si el issue está cerrado
+(«El issue #7 está cerrado; no actualicé 7-agregar-la-funcion-de.») o ya no tiene la label `atta`
+(«El issue #7 ya no tiene la label atta: salió de la cola; no actualicé …»).
+
+#### `worktree <job>`
+
+`git fetch origin` y `git worktree add --no-track -b atta/<id> <raíz>/.worktrees/<id>
+origin/develop`. Guarda `worktree` (ruta absoluta) y `branch` en `job.json`. Si ya existe, lo dice y
+sale `0`.
+
+#### `publish <job>`
+
+Verifica que la rama sea `atta/<id>` (`check-push`) y que el worktree esté en ella, empuja **solo** esa
+rama con refspec explícito y sin `--force`, y si no hay PR abre uno **en borrador** contra `develop`
+(firmado por la Cortadora, con `Closes #<issue>`). Verifica la base real del PR (nunca `main`) y
+rechaza PRs de forks. Guarda `pr` y `pr_url`. Mensaje: «PR #101 abierto en borrador contra develop:
+<url>» o «PR #101 ya existe contra develop: <url>».
+
+#### `comment <job> --role <rol> --file <archivo> [--on issue|pr]`
+
+Publica el archivo como comentario con el marcador `<!-- atta -->` y la firma del rol
+(«— La Reina · Atta»). Roles: `exploradora`, `guia`, `vigia`, `cortadora`, `filtro`, `jardineras`,
+`soldado`, `reina`. Por defecto comenta en el PR si existe y, si no, en el issue. Rechaza con `2` un
+archivo vacío o que no sea UTF-8 (un BOM se acepta).
+
+#### `label <job> add|remove <nombre>`
+
+Agrega o quita una label en el issue del job: «Label atta:needs-info agregada al issue #7.».
+
+#### `merge <job>`
+
+Sincroniza con `develop`, pasa el Filtro otra vez y mergea el PR. Ver sección 8.
+
+### 7.3 Agentes
+
+#### `next <job>`
+
+Decide, sin red y sin escribir nada, la siguiente acción del job e imprime una línea JSON (sección
+5.2). Sale `0`. Ejemplo recién creado el job:
+
+```json
+{"action": "spawn", "agent": "atta-exploradora", "model": "haiku", "prompt": "Job: 7-agregar-la-funcion-de. Job folder: …"}
+```
+
+#### `save-artifact <job> intake --from-reply <archivo>`
+
+Extrae el texto entre `<<<ATTA-ARTIFACT` y `ATTA-ARTIFACT>>>` de la respuesta de la Exploradora
+(`-` = stdin), valida la cabecera y escribe `intake.md`: «La Exploradora decidió ACCEPT en <job>:
+intake.md guardado.». Solo en la etapa `intake`. Sale `2` sin escribir nada si la respuesta no trae
+exactamente un bloque («La respuesta no trae el artefacto entre «<<<ATTA-ARTIFACT» y
+«ATTA-ARTIFACT>>>». No se escribió intake.md.») o si la cabecera es inválida.
+
+### 7.4 Seguridad
+
+#### `guard`
+
+El hook PreToolUse de Claude Code. Lee el JSON del hook por stdin; si permite, no imprime nada; si
+bloquea, imprime la decisión `deny` con el motivo. **Siempre sale `0`.** Ver sección 14.2.
+
+#### `check-pr-base <base>`
 
 Sale `0` solo si `<base>` es exactamente la rama de integración (`develop`). Cualquier otra, con
 `main` y `master` incluidas, sale `2`: «La Reina no mergea a main: Atta solo integra en develop.».
 
-### `check-push <ref>`
+#### `check-push <ref>`
 
 Sale `0` solo para `atta/<job-id>` (o `refs/heads/atta/<job-id>`). Rechaza `develop`, `main`,
 `master`, refspecs (`HEAD:main`, `+rama`), recorridos (`atta/../main`) y cualquier otra rama.
 
-### `board.py` (el hormiguero)
+### 7.5 `atta-board` (el hormiguero)
 
 ```text
-python atta/bin/board.py [--jobs-dir D] [--port 8765] [--host 127.0.0.1] [--quiet]
+atta-board [--project <carpeta>] [--jobs-dir D] [--port 8765] [--host 127.0.0.1] [--quiet]
 ```
 
-Ver sección 9.
+Desde un checkout: `python atta/bin/board.py …`. Ver sección 12.
 
 ---
 
-## 6. El Filtro
+## 8. El merge a `develop`
 
-El Filtro decide si una rama está en condiciones de ser revisada. Es un script: ningún agente lo
-puede convencer.
+La Reina decide; **la espina mergea**. Cuando `decision.md` empieza con `APPROVE`, `atta next` pide
+`atta merge <job>`, que hace, en este orden:
+
+**Antes de tocar nada** (si falla, sale `2` y no cambia nada):
+
+1. El job está en la etapa `approve`.
+2. `decision.md` empieza con `APPROVE` y es **fresco**: escrito durante esta etapa `approve` («La
+   decisión de la Reina es vieja: …; hace falta una nueva.»).
+3. La rama del job es `atta/<id>`, el job tiene PR y worktree, y `merge_method` es válido.
+
+**El merge:**
+
+4. Queda presupuesto de `sync_attempts` (`max_rounds`); si no, escala. Si queda, el job pasa a
+   `merging`: «La Reina aprobó el PR #N (APPROVE).».
+
+5. El worktree está en la rama `atta/<id>`.
+6. El PR no viene de un fork, su base es `develop`, sale de `atta/<id>` y está abierto.
+7. `git fetch origin` y `git merge --no-edit origin/develop` en el worktree. Si hay conflicto, aborta
+   el merge y lista los archivos.
+8. El Filtro otra vez, tipo `merge-checks` (`round-N/merge-checks.md`).
+9. El commit del worktree y la punta de `atta/<id>` son exactamente el commit que pasó el Filtro.
+10. Push de `atta/<id>` (refspec explícito, sin `--force`).
+11. Vuelve a verificar el PR (fork, base, rama, abierto); si está en borrador, `gh pr ready`.
+12. `gh pr merge <n> --merge --match-head-commit <sha que pasó el Filtro>`: si alguien empujó otro
+    commit, GitHub rechaza el merge.
+
+Si todo pasa: `merge.md` con `MERGE: DONE` y el `COMMIT`, el job pasa a `merged` y sale `0`:
+«La Reina integró el PR #N en develop.».
+
+**Si algo falla desde el paso 4**, Atta escala:
+
+- escribe `merge.md` con `MERGE: FAIL` y el motivo;
+- renombra `decision.md` a `decision-<k>.md` (la siguiente aprobación necesita una decisión nueva);
+- mueve el job a `needs-human`;
+- comenta en el PR, firmado por la Reina: «La Reina lo deja en tus manos: <motivo>»;
+- pone la label `atta:needs-human` en el issue;
+- sale `1` (sin presupuesto, worktree en otra rama, PR cerrado, conflicto, Filtro, `gh`, git) o `2`
+  (PR de un fork, base distinta de `develop`, PR que sale de otra rama, push rechazado).
+
+El método de merge se elige con `merge_method` en `config.json` (`merge`, `squash` o `rebase`; por
+defecto `merge`). Atta nunca usa `--admin`, `--auto` ni borra la rama.
+
+---
+
+## 9. El Filtro
+
+El Filtro decide si una rama está en condiciones de ser revisada (y, antes del merge, de entrar a
+`develop`). Es un script: ningún agente lo puede convencer.
 
 ### Qué hace, en orden
 
@@ -378,7 +831,7 @@ falló.
 
 ---
 
-## 7. Configuración
+## 10. Configuración
 
 `atta/config.json` (las claves que faltan toman el valor por defecto):
 
@@ -389,46 +842,61 @@ falló.
 | `branch_prefix` | `"atta/"` | Prefijo de las ramas de trabajo. Debe terminar en `/` y no empezar con `refs/` |
 | `max_rounds` | `3` | Tope por contador de rondas |
 | `max_total_rounds` | `6` | Tope global de rondas por job |
-| `concurrency` | `3` | Jobs en paralelo (lo usa el orquestador desde F2) |
-| `labels` | `atta`, `atta:needs-info`, `atta:needs-human` | Labels de GitHub de la cola y los estados de espera |
+| `concurrency` | `3` | Jobs corriendo a la vez (los que esperan a una persona no cuentan) |
+| `labels` | `atta`, `atta:needs-info`, `atta:needs-human` | Labels de GitHub de la cola (`queue`) y los estados de espera (`needs_info`, `needs_human`) |
 | `protected_paths` | `atta/**`, `.claude/**`, `.pi/**`, `.github/workflows/**` | Rutas que ningún job puede tocar. No puede estar vacía |
 | `prices_usd_per_mtok` | `{}` | Precio por millón de tokens por modelo. Sin precio, el costo queda `null` con un aviso (nunca corta) |
 | `routing` | tabla de la sección 2.6 | Reviewers, lentes y tier por riesgo y por superficie |
+| `merge_method` | `"merge"` (opcional) | Método de `gh pr merge`: `merge`, `squash` o `rebase` |
+| `guard.deny_commands` | lista interna (opcional) | Comandos de despliegue que el guard bloquea. **Reemplaza** la lista por defecto (sección 14.2) |
 
 La configuración se valida al cargar y los errores salen en español, por ejemplo:
 `config.json: integration_branch «main» está en forbidden_branches; Atta nunca integra en una rama prohibida.`
 
 ---
 
-## 8. Anatomía de un job
+## 11. Anatomía de un job
 
 ```text
 atta/jobs/36-cifrar-tokens-de-sesion/
-├── job.json            estado (solo la espina lo escribe, de forma atómica)
-├── events.jsonl        una línea por transición
-├── issue.md            el issue citado como dato
-├── intake.md           Exploradora
-├── spec.md             Guía
-├── spec-review.md      Vigía
+├── job.json              estado (solo la espina lo escribe, de forma atómica)
+├── events.jsonl          una línea por transición
+├── issue.md              el issue citado como dato (cuerpo cortado en 64 KB)
+├── intake.md             Exploradora (lo guarda la espina con save-artifact)
+├── spec.md               Guía
+├── spec-review.md        Vigía
 ├── round-1/
-│   ├── build.md        Cortadora
-│   ├── checks.md       Filtro (+ checks.log)
-│   ├── review-code.md  Jardinera
+│   ├── build.md          Cortadora
+│   ├── checks.md         Filtro (+ checks.log)
+│   ├── review-code.md    Jardinera
+│   ├── review-code-retry.md   reintento si la primera revisión rompió el contrato
 │   └── review-security.md
 ├── round-2/ …
-└── decision.md         Reina
+│   └── merge-checks.md   Filtro antes del merge (+ merge-checks.log)
+├── feedback-1.md         tu respuesta cuando el job te necesitó (/atta <texto>)
+├── decision.md           Reina
+├── decision-1.md         una decisión anterior, retirada al escalar el merge
+└── merge.md              resultado del merge: MERGE: DONE|FAIL
 ```
 
 Cada artefacto empieza con su token de contrato y tiene una sección `## Summary` corta: es lo que
 muestran el dashboard y el PR.
+
+| Archivo | Quién lo escribe | Notas |
+|---|---|---|
+| `issue.md` | `atta start` / `atta create` | Título, cuerpo y comentarios del autor y del operador, citados con `> `. El cuerpo se corta en 64 KB con la nota «(cuerpo truncado: N bytes)». Los comentarios del operador con `<!-- atta -->` aparecen como «Atta» |
+| `feedback-<k>.md` | Tú, con `/atta <texto>` | Tu texto sin cambios; la Cortadora lo lee en la siguiente ronda |
+| `round-N/review-<r>-retry.md` | El mismo reviewer | Único reintento de una revisión inválida |
+| `decision-<k>.md` | `atta merge` | `decision.md` retirado al escalar: una aprobación nueva necesita una decisión nueva |
+| `merge.md` | `atta merge` | `MERGE: DONE` + `COMMIT: <sha>` o `MERGE: FAIL` + el motivo en `## Summary` |
 
 ### `job.json`
 
 | Campo | Contenido |
 |---|---|
 | `id`, `issue`, `title`, `issue_url` | Identidad del job y su issue |
-| `pr`, `pr_url` | PR asociado (desde F2) |
-| `branch`, `worktree` | `atta/<id>` y su carpeta de trabajo |
+| `pr`, `pr_url` | PR asociado (lo guarda `atta publish`) |
+| `branch`, `worktree` | `atta/<id>` y su carpeta de trabajo (ruta absoluta, la guarda `atta worktree`) |
 | `stage`, `stage_since` | Etapa actual y desde cuándo |
 | `review_rounds`, `gate_rounds`, `sync_attempts` | Contadores por motivo |
 | `total_rounds`, `max_total_rounds` | Rondas usadas y tope global (copiado al crear el job) |
@@ -450,11 +918,11 @@ muestran el dashboard y el PR.
 
 ---
 
-## 9. El hormiguero (dashboard)
+## 12. El hormiguero (dashboard)
 
 ```powershell
-python atta/bin/board.py                                  # jobs de atta/jobs
-python atta/bin/board.py --jobs-dir tests/fixtures/jobs   # jobs de ejemplo
+atta-board                                   # jobs del proyecto actual (atta/jobs)
+atta-board --jobs-dir tests/fixtures/jobs    # jobs de ejemplo, desde un checkout de Atta
 ```
 
 Abre <http://127.0.0.1:8765/>.
@@ -490,7 +958,7 @@ Abre <http://127.0.0.1:8765/>.
 
 ---
 
-## 10. La hormiga en la terminal
+## 13. La hormiga en la terminal
 
 Mientras corre una etapa (por ejemplo `gate`), una hormiga que carga una hoja camina por la línea.
 Cuando la etapa termina, la animación se borra y queda la línea del rol. **No agrega espera**: solo
@@ -504,32 +972,109 @@ se ve mientras hay trabajo real.
 | `NO_COLOR=1` | Igual que la anterior (estándar no-color.org) |
 | `TERM=dumb` | Igual que la anterior |
 
-Sin TTY (CI, `| tee`, redirección a archivo) la salida es siempre estática y sin códigos ANSI. El
-color se adapta a la terminal: truecolor, 256 o 16 colores.
+Sin TTY (CI, `| tee`, redirección a archivo) la salida es siempre estática, sin códigos ANSI y en
+UTF-8 en todos los sistemas. El color se adapta a la terminal: truecolor, 256 o 16 colores.
 
 ---
 
-## 11. Seguridad y guardas
+## 14. Seguridad y guardas
+
+### 14.1 Riesgos y guardas
 
 | Riesgo | Guarda |
 |---|---|
-| Un issue con instrucciones maliciosas | Título y cuerpo se guardan citados como dato; nunca entran como instrucción |
-| Un agente que cambia los checks con los que se lo juzga | El Filtro lee `checks.json` del checkout principal y falla ante cualquier cambio en rutas protegidas |
-| Llegar a `main` | Política de ramas en código: PR solo contra `develop`, push solo a `atta/*`, configuración que rechaza `main` en cualquier forma |
+| Un issue con instrucciones maliciosas | Título, cuerpo y comentarios se guardan citados como dato; solo entran comentarios del autor y del operador; el prompt de cada agente dice que `issue.md` no son instrucciones |
+| Alguien que firma como Atta en el issue | Solo los comentarios del operador con `<!-- atta -->` cuentan como «Atta» |
+| Un agente que cambia los checks con los que se lo juzga | El guard no le deja escribir en rutas protegidas; el Filtro lee `checks.json` del checkout principal y falla ante cualquier cambio en rutas protegidas |
+| Llegar a `main` | Política de ramas en código: PR solo contra `develop`, push solo a `atta/*`, configuración que rechaza `main` en cualquier forma; el guard bloquea a los agentes push fuera de `atta/*` y `gh pr merge` |
+| Un merge de algo distinto a lo que se revisó | `atta merge` exige una aprobación fresca, pasa el Filtro tras sincronizar y mergea con `--match-head-commit` del sha que pasó |
+| Desplegar | El guard bloquea los comandos de despliegue; Atta no despliega |
 | Ocultar el diff | Validación estricta de `--base`, sin objetos `git replace`, worktree limpio |
 | Bucles infinitos de rondas | Tope por contador y tope global que el feedback no reinicia |
 | Ids que escapan de su carpeta | Ids sanitizados (`[0-9a-z-]`, sin `..` ni separadores) |
 | Fugas por el dashboard | Confinamiento por ruta resuelta, solo lectura, solo `127.0.0.1` |
 
+### 14.2 El guard (`atta guard`)
+
+`atta init` instala en `.claude/settings.json` un hook PreToolUse: antes de cada `Write`, `Edit`,
+`MultiEdit`, `NotebookEdit`, `Bash` o `PowerShell`, Claude Code corre `atta guard` con el JSON de la
+herramienta. Si permite, no imprime nada; si bloquea, devuelve `permissionDecision: deny` con el
+motivo en español firmado «Atta». Una entrada mal formada, una configuración ilegible o cualquier
+error interno **bloquean** (falla cerrado).
+
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Atta no empuja a main: es una rama prohibida. — «Atta»"}}
+```
+
+**Escrituras permitidas** (la ruta se normaliza, se resuelven `..`, symlinks y junctions):
+
+- dentro de `.worktrees/<id>/` de un job activo (ni `merged` ni `rejected`), fuera de
+  `protected_paths` y fuera de cualquier carpeta `.git`;
+- exactamente uno de los artefactos del job en `atta/jobs/<id>/` de un job activo: `intake.md`,
+  `spec.md`, `spec-review.md`, `decision.md`, `feedback-<x>.md`, `round-<N>/build.md`,
+  `round-<N>/review-<x>.md`.
+
+Todo lo demás se bloquea: `config.json`, `checks.json`, `job.json`, `events.jsonl`, `.claude/**`, el
+checkout principal, otros proyectos. En Windows también los streams alternos (`a:b`), puntos o
+espacios finales, rutas relativas a una unidad (`C:src/a.py`) y rutas de dispositivo (`\\?\`).
+
+**Comandos de shell** (Bash y PowerShell): se unen las continuaciones de línea, se separan por
+`;`, `&&`, `||`, `|`, `&`, saltos de línea, paréntesis y llaves, y se inspeccionan recursivamente
+`$(...)`, backticks, `<<<`, `bash -c`, `pwsh -Command`/`-EncodedCommand`, `cmd /c`, `eval`,
+`Invoke-Expression`, `Start-Process` y `find -exec`. Se bloquea:
+
+- un shell sin `-c`/`-Command`/`/c` ni archivo de script (leería comandos de stdin: `… | bash`);
+- definir variables `GIT_CONFIG*` o `GIT_ALIAS*`;
+- `git push` salvo con remoto y refspecs explícitos cuyo destino sea `atta/<id>`; `--force*`,
+  `--mirror`, `--all`, `--tags`, `--delete`, `+refspec` y similares; `git -c alias.*|remote.*|url.*…`,
+  escribir esas claves con `git config`, `git send-pack`, `git update-ref -d`, borrar ramas;
+- `gh pr merge`, `gh repo delete|archive`, `gh release …`, `gh alias set|import`, `gh api` con
+  `DELETE` o con escritura a endpoints de merge, refs, protección de ramas o releases, las mutaciones
+  GraphQL de merge y refs, y `gh pr create|edit` con una base distinta de `develop`;
+- `curl`, `wget`, `Invoke-RestMethod`, `Invoke-WebRequest` con método de escritura contra la API de
+  GitHub;
+- comandos de despliegue: `guard.deny_commands` de `config.json` o, si no está, la lista por defecto
+  (`kubectl apply`, `helm install`, `terraform apply`, `vercel --prod`, `docker push`, `npm publish`,
+  `gh workflow run`, …);
+- escribir con `>`, `>>`, `tee`, `Out-File`, `Set-Content`, `Add-Content` o `Tee-Object` dentro del
+  proyecto pero fuera del worktree de un job activo, en rutas protegidas o en `.git`. Fuera del
+  proyecto (carpetas temporales) se permite.
+
+**Límites conocidos** (no se detectan):
+
+- escrituras de otros programas: `cp`, `mv`, `sed -i`, `rm`, `install`, `git apply`, hard links;
+- otros intérpretes (`python -c`, `node -e`, `perl -e`, `ruby -e`) y scripts desde archivo
+  (`bash deploy.sh`, `pwsh -File x.ps1`, `python x.py`, `make`): su contenido no se lee;
+- comandos armados en tiempo de ejecución: `X=push; git $X …`, expansión de llaves, globbing, alias o
+  funciones definidos antes en la misma sesión;
+- otros shells o lanzadores: `wsl`, `busybox sh`, `nu`, `xonsh`, `script -c`, `httpie` y otros
+  clientes HTTP;
+- alias de git o mapeos `remote.*.push` que ya estén en tu configuración de git, alias o extensiones
+  de `gh` definidos fuera de la sesión, consultas GraphQL desde archivos, `gh api -X PATCH pulls/<n>`
+  que cambie la base de un PR;
+- código de shell muy ofuscado.
+
+Un texto que solo *menciona* un comando bloqueado (here-docs, argumentos entre comillas) también
+puede bloquearse.
+
+**El guard es la primera línea, no la última.** Lo que se le escape lo frenan el Filtro (rechaza
+cualquier diff que toque rutas protegidas) y `atta merge` (base `develop` verificada contra el PR real,
+sha exacto con `--match-head-commit`); la protección de ramas de GitHub queda como respaldo final.
+
+**`atta` en el `PATH`.** Si Claude Code no encuentra `atta`, el hook falla sin JSON, Claude Code lo
+trata como un error no bloqueante y **la herramienta se ejecuta**. Comprueba `atta --help` en la misma
+terminal desde la que abres Claude Code (sección 3).
+
 ---
 
-## 12. Desarrollo
+## 15. Desarrollo
 
 ```text
 atta/
-├── bin/atta.py        entrada del CLI
-├── bin/board.py       entrada del dashboard
+├── bin/atta.py        entrada del CLI desde un checkout
+├── bin/board.py       entrada del dashboard desde un checkout
 ├── spine/             la espina (biblioteca)
+│   ├── project.py     raíz del proyecto y rutas del paquete
 │   ├── config.py      carga y valida config.json
 │   ├── machine.py     etapas, transiciones y contadores
 │   ├── store.py       job.json atómico (único escritor)
@@ -541,14 +1086,21 @@ atta/
 │   ├── router.py      plan de revisión por riesgo
 │   ├── branches.py    política de ramas y presupuesto de rondas
 │   ├── gate.py        el Filtro
+│   ├── initcmd.py     atta init
+│   ├── github.py      adaptador de gh
+│   ├── flow.py        queue, start, refresh, worktree, publish, comment, label, merge
+│   ├── next.py        atta next y save-artifact
+│   ├── guard.py       el hook PreToolUse
 │   ├── cli.py         comandos
 │   ├── term.py        la hormiga animada
 │   ├── voice.py       mensajes en la voz de marca
 │   └── board.py       servidor del dashboard
+├── templates/claude/  agentes, skill /atta, settings.json y models.json que copia atta init
 ├── board/             HTML, CSS, JS y logos del dashboard
-├── config.json
-└── checks.json
-tests/                 suite unittest + fixtures/jobs (jobs ficticios en español)
+├── config.json        configuración por defecto
+└── checks.json        checks del propio repo de Atta
+pyproject.toml         paquete instalable (comandos atta y atta-board)
+tests/                 suite unittest + fixtures/jobs + fakegh (gh falso)
 design/                sistema de diseño y direcciones del hormiguero
 brand/                 identidad de marca
 docs/                  plan y arquitectura
@@ -561,9 +1113,13 @@ odd/tasks/             seguimiento de cada fase
 python -m unittest discover -s tests -v
 ```
 
-Más de 270 tests, sin red, con estado en carpetas temporales. El CI
-(`.github/workflows/ci.yml`) corre la suite en Ubuntu, macOS y Windows con Python 3.10 y 3.12 en cada
-push a `develop`, `feat/**` y `atta/**`, y en cada PR contra `develop`.
+Cerca de 500 tests, sin red, con estado en carpetas temporales; GitHub se simula con
+`tests/fakegh/fakegh.py` vía `ATTA_GH`. El CI (`.github/workflows/ci.yml`) corre la suite en Ubuntu,
+macOS y Windows con Python 3.10 y 3.12 en cada push a `develop`, `feat/**` y `atta/**`, y en cada PR
+contra `develop`; además instala el paquete con `pip install .` en un entorno limpio y prueba `atta` y
+`atta-board` fuera del checkout.
+
+Para verificar las plantillas de los agentes: `python atta/templates/claude/check_templates.py`.
 
 ### Convenciones
 
@@ -574,30 +1130,43 @@ push a `develop`, `feat/**` y `atta/**`, y en cada PR contra `develop`.
 
 ---
 
-## 13. Solución de problemas
+## 16. Solución de problemas
 
 | Síntoma | Causa y solución |
 |---|---|
-| PowerShell: «El término 'atta' no se reconoce…» | Falta el prefijo: usa `.\atta <comando>` |
-| PowerShell: «Falta una expresión después del operador unario '-'» | Se copió el guion de una lista: el comando empieza en `.\atta` |
+| `No module named pip` al instalar | El `python` del `PATH` no tiene pip (por ejemplo, un venv sin pip). Usa `py -m pip install …` en Windows, otro Python con pip, o `pipx` |
+| «El término 'atta' no se reconoce…» / `atta: command not found` | La carpeta de scripts no está en el `PATH`: con pipx, `pipx ensurepath`; con pip en Windows, agrega la carpeta `Scripts` de ese Python. Abre una terminal nueva |
+| El guard no bloquea nada | Claude Code no encuentra `atta` (mismo arreglo de arriba) o falta el hook: corre `atta init` y revisa `.claude/settings.json` |
+| `atta queue` sale vacío justo después de ponerle la label a un issue | El índice de búsqueda de GitHub tarda unos segundos: vuelve a correrlo |
+| `gh` responde «Could not resolve to a Repository» o no ve un repo privado | La cuenta activa de `gh` no tiene acceso: `gh auth status` y `gh auth switch` a la cuenta correcta |
+| `atta init` sale con `1` | Un aviso de GitHub: falta `develop` en `origin` o no se pudo crear una label. Los archivos sí se crearon; arréglalo y vuelve a correrlo |
+| `atta init` sale con `2` | `.claude/settings.json` no es JSON válido: corrígelo; no se cambió nada |
+| `atta status` dice «No hay jobs.» y sí hay | Estás fuera del proyecto, o `--project` / `ATTA_PROJECT` apuntan a otra carpeta |
+| Un job sigue en `needs-info` aunque el autor respondió | `atta queue` lo retoma cuando el autor comenta **después** de la pregunta de la Exploradora y hay cupo; si no, corre `atta refresh <job>` a mano |
+| `atta start` rechaza el issue | Lee el motivo: ya tiene job, sin cupo, cerrado, sin la label `atta` o con una label de espera |
+| `/atta` se detuvo en un job | Un comando salió con `2`, o un agente terminó sin escribir su artefacto: lee el error que muestra y `atta next <job>` |
+| Claude Code pide permiso o una revisión antes de cada cambio | No viene de Atta: los agentes de la colonia no usan RDD ni consentimiento por cambio; trabajan en su worktree bajo el guard, el Filtro y el merge seguro. Si tu entorno agrega ese flujo, desactívalo en ese clon si quieres que la colonia corra sola |
+| En un checkout de Atta, PowerShell no reconoce `atta` | Sin el comando global, usa el lanzador con prefijo: `.\atta <comando>` |
+| PowerShell: «Falta una expresión después del operador unario '-'» | Se copió el guion de una lista: el comando empieza en `atta` |
 | `./atta.sh: Permission denied` | `chmod +x atta.sh` |
 | El Filtro falla con «no tiene checks» | `atta/checks.json` está vacío a propósito: agrega los checks del proyecto |
 | El Filtro rechaza `--base` | La base no existe, es igual a `HEAD` o no comparte historia: usa `origin/develop` tras un `git fetch` |
 | «el worktree tiene cambios sin commitear» | Commitea o descarta los cambios del worktree antes de correr el Filtro |
+| `atta comment` dice que el archivo no es UTF-8 | Guárdalo en UTF-8 (en PowerShell 5: `Set-Content -Encoding utf8`) |
 | La hormiga se ve con símbolos raros | Usa `ATTA_ASCII=1` o una terminal con Unicode (Windows Terminal) |
 | No quiero animación | `ATTA_NO_ANIM=1` o `NO_COLOR=1` |
 | El dashboard muestra «Carpeta ignorada: … es un enlace» | Hay un symlink, junction o hardlink en `atta/jobs`; el tablero no lo sigue a propósito |
 
 ---
 
-## 14. Hoja de ruta y documentos
+## 17. Hoja de ruta y documentos
 
 | Fase | Contenido |
 |---|---|
 | **F1** ✅ | Espina, Filtro, router, ramas, CLI, dashboard, CI |
-| **F2** | La colonia en Claude Code: definición de cada rol, comando `/atta`, guard de herramientas, integración con GitHub, empaquetado del CLI |
-| **F3** | Calidad determinista: ratchet y memoria, ast-grep en el Filtro, alcance del diff, merge seguro |
-| **F4** | Ruteo de modelos por etapa, riesgo e intento; Reina determinista en riesgo bajo |
+| **F2** (en curso) | Herramienta instalable, `atta init`, la colonia en Claude Code, comando `/atta`, guard de herramientas, flujo con GitHub y merge a `develop`. Falta confirmar la corrida de punta a punta |
+| **F3** | Calidad determinista: ratchet y memoria, ast-grep en el Filtro, alcance del diff, diff antes y después del sync |
+| **F4** | Ruteo de modelos por etapa, riesgo e intento; revisor con modelo distinto al de la Cortadora; Reina determinista en riesgo bajo |
 | **F5** | Pi como segundo runtime para etapas baratas |
 | **F6-F7** | Benchmark y conductor sin orquestador LLM |
 
@@ -606,5 +1175,6 @@ push a `develop`, `feat/**` y `atta/**`, y en cada PR contra `develop`.
 - Identidad de marca: [`brand/README.md`](brand/README.md)
 - Diseños del hormiguero: [`design/hormiguero/`](design/hormiguero/)
 - Seguimiento de F1: [`odd/tasks/f1-espina.md`](odd/tasks/f1-espina.md)
+- Seguimiento de F2: [`odd/tasks/f2-colonia.md`](odd/tasks/f2-colonia.md)
 
 Licencia: por definir.

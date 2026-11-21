@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 560" width="1100" height="560" role="img" aria-labelledby="t d">
+  <title id="t">Atta en la terminal</title>
+  <desc id="d">Salida real del CLI atta: crear un job, rutear, avanzar y correr el Filtro mientras la hormiga camina.</desc>
+  <rect width="1100" height="560" rx="14" fill="#17110D"/>
+  <rect width="1100" height="44" rx="14" fill="#221913"/>
+  <rect y="30" width="1100" height="14" fill="#221913"/>
+  <g fill="none" stroke="#BBA894" stroke-width="1.6"><circle cx="26" cy="22" r="6"/><circle cx="48" cy="22" r="6"/><circle cx="70" cy="22" r="6"/></g>
+  <text x="100" y="27" font-family="'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif" font-size="14" fill="#BBA894">atta · PowerShell</text>
+  <g font-family="'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace" font-size="16" fill="#F4EADB">
+    <text x="28" y="84"><tspan fill="#BBA894">&gt;</tspan> atta create 12 --title "Agregar exportación a CSV"</text>
+    <text x="28" y="108">12-agregar-exportacion-a-csv</text>
+    <text x="28" y="144"><tspan fill="#BBA894">&gt;</tspan> atta route 12-agregar-exportacion-a-csv</text>
+    <text x="28" y="168">El router asignó 1 reviewer a 12-agregar-exportacion-a-csv (riesgo bajo, spec-review no): code T1.</text>
+    <text x="28" y="204"><tspan fill="#BBA894">&gt;</tspan> atta advance 12-agregar-exportacion-a-csv spec</text>
+    <text x="28" y="228">La Exploradora aceptó el issue #12 (riesgo bajo).</text>
+    <text x="28" y="264"><tspan fill="#BBA894">&gt;</tspan> atta gate 12-agregar-exportacion-a-csv --worktree .worktrees/12 --base origin/develop</text>
+    <!-- animated ant (frame 6 of design/hormiguero/terminal-frames.json) while the Filtro runs -->
+    <text x="28" y="292" xml:space="preserve"><tspan fill="#E57A52">      ●•●●</tspan><tspan fill="#7CC283">❦</tspan><tspan fill="#D39B2A">             ◐ Filtro: corriendo los checks…</tspan></text>
+    <text x="28" y="312" xml:space="preserve"><tspan fill="#BBA894">······</tspan><tspan fill="#E57A52">╱╲╱╲</tspan></text>
+    <text x="28" y="344">El Filtro pasó: 1 check en 0.3 s.</text>
+    <text x="28" y="380"><tspan fill="#BBA894">&gt;</tspan> atta status</text>
+    <text x="28" y="404" xml:space="preserve" fill="#BBA894">JOB                           ISSUE  ETAPA   RONDAS  COSTO  TIEMPO</text>
+    <text x="28" y="428" xml:space="preserve">12-agregar-exportacion-a-csv  #12    review  0/6     -      1 s</text>
+    <text x="28" y="464"><tspan fill="#BBA894">&gt;</tspan> atta check-pr-base main</text>
+    <text x="28" y="488">La Reina no mergea a main: Atta solo integra en develop.</text>
+    <text x="28" y="524"><tspan fill="#BBA894">&gt;</tspan> <tspan fill="#D39B2A">▌</tspan></text>
+  </g>
+</svg>

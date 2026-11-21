@@ -2,7 +2,7 @@
 
 > Tu colonia de agentes de software. Fuente de diseño: [`docs/design/arquitectura.md`](design/arquitectura.md).
 > Identidad: [`brand/README.md`](../brand/README.md).
-> Estado: diseño, sin código todavía. Atta se escribe desde cero.
+> Estado: F1 (la espina) hecha; F2 (la colonia en Claude Code) en curso. Atta se escribe desde cero.
 
 ## 1. Concepto aplicado a la arquitectura
 
@@ -74,7 +74,7 @@ en la sección 13 de [`arquitectura.md`](design/arquitectura.md).
 |---|---|---|---|
 | **F0 Fundación: repo, marca, diseño y plan** ✅ | Repo `atta`, marca en `brand/`, [`arquitectura.md`](design/arquitectura.md), este plan | — | Repo con marca, diseño y plan |
 | **F1 Espina propia, identidad y ramas** ✅ | Escrita desde cero en Python 3.10+ solo con stdlib: máquina de estados con transiciones legales, job store en `atta/jobs/<id>/` (único escritor de `job.json`), Filtro con `atta/checks.json` fail-fast, router por riesgo, CLI `atta`. Multiplataforma completo (lock portable, `pathlib`, sin herramientas Unix-only). `events.jsonl` con tiempos y costo no bloqueante; título del issue citado; `protected_paths` (`atta/**`, `.claude/**`, `.pi/**`, `.github/workflows/**`); contadores separados y tope global (K13). Política de ramas en código (`develop`, `main` prohibida). Mensajes del bot en español con la voz de marca. CI en Windows, macOS y Linux | — | Tests de la espina verdes en los tres sistemas; un PR con base `main` es rechazado |
-| **F2 Colonia en Claude Code** | Definiciones propias de los roles (Exploradora, Guía, Cortadora, Jardineras, Soldado, Reina), comando `/atta`, guard de herramientas en Python, dashboard con tokens y logo; **fixtures propios** (jobs ficticios en español, uno por camino: aceptado y mergeado, rechazado, filtro fallido, escalado) | Claude Code | Los fixtures se ven en el dashboard; un issue de prueba llega a PR contra `develop` |
+| **F2 Colonia en Claude Code** (en curso: piezas hechas, falta confirmar la corrida de punta a punta, ver [`f2-colonia.md`](../odd/tasks/f2-colonia.md)) | Definiciones propias de los roles (Exploradora, Guía, Cortadora, Jardineras, Soldado, Reina), comando `/atta`, guard de herramientas en Python, dashboard con tokens y logo; **fixtures propios** (jobs ficticios en español, uno por camino: aceptado y mergeado, rechazado, filtro fallido, escalado) | Claude Code | Los fixtures se ven en el dashboard; un issue de prueba llega a PR contra `develop` |
 | **F3 Calidad determinista (Kernia)** | Ratchet `PREVENTION:` + Cultivadora + `atta/memory/` (K1), `CHANGES` sin hallazgos rechazado (K12), ast-grep bloqueante en el Filtro (K4), alcance del diff `FILES:` (K8), merge `--match-head-commit` (K6), diff antes/después de sync (K7), preflight de frescura (K14), plantilla de PR (K16), checklist núcleo corto (K2) | Claude Code | Cada mecanismo con su test de rechazo |
 | **F4 Ruteo y velocidad** | Router para todas las etapas (tiers T0-T3, matriz etapa×riesgo, escalera por intento, independencia de modelo), lentes por riesgo, Reina determinista en `low`, Vigía en medio/alto (K10), dependencias `BLOCKED-BY` en la cola (K5), timeouts por etapa | Claude Code | Job `low` sin LLM en la Reina; tiempos por etapa en el dashboard |
 | **F5 Pi como segundo runtime** | Adaptador `PiRunner` con el contrato headless (`pi --mode json`, parseo de eventos, `agent_settled`, `--no-approve`, `--tools`, `-ne`/`-e atta-guard`, versiones fijadas, contenedor); Exploradora y Jardineras en modelos no-Claude | Claude Code + Pi | Mismos issues de referencia: costo y calidad comparados |
