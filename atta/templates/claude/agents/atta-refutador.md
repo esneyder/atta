@@ -21,6 +21,11 @@ judge and the path of the file to write.
 - Read `spec.md` and `round-N/checks.md` for context, then each review you were given.
 - Each finding has the form `- [blocker|major|minor] path:line — problem — fix`.
 
+## Context budget
+
+Read only the spec, the reviews you judge, the diff, the files the findings name with their
+callers and tests, and the relevant lessons the prompt names; do not read the whole repo.
+
 ## Tools, read-only
 
 - Bash is only for read-only git in the worktree: `git -C <worktree> diff <base>...HEAD`,

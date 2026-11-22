@@ -67,5 +67,100 @@ class RefutadorRuleTests(TempDirMixin, unittest.TestCase):
         self.assertIn("agents/atta-refutador.md: falta la plantilla.", done.stdout)
 
 
+class StructuredContractTests(TempDirMixin, unittest.TestCase):
+    """The checker enforces the structured contracts of F3 (G10, G11, G12, K2, Vigía cap)."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.tmp / "claude"
+        (self.root / "agents").mkdir(parents=True)
+        shutil.copy(TEMPLATES / "models.json", self.root / "models.json")
+        for path in (TEMPLATES / "agents").glob("atta-*.md"):
+            shutil.copy(path, self.root / "agents" / path.name)
+
+    def check(self, name, old, new):
+        path = self.root / "agents" / f"{name}.md"
+        text = path.read_text(encoding="utf-8")
+        self.assertIn(old, text)
+        path.write_text(text.replace(old, new), encoding="utf-8")
+        done = run_checker(str(self.root))
+        self.assertEqual(done.returncode, 1, done.stdout)
+        return done.stdout
+
+    def test_cortadora_build_md_needs_every_section(self):
+        out = self.check("atta-cortadora", "## Risks\n", "")
+        self.assertIn("agents/atta-cortadora.md: las secciones del artefacto deben ser Summary, "
+                      "Changes, Tests, Acceptance, Risks, Blocked en ese orden; son Summary, "
+                      "Changes, Tests, Acceptance, Blocked.", out)
+
+    def test_cortadora_build_md_sections_keep_their_order(self):
+        out = self.check("atta-cortadora", "## Tests\n\n- `python", "## Testsx\n\n- `python")
+        self.assertIn("agents/atta-cortadora.md: las secciones del artefacto deben ser Summary, "
+                      "Changes, Tests, Acceptance, Risks, Blocked en ese orden; son Summary, "
+                      "Changes, Testsx, Acceptance, Risks, Blocked.", out)
+
+    def test_cortadora_rejects_claims_without_evidence(self):
+        out = self.check("atta-cortadora", "is not evidence", "is fine")
+        self.assertIn("agents/atta-cortadora.md: el prompt no contiene «is not evidence».", out)
+
+    def test_guia_copies_criteria_verbatim(self):
+        out = self.check("atta-guia", "verbatim", "loosely")
+        self.assertIn("agents/atta-guia.md: el prompt no contiene «verbatim».", out)
+
+    def test_guia_files_line_is_mandatory(self):
+        out = self.check("atta-guia", "The `FILES:` line is mandatory", "The `FILES:` line")
+        self.assertIn("agents/atta-guia.md: el prompt no contiene "
+                      "«The `FILES:` line is mandatory».", out)
+
+    def test_reviewer_scope_is_bounded(self):
+        scope = "correctness and the stated requirements only; do not invent work"
+        out = self.check("atta-soldado", scope, "everything")
+        self.assertIn(f"agents/atta-soldado.md: el prompt no contiene «{scope}».", out)
+
+    def test_reviewer_checklist_has_at_most_twelve_items(self):
+        out = self.check("atta-jardinera-code", "\n\n## Verdict rules",
+                         "\n13. One more item.\n\n## Verdict rules")
+        self.assertIn("agents/atta-jardinera-code.md: «## Core checklist» debe tener entre 1 y "
+                      "12 puntos; tiene 13.", out)
+
+    def test_reviewer_checks_callers_before_claiming_safe(self):
+        out = self.check("atta-jardinera-ux", "callers and writers", "code")
+        self.assertIn("agents/atta-jardinera-ux.md: el prompt no contiene "
+                      "«callers and writers».", out)
+
+    def test_vigia_caps_revise_rounds(self):
+        out = self.check("atta-vigia", "at most 2 `REVISE` rounds", "many rounds")
+        self.assertIn("agents/atta-vigia.md: el prompt no contiene "
+                      "«at most 2 `REVISE` rounds».", out)
+
+    def test_every_agent_has_a_context_budget(self):
+        out = self.check("atta-exploradora", "do not read the whole repo", "read anything")
+        self.assertIn("agents/atta-exploradora.md: el prompt no contiene "
+                      "«do not read the whole repo».", out)
+
+
+class PrBodyTemplateTests(unittest.TestCase):
+    """atta/templates/pr-body.md (K16) has the fixed sections and documents its placeholders."""
+
+    def setUp(self):
+        self.text = (TEMPLATES.parent / "pr-body.md").read_text(encoding="utf-8")
+        head, sep, self.body = self.text.partition("-->")
+        self.assertTrue(self.text.startswith("<!--") and sep, "falta el comentario inicial")
+        self.head = head
+
+    def test_sections_in_order(self):
+        headings = [line for line in self.body.splitlines() if line.startswith("## ")]
+        self.assertEqual(headings, ["## Resumen", "## Cambios", "## Pruebas",
+                                    "## Criterios de aceptación"])
+        self.assertEqual(self.body.strip().splitlines()[-1], "Closes #{{issue}}")
+
+    def test_every_placeholder_is_documented(self):
+        import re
+        used = set(re.findall(r"\{\{([a-z_]+)\}\}", self.body))
+        documented = set(re.findall(r"\{\{([a-z_]+)\}\}", self.head))
+        self.assertEqual(used, documented)
+        self.assertIn("git diff --stat", self.head)
+
+
 if __name__ == "__main__":
     unittest.main()
