@@ -3,6 +3,10 @@
 `awaiting-merge` (S13): the Reina approved a job whose risk is above
 `delivery.auto_merge_up_to`; the PR is ready and a person merges it. It is not terminal and,
 like the stages that wait for a person, does not hold a `concurrency` slot (flow.NO_SLOT).
+
+`needs-human → awaiting-merge` (L31): `atta handoff` retakes a job that a handoff escalated when
+the Reina's archived APPROVE still holds, the PR is open against the integration branch and
+HEAD is still the commit that passed merge-checks (flow.cmd_handoff checks all of it).
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ TRANSITIONS = {
     "approve": ("merging", "awaiting-merge", "needs-human"),
     "merging": ("merged", "needs-human"),
     "awaiting-merge": ("merged", "needs-human"),
-    "needs-human": ("build", "rejected"),
+    "needs-human": ("build", "rejected", "awaiting-merge"),
     "merged": (),
     "rejected": (),
 }

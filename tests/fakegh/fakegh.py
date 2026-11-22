@@ -2,7 +2,10 @@
 
 State keys: "user" (login), "issues" ({number: issue}), "prs" ([pr]; `pr merge` sets "state"
 MERGED and "headRefOid" from --match-head-commit), "fail" ({"<cmd> <sub>": "stderr text"} makes
-that command exit 1), "calls" (appended: {"argv": [...], "stdin": text|null}).
+that command exit 1), "calls" (appended: {"argv": [...], "stdin": text|null}), "repo_labels"
+(optional list of label names that exist in the repository: when present, `issue edit
+--add-label X` fails like GitHub if X is not in it, and `label create X` adds it).
+Without "repo_labels" every label exists and `label create` is unsupported (exits 1).
 Only the subcommands Atta uses are implemented; anything else exits 1.
 """
 
@@ -101,10 +104,18 @@ def main(argv):
         target = state["issues"].setdefault(str(argv[2]), {"number": int(argv[2]), "labels": []})
         labels = target.setdefault("labels", [])
         add, remove = _opt(argv, "--add-label"), _opt(argv, "--remove-label")
+        if add and "repo_labels" in state and add not in state["repo_labels"]:
+            sys.stderr.write(f"failed to update https://github.com/o/r/issues/{argv[2]}: "
+                             f"'{add}' not found\n")
+            return 1
         if add and add not in [lb["name"] for lb in labels]:
             labels.append({"name": add})
         if remove:
             target["labels"] = [lb for lb in labels if lb["name"] != remove]
+    elif key == "label create" and "repo_labels" in state:
+        # Only modelled with "repo_labels"; otherwise unsupported (test_init relies on that).
+        if argv[2] not in state["repo_labels"]:
+            state["repo_labels"].append(argv[2])
     elif key == "pr list":
         head = _opt(argv, "--head")
         rows = [p for p in state["prs"] if p.get("state", "OPEN") == "OPEN"

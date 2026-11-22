@@ -752,6 +752,28 @@ class CommentLabelTests(FlowBase):
             ["issue", "edit", "12", "--remove-label", "atta:needs-info"],
         ])
 
+    def test_label_add_creates_a_missing_atta_label(self):
+        # L31 (b): an Atta label the repository lacks is created with init's style.
+        st = self.state()
+        st["repo_labels"] = ["atta"]
+        self.write_state(st)
+        self.assertEqual(self.ok("label", JID, "add", "atta:needs-info"),
+                         "Label atta:needs-info agregada al issue #12.\n")
+        self.assertEqual(self.gh_by("label", "create"), [
+            ["label", "create", "atta:needs-info", "--color", "fbca04", "--description",
+             "Atta: falta información del autor del issue", "--force"]])
+        self.assertIn("atta:needs-info",
+                      [lb["name"] for lb in self.state()["issues"]["12"]["labels"]])
+
+    def test_label_add_never_creates_a_label_that_is_not_atta(self):
+        st = self.state()
+        st["repo_labels"] = ["atta"]
+        self.write_state(st)
+        code, out, err = self.run_cmd("label", JID, "add", "otra")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("'otra' not found", err)
+        self.assertEqual(self.gh_by("label", "create"), [])
+
 
 CLOSING = ("<!-- atta -->\nLa Reina mergeó el PR #101 a develop. El issue #12 queda "
            "resuelto.\n\n— La Reina · Atta\n")
@@ -1342,6 +1364,12 @@ HANDOFF_COMMENT = ("<!-- atta -->\nLa Reina aprobó este PR (riesgo medio). Atta
                    "develop.\n\n— La Reina · Atta\n")
 HUMAN_CLOSING = ("<!-- atta -->\nEl PR #101 quedó mergeado en develop. El issue #12 queda "
                  "resuelto.\n\n— La Reina · Atta\n")
+READY = ("El PR #101 quedó listo para tu revisión (riesgo medio): revísalo y mergéalo en develop. "
+         "https://github.com/o/r/pull/101")
+NOT_FROM_HANDOFF = (f"El job {JID} está en needs-human, pero no lo escaló un handoff; handoff "
+                    "exige la etapa approve.")
+REVIEW_STYLE = ("--color", "1d76db", "--description",
+                "Atta: PR listo para que lo revises y lo mergees", "--force")
 
 
 class HandoffBase(MergeBase):
@@ -1357,6 +1385,17 @@ class HandoffBase(MergeBase):
 
     def pr_comments(self):
         return [c["body"] for c in self.state().get("comments", []) if c["on"] == "pr"]
+
+    def handoff_md(self):
+        return (self.store.job_dir(JID) / "handoff.md").read_text(encoding="utf-8")
+
+    def repo_labels(self, *names, fail=None):
+        """The repository only has `names` (the sandbox of L31 lacked atta:needs-review)."""
+        st = self.state()
+        st["repo_labels"] = list(names)
+        if fail:
+            st["fail"] = fail
+        self.write_state(st)
 
 
 class HandoffTests(HandoffBase):
@@ -1386,7 +1425,81 @@ class HandoffTests(HandoffBase):
         self.assertEqual(self.state()["issues"]["12"]["state"], "OPEN")
         self.assertTrue(self.wt().is_dir())
         self.assertFalse((self.store.job_dir(JID) / "merge.md").exists())
+        self.assertEqual(self.handoff_md(), f"HANDOFF: READY\nCOMMIT: {sha}\nPR: #101\n\n"
+                                            f"## Summary\n\n{READY}\n")
         self.assert_never_forced()
+
+    def test_l31_missing_review_label_is_created_and_the_job_waits(self):
+        # L31: the sandbox predates T13, so atta:needs-review did not exist and the handoff
+        # escalated to needs-human. Now the label is created and the add retried once.
+        self.repo_labels("atta", "atta:needs-info", "atta:needs-human")
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        add = ["issue", "edit", "12", "--add-label", NEEDS_REVIEW]
+        self.assertEqual(self.gh_by("label", "create"),
+                         [["label", "create", NEEDS_REVIEW, *REVIEW_STYLE]])
+        self.assertEqual(self.gh_by("issue", "edit"), [add, add])
+        self.assertEqual(self.labels(), ["atta", NEEDS_REVIEW])
+        self.assertEqual(self.job()["stage"], "awaiting-merge")
+        self.assertEqual(self.stages()[-1], ("approve", "awaiting-merge"))
+        self.assertTrue((self.store.job_dir(JID) / "decision.md").exists())
+        self.assertFalse((self.store.job_dir(JID) / "merge.md").exists())
+        self.assertEqual(self.handoff_md(), f"HANDOFF: READY\nCOMMIT: {self.gated_sha()}\n"
+                                            f"PR: #101\n\n## Summary\n\n{READY}\n")
+
+    def test_label_that_cannot_be_created_is_only_a_warning(self):
+        self.repo_labels("atta", "atta:needs-human",
+                         fail={"label create": "HTTP 403: Resource not accessible by integration"})
+        code, out, err = self.handoff()
+        warning = ("No se pudo poner la label atta:needs-review en el issue #12: La label "
+                   "atta:needs-review no existe en el repositorio y no se pudo crear: gh label "
+                   "create falló: HTTP 403: Resource not accessible by integration")
+        self.assertEqual((code, err), (0, f"Aviso: {warning}\n"), out)
+        self.assertTrue(out.endswith(READY + "\n"), out)
+        self.assertEqual(self.job()["stage"], "awaiting-merge")
+        self.assertEqual(self.labels(), ["atta"])
+        self.assertEqual(self.pr_comments(), [HANDOFF_COMMENT])
+        self.assertFalse((self.store.job_dir(JID) / "merge.md").exists())
+        self.assertEqual(self.handoff_md(), f"HANDOFF: READY\nCOMMIT: {self.gated_sha()}\n"
+                                            f"PR: #101\n\n## Summary\n\n{READY}\n\n"
+                                            f"## Avisos\n\n- {warning}\n")
+
+    def test_failed_comment_is_only_a_warning(self):
+        st = self.state()
+        st["fail"] = {"pr comment": "boom"}
+        self.write_state(st)
+        code, out, err = self.handoff()
+        warning = "No se pudo comentar en el PR #101: gh pr comment falló: boom"
+        self.assertEqual((code, err), (0, f"Aviso: {warning}\n"), out)
+        self.assertEqual(self.job()["stage"], "awaiting-merge")
+        self.assertEqual(self.pr_comments(), [])
+        self.assertEqual(self.labels(), ["atta", NEEDS_REVIEW])
+        self.assertIn(f"## Avisos\n\n- {warning}\n", self.handoff_md())
+
+    def test_escalation_creates_a_missing_needs_human_label(self):
+        self.repo_labels("atta", fail={"pr ready": "boom"})
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (1, "gh pr ready falló: boom\n"))
+        self.assert_needs_human("gh pr ready falló: boom")
+        self.assertEqual(self.gh_by("label", "create"), [
+            ["label", "create", "atta:needs-human", "--color", "d93f0b", "--description",
+             "Atta: necesita una decisión humana", "--force"]])
+
+    def test_merge_escalation_is_not_retaken_by_handoff(self):
+        # L31 (c): only a needs-human that a handoff caused can be retaken by handoff.
+        st = self.state()
+        st["fail"] = {"pr ready": "boom"}
+        self.write_state(st)
+        self.assertEqual(self.merge()[0], 1)
+        self.assertEqual(self.stages()[-1], ("merging", "needs-human"))
+        st = self.state()
+        st.pop("fail")
+        self.write_state(st)
+        calls = len(self.gh_calls())
+        code, out, err = self.handoff()
+        self.assertEqual((code, out, err), (2, "", NOT_FROM_HANDOFF + "\n"))
+        self.assertEqual(self.job()["stage"], "needs-human")
+        self.assertEqual(len(self.gh_calls()), calls)
 
     def test_handoff_label_from_config(self):
         cfg = config.with_defaults({"labels": {"needs_review": "revisar"}})
@@ -1415,6 +1528,7 @@ class HandoffTests(HandoffBase):
         self.assertEqual((code, err), (1, reason + "\n"))
         self.assert_needs_human(reason)
         self.assertNotIn(NEEDS_REVIEW, self.labels())
+        self.assertEqual(self.handoff_md(), f"HANDOFF: FAIL\n\n## Summary\n\n{reason}\n")
 
     def test_pr_base_main_is_refused_and_goes_to_needs_human(self):
         self.set_pr(baseRefName="main")
@@ -1427,9 +1541,7 @@ class HandoffTests(HandoffBase):
         before = (self.store.job_dir(JID) / "job.json").read_bytes()
         calls = len(self.gh_calls())
         code, out, err = self.handoff()
-        self.assertEqual((code, out), (2, ""))
-        self.assertEqual(err, f"El job {JID} está en needs-human; handoff exige la etapa "
-                              "approve.\n")
+        self.assertEqual((code, out, err), (2, "", NOT_FROM_HANDOFF + "\n"))
         self.assertEqual((self.store.job_dir(JID) / "job.json").read_bytes(), before)
         self.assertEqual(len(self.gh_calls()), calls)
 
@@ -1457,6 +1569,115 @@ class HandoffTests(HandoffBase):
         self.assertEqual(len(self.gh_by("pr", "merge")), 1)
         self.assertNotIn(["issue", "edit", "12", "--remove-label", NEEDS_REVIEW],
                          self.gh_calls())
+
+
+class HandoffRecoveryTests(HandoffBase):
+    """L31 (c): `atta handoff` retakes a needs-human job that a handoff escalated, when the
+    approval still holds and nothing changed since the Filtro."""
+
+    def setUp(self):
+        super().setUp()
+        st = self.state()
+        st["fail"] = {"pr ready": "boom"}
+        self.write_state(st)
+        code, out, err = self.handoff()
+        self.assertEqual(code, 1, err)
+        st = self.state()
+        st.pop("fail")
+        self.write_state(st)
+        self.sha = self.gated_sha()
+        self.dir = self.store.job_dir(JID)
+        self.assertEqual(self.stages()[-1], ("approve", "needs-human"))
+        self.assertTrue((self.dir / "decision-1.md").exists())
+
+    def snapshot(self):
+        return [(self.dir / name).read_bytes() for name in ("job.json", "events.jsonl")]
+
+    def assert_recovered(self, code, out, err):
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out, "La Reina retoma el handoff del PR #101: la aprobación sigue "
+                              "vigente y nada cambió desde el Filtro.\n" + READY + "\n")
+        self.assertEqual(self.job()["stage"], "awaiting-merge")
+        self.assertEqual(self.stages()[-1], ("needs-human", "awaiting-merge"))
+        self.assertFalse(self.state()["prs"][0]["isDraft"])
+        self.assertEqual(self.pr_comments()[-1], HANDOFF_COMMENT)
+        self.assertEqual(self.labels(), ["atta", NEEDS_REVIEW])
+        self.assertIn(["issue", "edit", "12", "--remove-label", "atta:needs-human"],
+                      self.gh_calls())
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        self.assertEqual(self.handoff_md(), f"HANDOFF: READY\nCOMMIT: {self.sha}\nPR: #101\n\n"
+                                            f"## Summary\n\n{READY}\n")
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), self.sha)
+        self.assert_never_forced()
+        # From here it is a normal awaiting-merge job.
+        self.assertEqual(self.merge(), (0, "El PR #101 sigue esperando tu revisión.\n", ""))
+
+    def test_retakes_a_handoff_escalation(self):
+        self.assertEqual(self.handoff_md(), "HANDOFF: FAIL\n\n## Summary\n\n"
+                                            "gh pr ready falló: boom\n")
+        self.assert_recovered(*self.handoff())
+        self.assertEqual(len(self.gh_by("pr", "ready")), 2)
+
+    def test_retakes_the_exact_l31_state(self):
+        # L31 ran before handoff.md existed: PR already ready, label failed, merge.md FAIL.
+        (self.dir / "handoff.md").unlink()
+        self.set_pr(isDraft=False)
+        readies = len(self.gh_by("pr", "ready"))
+        self.assert_recovered(*self.handoff())
+        self.assertEqual(len(self.gh_by("pr", "ready")), readies)
+
+    def test_failed_non_essential_steps_still_retake_with_warnings(self):
+        st = self.state()
+        st["fail"] = {"pr comment": "boom"}
+        self.write_state(st)
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, "Aviso: No se pudo comentar en el PR #101: gh pr "
+                                          "comment falló: boom\n"), out)
+        self.assertEqual(self.job()["stage"], "awaiting-merge")
+
+    def assert_refused(self, reason):
+        before = self.snapshot()
+        calls = len(self.gh_calls())
+        git_calls = len(self.git_calls)
+        code, out, err = self.handoff()
+        self.assertEqual((code, out, err), (2, "", reason + "\n"))
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.job()["stage"], "needs-human")
+        new = self.gh_calls()[calls:]
+        self.assertTrue(all(c[:2] == ["pr", "view"] for c in new), new)
+        self.assertFalse([c for c in self.git_calls[git_calls:] if c and c[0] == "push"])
+        self.assertIn("atta:needs-human", self.labels())
+        self.assertNotIn(NEEDS_REVIEW, self.labels())
+        self.assertTrue(self.handoff_md().startswith("HANDOFF: FAIL\n"))
+
+    def test_refused_when_head_moved(self):
+        head = self.commit_in_wt("src/otro.py", "z = 3\n")
+        self.assert_refused(f"El worktree de {JID} cambió desde el Filtro (HEAD {head}, Filtro "
+                            f"{self.sha}); no se retoma el handoff.")
+
+    def test_refused_when_pr_closed(self):
+        self.set_pr(state="CLOSED")
+        self.assert_refused("El PR #101 no está abierto (CLOSED); no se retoma el handoff.")
+
+    def test_refused_when_pr_base_is_not_develop(self):
+        self.set_pr(baseRefName="main")
+        self.assert_refused(BASE_MAIN)
+
+    def test_refused_when_last_decision_is_not_approve(self):
+        write(self.dir / "decision-1.md", "ESCALATE\n\n## Summary\n\nNo.\n")
+        self.assert_refused(f"La última decisión archivada de {JID} (decision-1.md) no es "
+                            "APPROVE; hace falta una aprobación nueva.")
+
+    def test_refused_when_last_decision_predates_approve(self):
+        os.utime(self.dir / "decision-1.md", (0, 0))
+        self.assert_refused(f"La última decisión archivada de {JID} (decision-1.md) es "
+                            "anterior a la entrada en approve; hace falta una aprobación nueva.")
+
+    def test_refused_when_the_latest_archived_decision_is_not_approve(self):
+        # The highest k is the latest one.
+        write(self.dir / "decision-2.md", "ESCALATE\n\n## Summary\n\nNo.\n")
+        self.assert_refused(f"La última decisión archivada de {JID} (decision-2.md) no es "
+                            "APPROVE; hace falta una aprobación nueva.")
 
 
 class AwaitingMergeTests(HandoffBase):

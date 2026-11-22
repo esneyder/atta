@@ -182,11 +182,37 @@ def close_issue(number: int) -> None:
     run(["issue", "close", str(int(number)), "--reason", "completed"])
 
 
-def edit_label(number: int, action: str, name: str) -> None:
+def _label_missing(exc: GhError, name: str) -> bool:
+    """gh reports an unknown label as `... 'name' not found` (L31)."""
+    text = str(exc)
+    return "not found" in text.lower() and name in text
+
+
+def create_label(name: str, color: str, description: str) -> None:
+    run(["label", "create", name, "--color", color, "--description", description, "--force"])
+
+
+def edit_label(number: int, action: str, name: str,
+               create: tuple[str, str] | None = None) -> None:
+    """Add or remove a label on an issue. With `create` = (color, description), an add that
+    fails because the repository lacks the label creates it (`gh label create --force`) and
+    retries once (L31: a project prepared before the label existed); if the creation fails,
+    GhError says so."""
     flags = {"add": "--add-label", "remove": "--remove-label"}
     if action not in flags:
         raise GhError(f"Acción de label desconocida: {action} (usa add o remove).")
-    run(["issue", "edit", str(int(number)), flags[action], name])
+    argv = ["issue", "edit", str(int(number)), flags[action], name]
+    try:
+        run(argv)
+    except GhError as exc:
+        if action != "add" or create is None or not _label_missing(exc, name):
+            raise
+        try:
+            create_label(name, *create)
+        except GhError as failed:
+            raise GhError(f"La label {name} no existe en el repositorio y no se pudo crear: "
+                          f"{failed}") from None
+        run(argv)
 
 
 def create_pr(head: str, base: str, title: str, body: str) -> str:

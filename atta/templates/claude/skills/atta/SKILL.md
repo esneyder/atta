@@ -30,6 +30,9 @@ Spanish; relay them as they are.
 - Never merge a pull request yourself, in any form. Who merges is decided by the spine from
   `delivery.auto_merge_up_to`: when the job's risk is above it, `atta next` prints
   `atta handoff <job>` instead of `atta merge <job>`; run it exactly like any other `run`.
+  `atta next` may also print `atta handoff <job>` for a job in `needs-human` (a handoff that
+  escalated and can be retaken): run it the same way. If it exits `2`, report its message and
+  leave the job for the human. Lines starting with «Aviso:» are warnings, not failures.
 - `awaiting-merge` is a normal stage, not an error: the PR is ready and a person reviews and
   merges it. For such a job `atta next` prints `atta merge <job>`: run it once per `/atta run`
   pass. If it prints «El PR #M sigue esperando tu revisión.» (exit `0`), the job is waiting for
