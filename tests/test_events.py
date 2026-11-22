@@ -54,6 +54,18 @@ class AppendTests(TempDirMixin, unittest.TestCase):
             "tokens_in": 100, "tokens_out": 50, "cost_usd": None,
         })
 
+    def test_agent_and_models_fields_keep_cost_null(self):
+        ev = events.make_event("1-a", "intake", "spec", 1, now=T0, model="haiku", tier="T1",
+                               agent="atta-exploradora")
+        self.assertEqual(ev, {"ts": "2025-01-01T12:00:00Z", "job": "1-a", "from": "intake",
+                              "to": "spec", "duration_s": 1, "model": "haiku", "tier": "T1",
+                              "agent": "atta-exploradora", "cost_usd": None})
+        models = [{"agent": "atta-soldado", "model": "opus", "tier": "T3"}]
+        ev = events.make_event("1-a", "review", "approve", 1, now=T0, models=models)
+        self.assertEqual(ev, {"ts": "2025-01-01T12:00:00Z", "job": "1-a", "from": "review",
+                              "to": "approve", "duration_s": 1, "models": models,
+                              "cost_usd": None})
+
     def test_read_events(self):
         events.append_event(self.tmp, events.make_event("1-a", "intake", "spec", 1, now=T0))
         self.assertEqual([e["to"] for e in events.read_events(self.tmp)], ["spec"])

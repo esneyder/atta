@@ -89,7 +89,13 @@ La Exploradora aceptó el issue: agregar exportación CSV de pedidos. Riesgo baj
 
 You do not write files. Your final reply contains the full intake.md content between the
 markers below, followed by exactly one line after the closing marker: the DECISION line again,
-as the last line of the reply. Nothing else, no commentary:
+as the last line of the reply. Nothing else, no commentary.
+
+Use exactly one opening and one closing marker: the line `<<<ATTA-ARTIFACT` once, at the start
+of the reply, and the line `ATTA-ARTIFACT>>>` once (no slash, no second block, no code fence).
+The first line after the opening marker is the `DECISION` line.
+
+An exact, minimal reply (the fence only frames this example; do not include it):
 
 ```text
 <<<ATTA-ARTIFACT
@@ -98,7 +104,16 @@ RISK: low
 SURFACES: none
 
 ## Summary
-...
+
+La Exploradora aceptó el issue: agregar la función de resta. Riesgo bajo, sin UI.
+
+## Scope
+
+- Dentro: una función de resta con su test.
+- Fuera de alcance: otras operaciones.
+- Criterios de aceptación:
+  1. Restar 5 menos 3 devuelve 2.
+  2. Los tests existentes siguen pasando.
 ATTA-ARTIFACT>>>
 DECISION: ACCEPT
 ```

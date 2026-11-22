@@ -114,6 +114,62 @@ class FakeGhTests(FakeGhMixin, unittest.TestCase):
         self.assertEqual(self.gh_calls(), [])
 
 
+class MissingLabelTests(FakeGhMixin, unittest.TestCase):
+    """L31 (b): adding an Atta label that the repository lacks creates it and retries once."""
+
+    STYLE = ("1d76db", "Atta: PR listo para que lo revises y lo mergees")
+    ADD = ["issue", "edit", "5", "--add-label", "atta:needs-review"]
+    CREATE = ["label", "create", "atta:needs-review", "--color", "1d76db", "--description",
+              "Atta: PR listo para que lo revises y lo mergees", "--force"]
+
+    def setUp(self):
+        super().setUp()
+        st = self.state()
+        st["issues"] = {"5": {"number": 5, "labels": []}}
+        st["repo_labels"] = ["atta"]
+        self.write_state(st)
+
+    def labels(self):
+        return [lb["name"] for lb in self.state()["issues"]["5"]["labels"]]
+
+    def test_missing_label_is_created_and_the_add_retried_once(self):
+        github.edit_label(5, "add", "atta:needs-review", create=self.STYLE)
+        self.assertEqual(self.gh_calls(), [self.ADD, self.CREATE, self.ADD])
+        self.assertEqual(self.labels(), ["atta:needs-review"])
+
+    def test_failed_label_create_raises_without_a_retry(self):
+        st = self.state()
+        st["fail"] = {"label create": "HTTP 403: Resource not accessible by integration"}
+        self.write_state(st)
+        with self.assertRaises(github.GhError) as ctx:
+            github.edit_label(5, "add", "atta:needs-review", create=self.STYLE)
+        self.assertEqual(str(ctx.exception),
+                         "La label atta:needs-review no existe en el repositorio y no se pudo "
+                         "crear: gh label create falló: HTTP 403: Resource not accessible by "
+                         "integration")
+        self.assertEqual(self.gh_calls(), [self.ADD, self.CREATE])
+        self.assertEqual(self.labels(), [])
+
+    def test_without_a_style_a_missing_label_still_fails(self):
+        with self.assertRaises(github.GhError) as ctx:
+            github.edit_label(5, "add", "atta:needs-review")
+        self.assertIn("'atta:needs-review' not found", str(ctx.exception))
+        self.assertEqual(self.gh_calls(), [self.ADD])
+
+    def test_other_errors_never_create_a_label(self):
+        st = self.state()
+        st["fail"] = {"issue edit": "HTTP 502: Bad Gateway"}
+        self.write_state(st)
+        with self.assertRaises(github.GhError):
+            github.edit_label(5, "add", "atta:needs-review", create=self.STYLE)
+        self.assertEqual(self.gh_calls(), [self.ADD])
+
+    def test_remove_never_creates_a_label(self):
+        github.edit_label(5, "remove", "atta:needs-review", create=self.STYLE)
+        self.assertEqual(self.gh_calls(),
+                         [["issue", "edit", "5", "--remove-label", "atta:needs-review"]])
+
+
 class CommentFilterTests(unittest.TestCase):
     def comments(self):
         return [

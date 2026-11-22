@@ -28,6 +28,8 @@ LABEL_ARGS = [
      "--description", "Atta: falta información del autor del issue", "--force"],
     ["label", "create", "atta:needs-human", "--color", "d93f0b",
      "--description", "Atta: necesita una decisión humana", "--force"],
+    ["label", "create", "atta:needs-review", "--color", "1d76db",
+     "--description", "Atta: PR listo para que lo revises y lo mergees", "--force"],
 ]
 
 
@@ -132,8 +134,12 @@ class FreshInitTest(InitBase):
                          (self.tdir / "claude" / "skills" / "atta" / "SKILL.md").read_bytes())
         settings = json.loads((self.root / ".claude" / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(settings, {"hooks": {"PreToolUse": [ATTA_HOOK]}})
-        self.assertEqual((self.root / "atta" / "config.json").read_bytes(),
-                         config.CONFIG_PATH.read_bytes())
+        # S13: new projects start with delivery.auto_merge_up_to = none («pr, más seguro»).
+        written = json.loads((self.root / "atta" / "config.json").read_text(encoding="utf-8"))
+        packaged = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(written, {**packaged, "delivery": {"auto_merge_up_to": "none"}})
+        self.assertEqual(config.load_config(self.root / "atta" / "config.json")["delivery"],
+                         {"auto_merge_up_to": "none"})
         self.assertEqual((self.root / "atta" / "checks.json").read_bytes(),
                          project.CHECKS_TEMPLATE.read_bytes())
         self.assertEqual(json.loads((self.root / "atta" / "checks.json").read_text(
@@ -163,6 +169,12 @@ class FreshInitTest(InitBase):
         skill = project.TEMPLATES_DIR / "claude" / "skills" / "atta" / "SKILL.md"
         self.assertEqual((self.root / ".claude" / "skills" / "atta" / "SKILL.md").exists(),
                          skill.exists())
+        # /atta must be a slash command even where skills are not slash-invocable
+        command = self.root / ".claude" / "commands" / "atta.md"
+        self.assertTrue(command.is_file())
+        text = command.read_text(encoding="utf-8")
+        self.assertIn("$ARGUMENTS", text)
+        self.assertIn(".claude/skills/atta/SKILL.md", text)
 
     def test_missing_optional_templates_are_skipped(self):
         tdir = make_templates(self.tmp / "bare", skill=False, settings=False)
@@ -214,6 +226,61 @@ class ExistingFilesTest(InitBase):
             self.assertEqual(snapshot(p), data, p)
         self.assertIn("reemplacé: .claude/agents/atta-uno.md", out)
         self.assertIn("ya existe, la dejé igual: atta/config.json", out)
+
+    def test_existing_config_keeps_its_delivery_untouched(self):
+        # S13: init only writes delivery=none when it creates config.json.
+        cfg = self.root / "atta" / "config.json"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text('{"concurrency": 2}\n', encoding="utf-8")
+        before = snapshot(cfg)
+        code, out, err = self.run_init()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(snapshot(cfg), before)
+        self.assertIn("ya existe, la dejé igual: atta/config.json", out)
+        self.assertEqual(config.load_config(cfg)["delivery"], {"auto_merge_up_to": "high"})
+
+
+class ProjectModelsTest(InitBase):
+    """S12: init resolves each agent's model with the project's `models` config."""
+
+    def model_of(self, role):
+        text = self.agent(f"atta-{role}")
+        return [ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("model:")]
+
+    def test_agents_follow_the_resolution_of_atta_models(self):
+        code, _, err = self.run_init(templates=project.TEMPLATES_DIR)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.model_of("exploradora"), ["haiku"])
+        self.assertEqual(self.model_of("guia"), ["sonnet"])
+        self.assertEqual(self.model_of("vigia"), ["haiku"])  # never the Guía's model
+
+    def test_force_keeps_the_project_overrides(self):
+        cfg = self.root / "atta" / "config.json"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text(json.dumps({"models": {"claude-code": {
+            "tiers": {"T2": "haiku"}, "roles": {"soldado": "opus"}}}}), encoding="utf-8")
+        before = cfg.read_bytes()
+        self.assertEqual(self.run_init(templates=project.TEMPLATES_DIR)[0], 0)
+        (self.root / ".claude" / "agents" / "atta-guia.md").write_text("mío\n", encoding="utf-8")
+        code, _, err = self.run_init(templates=project.TEMPLATES_DIR, force=True)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.model_of("guia"), ["haiku"])
+        self.assertEqual(self.model_of("cortadora"), ["haiku"])
+        self.assertEqual(self.model_of("soldado"), ["opus"])
+        self.assertEqual(self.model_of("exploradora"), ["haiku"])
+        self.assertEqual(cfg.read_bytes(), before)
+
+    def test_invalid_models_config_exits_2_and_writes_nothing(self):
+        cfg = self.root / "atta" / "config.json"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text(json.dumps({"models": {"claude-code": {"tiers": {"T2": "gpt-4"}}}}),
+                       encoding="utf-8")
+        before = tree(self.root)
+        code, out, err = self.run_init(templates=project.TEMPLATES_DIR)
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("config.json: models.claude-code.tiers.T2: «gpt-4» no es un modelo válido",
+                      err)
+        self.assertEqual(tree(self.root), before)
 
 
 class SettingsMergeTest(InitBase):

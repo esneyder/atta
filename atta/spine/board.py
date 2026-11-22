@@ -60,8 +60,11 @@ CONTENT_TYPES = {
     ".svg": "image/svg+xml",
 }
 
-# Board column for each pipeline stage. needs-human lives in the alert banner.
+# Board column for each pipeline stage. needs-human and awaiting-merge (S13: the PR waits for
+# your merge) live in the alert banner.
+WAITING_YOU = ("needs-human", "awaiting-merge")
 COLUMNS = {
+    "awaiting-merge": "human",
     "intake": "intake", "needs-info": "intake",
     "spec": "spec", "spec-review": "spec",
     "build": "build", "gate": "gate", "review": "review",
@@ -304,12 +307,19 @@ def _int(value) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _pr_url(value) -> str | None:
+    """The PR link for the board: only an https URL without spaces or quotes."""
+    if isinstance(value, str) and re.fullmatch(r"https://[^\s\"'<>]+", value):
+        return value
+    return None
+
+
 def _state(stage: str, rounds: list[dict]) -> str:
     if stage == "merged":
         return "ok"
     if stage == "rejected":
         return "off"
-    if stage == "needs-human":
+    if stage in WAITING_YOU:
         return "human"
     if stage == "needs-info":
         return "wait"
@@ -351,6 +361,7 @@ def build_job(jid: str, job_dir: Path, raw: dict, now: datetime) -> dict:
         "issue": _int(raw.get("issue")),
         "title": _str(raw.get("title")) or jid,
         "pr": _int(raw.get("pr")),
+        "pr_url": _pr_url(raw.get("pr_url")),
         "branch": _str(raw.get("branch")),
         "stage": stage,
         "stage_since": _str(raw.get("stage_since")),
@@ -426,7 +437,7 @@ def collect(root: Path, now: datetime) -> tuple[list[dict], list[str]]:
 def stats(jobs: list[dict]) -> dict:
     merged = sum(1 for j in jobs if j["stage"] == "merged")
     closed = sum(1 for j in jobs if j["stage"] in ("merged", "rejected"))
-    human = sum(1 for j in jobs if j["stage"] == "needs-human")
+    human = sum(1 for j in jobs if j["stage"] in WAITING_YOU)
     costs = [j["cost_usd"] for j in jobs if j["cost_usd"] is not None]
     p50 = {}
     for stage in P50_STAGES:

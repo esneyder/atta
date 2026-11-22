@@ -169,7 +169,9 @@ review ──CHANGES──► build       (nueva ronda)
    │ todo PASS
    ▼
 approve ──► merging ──► merged  (gh pr merge contra develop)
+   ├──► awaiting-merge ──► merged  (riesgo sobre delivery.auto_merge_up_to: tú mergeas; sección 8.2)
    └──► needs-human ──► build (con feedback) | rejected
+                    └──► awaiting-merge  (atta handoff retoma un handoff escalado; sección 8.2)
 ```
 
 ### 2.4 Etapas y transiciones legales
@@ -183,9 +185,10 @@ approve ──► merging ──► merged  (gh pr merge contra develop)
 | `build` | `gate`, `needs-human` |
 | `gate` | `review`, `build`, `needs-human` |
 | `review` | `approve`, `build`, `needs-human` |
-| `approve` | `merging`, `needs-human` |
+| `approve` | `merging`, `awaiting-merge`, `needs-human` |
 | `merging` | `merged`, `needs-human` |
-| `needs-human` | `build`, `rejected` |
+| `awaiting-merge` | `merged`, `needs-human` |
+| `needs-human` | `build`, `rejected`, `awaiting-merge` (solo con `atta handoff`, sección 8.2) |
 | `merged`, `rejected` | — (terminales) |
 
 Cualquier otra transición se rechaza con código de salida `2` y **no modifica** ni `job.json` ni
@@ -312,6 +315,7 @@ Atta preparó C:\code\mi-app:
   label lista: atta
   label lista: atta:needs-info
   label lista: atta:needs-human
+  label lista: atta:needs-review
 Siguientes pasos:
   1. Llena atta/checks.json con los checks reales del proyecto (sin checks el Filtro siempre falla).
   2. Ponle la label «atta» a un issue.
@@ -326,7 +330,7 @@ Qué crea:
 | `.claude/agents/atta-*.md` | Los 10 agentes de la colonia, con el modelo de cada tier ya resuelto (T1 `haiku`, T2 `sonnet`, T3 `opus`) |
 | `.claude/skills/atta/SKILL.md` | El comando `/atta` |
 | `.claude/settings.json` | El hook PreToolUse `atta guard` para `Write\|Edit\|MultiEdit\|NotebookEdit\|Bash\|PowerShell`. Si ya tienes un `settings.json`, agrega el hook al final **sin borrar ni reordenar** lo tuyo |
-| `atta/config.json` | Configuración por defecto (sección 10), solo si falta |
+| `atta/config.json` | Configuración por defecto (sección 10), solo si falta, con `"delivery": {"auto_merge_up_to": "none"}`: en un proyecto nuevo Atta nunca mergea solo hasta que lo habilites (sección 8.2). Un `config.json` existente no se toca |
 | `atta/checks.json` | Vacío a propósito, solo si falta: el Filtro falla hasta que pongas checks reales |
 | `.gitignore` | Agrega `/atta/jobs/` y `/.worktrees/` (sin duplicar) |
 
@@ -397,7 +401,7 @@ Abre Claude Code en la raíz del proyecto, ponle la label `atta` a un issue y co
 |---|---|
 | `{"action":"spawn","agent":…,"model":…,"prompt":…}` | Lanza ese subagente en background con ese modelo y ese prompt, sin agregar nada; al terminar, otra vez `atta next` |
 | `{"action":"spawn-group","agents":[…]}` | Lanza todos los reviewers en paralelo, en un solo mensaje, y **espera a todos** antes de llamar a `atta next` |
-| `{"action":"run","argv":[…],"then":[[…],…]}` | Corre el comando y, en orden, los de `then`. Salida `1` es un veredicto ya registrado (sigue); `2` u otra detiene el job y muestra el error |
+| `{"action":"run","argv":[…],"then":[[…],…]}` | Corre el comando y, en orden, los de `then` (así llegan los comentarios en GitHub de cada decisión: `/atta` nunca comenta por su cuenta). Salida `1` es un veredicto ya registrado (sigue); `2` u otra detiene el job y muestra el error |
 | `{"action":"wait","reason":…}` | El job espera a una persona: muestra el motivo y pasa al siguiente |
 | `{"action":"done","stage":…}` | El job terminó (`merged` o `rejected`) |
 
@@ -405,14 +409,16 @@ Qué pide la espina en cada etapa:
 
 | Etapa | Siguiente acción |
 |---|---|
-| `intake` | Exploradora → `atta save-artifact` → `atta route` → `advance spec`; con `NEEDS-INFO`, label `atta:needs-info` + comentario + `advance needs-info`; con `REJECT`, comentario + `advance rejected` |
+| `intake` | Exploradora → `atta save-artifact` → `atta route` → con `ACCEPT`, comentario de aceptación en el issue (`atta comment … --voice intake-accepted`: «La Exploradora aceptó el issue #N (riesgo X). …» + el `## Summary` de `intake.md`) + `advance spec`; con `NEEDS-INFO`, label `atta:needs-info` + comentario + `advance needs-info`; con `REJECT`, comentario + `advance rejected` |
 | `spec` | Guía → `atta worktree` (si falta) → `advance spec-review` (riesgo medio/alto) o `advance build` |
 | `spec-review` | Vigía → `READY`: `advance build`; si no: `advance spec` (la Guía corrige con la revisión) |
-| `build` | Cortadora → si no es `STATUS: DONE`, `advance needs-human`; la primera vez, `atta publish` (push y PR en borrador); → `advance gate` |
+| `build` | Cortadora → si no es `STATUS: DONE`, `advance needs-human`; la primera vez, `atta publish` (push, PR en borrador y «La Cortadora abrió el PR #M contra develop.» en el issue); → `advance gate` |
 | `gate` | `atta gate --worktree … --base origin/develop` → `PASS`: `advance review`; `FAIL`: `advance build` (o `needs-human` si se acabó el presupuesto de rondas) |
 | `review` | Reviewers en paralelo → algún `CHANGES`: vuelta a `build` (o `needs-human`); todos `PASS`: `advance approve` |
-| `approve` | Reina → `APPROVE`: `atta merge`; si no: label `atta:needs-human` + comentario de la Reina + `advance needs-human` |
-| `needs-info`, `needs-human`, `merging` | `wait` |
+| `approve` | Reina → `APPROVE`: si el riesgo del job es como mucho `delivery.auto_merge_up_to`, `atta merge` (al terminar cierra el issue, quita la label `atta` y borra la rama; sección 8); si lo supera, `atta handoff` (PR listo para ti, comentario de la Reina, label `atta:needs-review`, etapa `awaiting-merge`; sección 8.2); si no es `APPROVE`: label `atta:needs-human` + comentario de la Reina + `advance needs-human` |
+| `merging` | `atta merge` otra vez: termina o retoma un merge que quedó a medias (sección 8.1) |
+| `awaiting-merge` | `atta merge`: si el PR sigue abierto, «El PR #M sigue esperando tu revisión.» (sale `0`, sin cambios; `/atta` pasa al siguiente job); si lo mergeaste en `develop`, cierra el ciclo (sección 8.2) |
+| `needs-info`, `needs-human` | `wait`; en `needs-human`, si lo escaló un `atta handoff` que se puede retomar, `atta handoff` (sección 8.2) |
 
 Reglas que aplica la espina:
 
@@ -424,9 +430,15 @@ Reglas que aplica la espina:
   `needs-human`.
 - Si `atta next` repite el mismo `spawn` justo después de que el agente terminó, el agente no escribió
   su artefacto: `/atta` detiene ese job y lo reporta en lugar de relanzarlo.
+- Cada comentario en GitHub va firmado por su rol con el marcador `<!-- atta -->`: la Exploradora al
+  decidir (`ACCEPT`, `NEEDS-INFO`, `REJECT`), la Cortadora al abrir el PR, la Reina al escalar y al
+  mergear (el comentario con el que cierra el issue).
+- Telemetría: al pedir un `spawn` o `spawn-group`, `atta next` guarda en `job.json` el agente, el
+  modelo y el tier decididos (`pending_agent`); el evento que deja esa etapa los lleva (sección 11) y
+  `atta status --models` los muestra.
 
 **Concurrencia.** `concurrency` (3 por defecto) es el máximo de jobs corriendo a la vez. Los jobs en
-`needs-info` o `needs-human` no ocupan cupo. `atta queue` y `atta start` lo respetan; los jobs son
+`needs-info`, `needs-human` o `awaiting-merge` no ocupan cupo. `atta queue` y `atta start` lo respetan; los jobs son
 independientes y `/atta` avanza uno mientras los agentes de otro trabajan.
 
 **Reanudar** es correr otra vez `/atta run`: todo el estado vive en la espina, no en la conversación.
@@ -444,6 +456,11 @@ independientes y `/atta` avanza uno mientras los agentes de otro trabajan.
   `atta/jobs/<job>/feedback-<k>.md` (`k` = 1, 2, …) y corre `atta advance <job> build`. La Cortadora
   lee todo el feedback y las revisiones anteriores en la siguiente ronda. Si el job ya no tiene
   arreglo: `atta advance <job> rejected`.
+- **`awaiting-merge`** (la Reina aprobó, pero el riesgo supera `delivery.auto_merge_up_to`): es
+  normal, no un error. El PR está listo (fuera de borrador, sincronizado con `develop` y con el
+  Filtro pasado), con un comentario de la Reina y la label `atta:needs-review` en el issue. Revísalo
+  y mergéalo **en `develop`** en GitHub; el siguiente `/atta run` lo detecta y cierra el issue, las
+  labels y la rama. Si lo cierras sin merge, el job pasa a `needs-human`.
 
 ### 5.4 Modelos por tier
 
@@ -464,6 +481,27 @@ independientes y `/atta` avanza uno mientras los agentes de otro trabajan.
 
 Opus solo entra donde hace falta. La regla «el revisor nunca usa el modelo de la Cortadora» llega con
 el ruteo de F4, y el tope del ciclo spec ⇄ spec-review con F3.
+
+**Calibrar los modelos de un proyecto** (`atta models`, sección 7.3). Las tablas de arriba son los
+valores de fábrica; cada proyecto puede cambiarlos en la clave `models` de `atta/config.json`:
+
+```json
+"models": {"claude-code": {"tiers": {"T2": "haiku"}, "roles": {"soldado": "opus"}}}
+```
+
+- `atta models set T2 haiku` cambia el modelo de un tier: todos los roles de ese tier lo usan.
+- `atta models set --role soldado opus` fija el modelo de un rol: **reemplaza** su tier (también el
+  que le asigna el router a Jardineras y Soldado).
+- La **escalada** no cambia: la Cortadora (ronda 3 o riesgo `high`), la Reina (riesgo `high`) y todo
+  reviewer con tier T3 corren con el modelo de **T3**, aunque su rol tenga un modelo propio.
+- La Vigía sigue la regla «distinta de la Guía»: si queda con el mismo modelo, sube a otro tier
+  (T2, T1, T3, T0, en ese orden).
+- Modelos válidos en `claude-code`: `haiku`, `sonnet`, `opus` o un id completo `claude-[a-z0-9.-]+`
+  (por ejemplo `claude-sonnet-4-5`).
+- `atta next`, `atta init` (también con `--force`) y `atta models` resuelven igual (`atta/spine/models.py`),
+  así que la línea `model:` de `.claude/agents/atta-*.md` y el `model` que imprime `atta next`
+  coinciden. `/atta` nunca elige un modelo: usa el que trae `atta next`.
+- `atta/config.json` es ruta protegida: solo una persona lo cambia, con `atta models`.
 
 ---
 
@@ -582,6 +620,18 @@ Sale `0` si pasa, `1` si no pasa y `2` si la configuración o el `--base` son in
 Tabla de jobs (o de uno): `JOB`, `ISSUE`, `ETAPA`, `RONDAS` (usadas / tope), `COSTO` (`-` si no hay
 precio) y `TIEMPO`. Sin jobs: «No hay jobs.».
 
+#### `status [job] --models`
+
+La misma tabla con una columna más, `MODELOS`: los modelos que corrieron en cada job, en orden de
+primer uso, leídos de `events.jsonl` (`model` y `models`; sección 11); `-` si ninguno. Sin
+`--models` la salida no cambia.
+
+```text
+> atta status --models
+JOB                      ISSUE  ETAPA   RONDAS  COSTO  TIEMPO       MODELOS
+1-agregar-la-funcion-de  #1     merged  0/6     -      3 min 20 s   haiku, sonnet
+```
+
 #### `summary`
 
 La misma tabla con todos los jobs y una línea de totales:
@@ -604,7 +654,7 @@ new     #9     -                        -       sin job; hay cupo (1 de 3 corrie
 |---|---|
 | `new` | Sin job y hay cupo |
 | `wait` | Sin job y sin cupo («sin cupo: 3 de 3 jobs corriendo.»); o su job está en `needs-info` y el autor todavía no respondió («espera la respuesta del autor del issue (needs-info).») o no hay cupo para retomarlo |
-| `resume` | Tiene un job en curso; o su job está en `needs-info` y el autor comentó después de la pregunta de la Exploradora («el autor respondió (needs-info): toca atta refresh.»), lo que ocupa un cupo |
+| `resume` | Tiene un job en curso; o su job está en `needs-info` y el autor comentó después de la pregunta de la Exploradora («el autor respondió (needs-info): toca atta refresh.»), lo que ocupa un cupo; o su job está en `awaiting-merge` («espera que mergees el PR #M: toca atta merge.»), sin ocupar cupo |
 | `hold` | Su job espera una decisión humana (`needs-human`), o no tiene job y el issue tiene una label de espera |
 | `skip` | Su job ya terminó (`merged` o `rejected`) |
 
@@ -653,32 +703,103 @@ Verifica que la rama sea `atta/<id>` (`check-push`) y que el worktree esté en e
 rama con refspec explícito y sin `--force`, y si no hay PR abre uno **en borrador** contra `develop`
 (firmado por la Cortadora, con `Closes #<issue>`). Verifica la base real del PR (nunca `main`) y
 rechaza PRs de forks. Guarda `pr` y `pr_url`. Mensaje: «PR #101 abierto en borrador contra develop:
-<url>» o «PR #101 ya existe contra develop: <url>».
+<url>» o «PR #101 ya existe contra develop: <url>». Al abrir el PR comenta en el issue, firmado por
+la Cortadora: «La Cortadora abrió el PR #101 contra develop.» (una sola vez; si `gh` falla, avisa por
+stderr y sale `0`: el PR ya está abierto).
 
-#### `comment <job> --role <rol> --file <archivo> [--on issue|pr]`
+#### `comment <job> --role <rol> --file <archivo>|--voice intake-accepted [--on issue|pr]`
 
 Publica el archivo como comentario con el marcador `<!-- atta -->` y la firma del rol
 («— La Reina · Atta»). Roles: `exploradora`, `guia`, `vigia`, `cortadora`, `filtro`, `jardineras`,
 `soldado`, `reina`. Por defecto comenta en el PR si existe y, si no, en el issue. Rechaza con `2` un
 archivo vacío o que no sea UTF-8 (un BOM se acepta).
 
+Con `--voice intake-accepted` (en lugar de `--file`) el texto lo arma la espina desde `intake.md`:
+«La Exploradora aceptó el issue #7 (riesgo bajo). La Guía sigue con la spec.» y, si hay `## Summary`,
+«Alcance: <resumen>». Rechaza con `2`, sin comentar, si `intake.md` falta, es inválido o no es
+`ACCEPT`. Es el comando que `atta next` pide al aceptar.
+
 #### `label <job> add|remove <nombre>`
 
 Agrega o quita una label en el issue del job: «Label atta:needs-info agregada al issue #7.».
 
+#### `handoff <job>`
+
+Entrega por riesgo: lo pide `atta next` cuando la Reina aprueba un job cuyo riesgo supera
+`delivery.auto_merge_up_to`. Hace los mismos chequeos y la misma sincronización que `merge` (base
+`develop`, rama `atta/<id>`, `origin/develop` mergeado, Filtro `merge-checks`, push), saca el PR de
+borrador, comenta en el PR firmado por la Reina, pone `atta:needs-review` (`labels.needs_review`) en
+el issue y pasa el job a `awaiting-merge`. **Nunca mergea.** Un fallo en la sincronización, el
+Filtro, el push o `gh pr ready` escala a `needs-human`, igual que `merge`; el comentario y la label
+solo avisan (`handoff.md`). Sobre un job en `needs-human` que escaló un handoff, lo retoma si nada
+cambió. Ver sección 8.2.
+
 #### `merge <job>`
 
-Sincroniza con `develop`, pasa el Filtro otra vez y mergea el PR. Ver sección 8.
+Sincroniza con `develop`, pasa el Filtro otra vez y mergea el PR. Se puede repetir: en `merging`
+termina o retoma el merge, en `awaiting-merge` revisa si mergeaste el PR (sección 8.2), en `merged`
+no hace nada. Ver sección 8.
 
 ### 7.3 Agentes
 
 #### `next <job>`
 
-Decide, sin red y sin escribir nada, la siguiente acción del job e imprime una línea JSON (sección
-5.2). Sale `0`. Ejemplo recién creado el job:
+Decide, sin red, la siguiente acción del job e imprime una línea JSON (sección 5.2). Sale `0`. Lo
+único que escribe es `pending_agent` en `job.json` cuando la acción lanza agentes (sección 11).
+Ejemplo recién creado el job:
 
 ```json
 {"action": "spawn", "agent": "atta-exploradora", "model": "haiku", "prompt": "Job: 7-agregar-la-funcion-de. Job folder: …"}
+```
+
+#### `models [--runtime claude-code]` · `models set <T0|T1|T2|T3> <modelo>` · `models set --role <rol> <modelo>` · `models unset --role <rol>` · `models reset`
+
+Muestra o calibra qué modelo corre cada rol en este proyecto (sección 5.4). Sin acción imprime la
+tabla; en un proyecto recién preparado:
+
+```text
+Modelos de Atta en C:\code\mi-app (runtime claude-code):
+ROL                   TIER  MODELO  ORIGEN
+exploradora           T1    haiku   tier
+guia                  T2    sonnet  tier
+vigia                 T2    haiku   regla ≠ guía
+cortadora             T2    sonnet  tier · escala a T3 (opus)
+jardinera-code        T2    sonnet  tier
+jardinera-resilience  T2    sonnet  tier
+jardinera-ux          T2    sonnet  tier
+jardinera-ui          T1    haiku   tier
+soldado               T2    sonnet  tier · escala a T3 (opus)
+reina                 T2    sonnet  tier · escala a T3 (opus)
+Tiers: T0 haiku · T1 haiku · T2 sonnet · T3 opus
+Las Jardineras y el Soldado corren en el tier que les asigna el router; un modelo por rol lo reemplaza.
+Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o `atta models set --role <rol> <modelo>`.
+— Atta
+```
+
+`ORIGEN`: `tier` (modelo del tier), `rol` (modelo propio del rol), `regla ≠ guía` (la Vigía subió de
+tier para no repetir el modelo de la Guía) y `escala a T3` (Cortadora, Soldado y Reina, cuando
+escalan). Un tier cambiado en el proyecto sale como `T2 haiku (proyecto)` en la línea `Tiers`.
+
+Cada cambio valida, escribe `atta/config.json` de forma atómica (las demás claves quedan igual y en su
+orden) y luego cambia **solo** la línea `model:` de cada `.claude/agents/atta-<rol>.md`:
+
+```text
+$ atta models set --role soldado opus
+Atta: soldado ahora usa opus en atta/config.json (claude-code).
+  actualicé: .claude/agents/atta-soldado.md → opus
+  sin cambios: 9 agentes
+Revisa la tabla con `atta models`.
+— Atta
+```
+
+`atta models set T2 haiku` cambia todos los roles de T2 (y la Vigía sube a `opus`, porque T2 y T1
+quedan en `haiku` como la Guía). `unset --role <rol>` devuelve el rol a su tier; `reset` quita la
+clave `models` y vuelve a los modelos de fábrica. Si falta un agente, lo dice («falta:
+.claude/agents/atta-reina.md; corre `atta init` para crearlo.»). Un modelo, rol o tier inválido
+sale `2` sin escribir nada, por ejemplo:
+
+```text
+«gpt-4» no es un modelo válido para claude-code: usa haiku, sonnet u opus, o un id completo que cumpla claude-[a-z0-9.-]+ (p. ej. claude-sonnet-4-5). No cambié nada.
 ```
 
 #### `save-artifact <job> intake --from-reply <archivo>`
@@ -723,7 +844,8 @@ La Reina decide; **la espina mergea**. Cuando `decision.md` empieza con `APPROVE
 
 **Antes de tocar nada** (si falla, sale `2` y no cambia nada):
 
-1. El job está en la etapa `approve`.
+1. El job está en la etapa `approve` (en `merging` retoma el merge y en `merged` no hace nada;
+   sección 8.1).
 2. `decision.md` empieza con `APPROVE` y es **fresco**: escrito durante esta etapa `approve` («La
    decisión de la Reina es vieja: …; hace falta una nueva.»).
 3. La rama del job es `atta/<id>`, el job tiene PR y worktree, y `merge_method` es válido.
@@ -744,8 +866,46 @@ La Reina decide; **la espina mergea**. Cuando `decision.md` empieza con `APPROVE
 12. `gh pr merge <n> --merge --match-head-commit <sha que pasó el Filtro>`: si alguien empujó otro
     commit, GitHub rechaza el merge.
 
-Si todo pasa: `merge.md` con `MERGE: DONE` y el `COMMIT`, el job pasa a `merged` y sale `0`:
-«La Reina integró el PR #N en develop.».
+Si todo pasa: `merge.md` con `MERGE: DONE` y el `COMMIT`, el job pasa a `merged`:
+«La Reina integró el PR #N en develop.». Después cierra el ciclo:
+
+13. Comenta en el issue, firmado por la Reina (`gh issue comment --body-file -`, el texto por
+    stdin): «La Reina mergeó el PR #N a develop. El issue #M queda resuelto.». Luego
+    `gh issue close <issue> --reason completed`. GitHub no cierra el issue con «Closes #M» porque
+    `develop` no es la rama por defecto.
+14. Quita la label `atta` del issue.
+15. Borra la rama remota con una llamada dedicada, `git push origin --delete refs/heads/atta/<id>`,
+    solo si es la rama de trabajo de **este** job (nunca `develop` ni una rama prohibida). La corre
+    `atta merge` (la espina); el guard sigue negando `git push --delete` a los agentes. Si GitHub
+    ya la borró (opción «Automatically delete head branches»), no avisa.
+16. Si el worktree está limpio, `git worktree remove` y borra la rama local `atta/<id>` (solo si
+    sigue en el commit que GitHub mergeó). Si tiene cambios sin commitear, los deja y avisa. Si el
+    worktree ya no existe, solo borra la rama local.
+
+`merge.md` y el paso a `merged` se escriben apenas GitHub confirma el merge, antes de los pasos
+13-16. Cada uno de esos pasos va aislado: cualquier fallo (de `gh`, de git o inesperado, como un
+worktree en uso en Windows) es solo un aviso («Aviso: …» en stderr y una sección `## Avisos` en
+`merge.md`) y el paso siguiente corre igual; el merge ya ocurrió, así que `atta merge` sale `0`.
+Si `gh pr merge` devuelve un error pero GitHub muestra el PR mergeado con el sha del Filtro (por
+ejemplo, un timeout), también cuenta como merge, con un aviso.
+
+### 8.1 Un merge que quedó a medias
+
+Si el proceso se corta en medio del merge (se mata la terminal, se agota el tiempo del comando,
+se cierra la sesión), el job puede quedar en `merging` sin `merge.md`. `atta merge <job>` se puede
+repetir y `atta next` lo pide solo en `merging`, así que `/atta run` se recupera sin ayuda. En
+`merging`, `atta merge` consulta el PR en GitHub (`gh pr view --json state,headRefOid,…`):
+
+| Estado del PR en GitHub | Qué hace |
+|---|---|
+| `MERGED` y su último commit es el `COMMIT:` de `round-N/merge-checks.md` (escrito en esta etapa) | «La Reina termina el merge»: `merge.md` con `MERGE: DONE`, pasa a `merged` y corre los pasos 13-16; sale `0` |
+| `OPEN` y el worktree sigue en el commit que pasó el Filtro | Retoma desde el merge: push (si hace falta) y `gh pr merge --match-head-commit`, sin sincronizar ni repetir el Filtro |
+| `OPEN` y la rama cambió (o no hay `merge-checks.md` con `PASS`) | Vuelve a sincronizar con `develop`, corre el Filtro `merge-checks` y mergea |
+| Cerrado sin merge, mergeado con otro commit o sin `merge-checks.md` que lo pruebe | Escala a `needs-human` con el motivo |
+
+Si no se puede leer el PR (red, `gh`), sale `2` y el job sigue en `merging` para otro intento. En
+un job `merged`, `atta merge` no hace nada: «El job <id> ya está mergeado: nada que hacer.»
+(sale `0`).
 
 **Si algo falla desde el paso 4**, Atta escala:
 
@@ -758,7 +918,62 @@ Si todo pasa: `merge.md` con `MERGE: DONE` y el `COMMIT`, el job pasa a `merged`
   (PR de un fork, base distinta de `develop`, PR que sale de otra rama, push rechazado).
 
 El método de merge se elige con `merge_method` en `config.json` (`merge`, `squash` o `rebase`; por
-defecto `merge`). Atta nunca usa `--admin`, `--auto` ni borra la rama.
+defecto `merge`). Atta nunca usa `--admin`, `--auto` ni `--delete-branch`: la rama `atta/<id>` se
+borra solo después del merge, en el paso 15.
+
+### 8.2 Entrega por riesgo: quién mergea
+
+Atta nunca empuja directo a `develop`: siempre hay PR, CI y revisión. Lo configurable es **quién
+mergea el PR**, con una sola perilla, `delivery.auto_merge_up_to`:
+
+| `auto_merge_up_to` | Riesgo bajo | Riesgo medio | Riesgo alto |
+|---|---|---|---|
+| `none` (lo que escribe `atta init` en un proyecto nuevo) | tú | tú | tú |
+| `low` | Atta | tú | tú |
+| `medium` | Atta | Atta | tú |
+| `high` (por defecto si la clave falta) | Atta | Atta | Atta |
+
+El riesgo es el de `intake.md`; un job sin riesgo cuenta como alto. Cámbialo con
+`atta settings set delivery.auto_merge_up_to low` (o `none`, `medium`, `high`).
+
+Cuando te toca a ti, `atta next` pide `atta handoff <job>` en lugar de `atta merge`:
+
+1. Los mismos chequeos y pasos 5-10 del merge: worktree en `atta/<id>`, PR de este repo con base
+   `develop` y abierto, sincroniza con `origin/develop`, Filtro `merge-checks` y push. Así revisas
+   exactamente lo que va a entrar.
+2. Saca el PR de borrador (`gh pr ready`).
+3. Comenta en el PR, firmado por la Reina: «La Reina aprobó este PR (riesgo medio). Atta no mergea
+   solo con riesgo medio en este proyecto: te toca revisarlo y mergearlo en develop.».
+4. Pone la label `atta:needs-review` en el issue y el job pasa a `awaiting-merge`. El job no ocupa
+   cupo de `concurrency`.
+
+Los pasos 1 y 2 son esenciales: si algo falla, escala a `needs-human` como un merge (lista de
+arriba) y además escribe `handoff.md` con `HANDOFF: FAIL` y el motivo. El comentario (3) y la label
+(4) no lo son: el job pasa igual a `awaiting-merge` y cada fallo queda como aviso en stderr
+(«Aviso: …») y en `## Avisos` de `handoff.md` (`HANDOFF: READY`, `COMMIT: <sha>`, `PR: #M`). Si
+la label no existe en el repositorio (un proyecto preparado antes de que existiera), Atta la crea
+con `gh label create … --force` (mismo color y descripción que `atta init`) y reintenta una vez;
+lo mismo vale para `atta:needs-info` y `atta:needs-human`.
+
+**Retomar un handoff escalado.** Si un handoff terminó en `needs-human` (por ejemplo, la corrida
+anterior a este arreglo, que escalaba por la label faltante), `atta handoff <job>` lo retoma solo si
+se cumple todo: el escalamiento vino del handoff, la última decisión archivada (`decision-<k>.md`, el
+`k` más alto) empieza con `APPROVE` y es posterior a la última entrada en `approve`, el PR sigue
+abierto con base `develop` y rama `atta/<id>`, y el `HEAD` del worktree es el `COMMIT` del
+`merge-checks.md` con `PASS` de esa ronda. Entonces empuja ese commit (no hace nada si ya está),
+saca el PR de borrador si hace falta, pasa el job de `needs-human` a `awaiting-merge`, vuelve a
+comentar y poner `atta:needs-review` y quita `atta:needs-human`. Si algo no se cumple, sale `2` con
+el motivo y no cambia nada. `atta next` pide `atta handoff <job>` en ese caso y `wait` en los demás.
+
+Después, cada `/atta run` ve el job como `resume` en `atta queue` y corre `atta merge <job>`, que
+consulta el PR:
+
+| Estado del PR en GitHub | Qué hace |
+|---|---|
+| Abierto | «El PR #M sigue esperando tu revisión.»; sale `0` sin cambiar nada |
+| Mergeado en `develop` | Cierra el ciclo como un merge propio: `merge.md` con `MERGE: DONE` y el commit que GitHub integró (si empujaste arreglos, es el tuyo; no tiene que ser el del Filtro), pasa a `merged`, comenta y cierra el issue («El PR #M quedó mergeado en develop. El issue #N queda resuelto.»), quita las labels `atta` y `atta:needs-review` y borra la rama y el worktree (pasos 13-16, con avisos aislados) |
+| Cerrado sin merge | `needs-human` |
+| Mergeado en otra base (por ejemplo `main`) | `needs-human` con el motivo de la política de ramas («La Reina no mergea a main: Atta solo integra en develop.»); Atta no toca `main` |
 
 ---
 
@@ -843,10 +1058,12 @@ falló.
 | `max_rounds` | `3` | Tope por contador de rondas |
 | `max_total_rounds` | `6` | Tope global de rondas por job |
 | `concurrency` | `3` | Jobs corriendo a la vez (los que esperan a una persona no cuentan) |
-| `labels` | `atta`, `atta:needs-info`, `atta:needs-human` | Labels de GitHub de la cola (`queue`) y los estados de espera (`needs_info`, `needs_human`) |
+| `labels` | `atta`, `atta:needs-info`, `atta:needs-human`, `atta:needs-review` | Labels de GitHub de la cola (`queue`), los estados de espera (`needs_info`, `needs_human`) y el PR que te toca mergear (`needs_review`, opcional) |
+| `delivery.auto_merge_up_to` | `"high"` (`atta init` escribe `"none"`) | Riesgo máximo que Atta mergea sola: `none`, `low`, `medium` o `high` (sección 8.2) |
 | `protected_paths` | `atta/**`, `.claude/**`, `.pi/**`, `.github/workflows/**` | Rutas que ningún job puede tocar. No puede estar vacía |
 | `prices_usd_per_mtok` | `{}` | Precio por millón de tokens por modelo. Sin precio, el costo queda `null` con un aviso (nunca corta) |
 | `routing` | tabla de la sección 2.6 | Reviewers, lentes y tier por riesgo y por superficie |
+| `models` | sin clave (opcional) | Modelos por tier y por rol del proyecto, por runtime. Se cambia con `atta models` (sección 5.4) |
 | `merge_method` | `"merge"` (opcional) | Método de `gh pr merge`: `merge`, `squash` o `rebase` |
 | `guard.deny_commands` | lista interna (opcional) | Comandos de despliegue que el guard bloquea. **Reemplaza** la lista por defecto (sección 14.2) |
 
@@ -888,7 +1105,7 @@ muestran el dashboard y el PR.
 | `feedback-<k>.md` | Tú, con `/atta <texto>` | Tu texto sin cambios; la Cortadora lo lee en la siguiente ronda |
 | `round-N/review-<r>-retry.md` | El mismo reviewer | Único reintento de una revisión inválida |
 | `decision-<k>.md` | `atta merge` | `decision.md` retirado al escalar: una aprobación nueva necesita una decisión nueva |
-| `merge.md` | `atta merge` | `MERGE: DONE` + `COMMIT: <sha>` o `MERGE: FAIL` + el motivo en `## Summary` |
+| `merge.md` | `atta merge` | `MERGE: DONE` + `COMMIT: <sha>` o `MERGE: FAIL` + el motivo en `## Summary`; `## Avisos` lista lo que falló después del merge (cerrar el issue, quitar la label, borrar ramas o el worktree) |
 
 ### `job.json`
 
@@ -904,6 +1121,7 @@ muestran el dashboard y el PR.
 | `agents` | Plan del router: reviewers, lentes, tier, Vigía |
 | `started`, `ended` | Inicio y fin (UTC) |
 | `cost_usd` | Suma de costos conocidos; `null` si ninguno tiene precio |
+| `pending_agent` | Lo que `atta next` decidió al lanzar agentes en la etapa actual: `{stage, role, agent, model, tier, at}`, o una lista de esos para los reviewers en paralelo. Lo consume y borra la siguiente transición |
 
 ### `events.jsonl`
 
@@ -913,8 +1131,21 @@ muestran el dashboard y el PR.
  "tokens_out": 400, "cost_usd": 0.006}
 ```
 
-`duration_s` es el tiempo que el job pasó en la etapa que deja. `model`, `tier`, `tokens_*` y
-`cost_usd` son opcionales. Con esto el dashboard calcula tiempos por etapa y costo.
+`duration_s` es el tiempo que el job pasó en la etapa que deja. `model`, `tier`, `agent`, `models`,
+`tokens_*` y `cost_usd` son opcionales. Con esto el dashboard calcula tiempos por etapa y costo.
+
+Cuando la etapa que se deja la hizo un agente lanzado por `atta next`, el evento lleva su `model`,
+`tier` y `agent` (tomados de `pending_agent`); los reviewers en paralelo dejan en el evento
+`review → …` una lista `models` de `{agent, model, tier}`:
+
+```json
+{"ts": "2025-06-05T08:20:00Z", "job": "1-agregar-la-funcion-de", "from": "review", "to": "approve",
+ "duration_s": 28, "models": [{"agent": "atta-jardinera-code", "model": "sonnet", "tier": "T2"}],
+ "cost_usd": null}
+```
+
+`cost_usd` queda en `null` en los eventos de Claude Code: hoy no le pasa tokens a la espina. F4 los
+leerá de las transcripciones de la sesión.
 
 ---
 

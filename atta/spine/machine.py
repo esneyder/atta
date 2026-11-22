@@ -1,4 +1,13 @@
-"""Job state machine: explicit legal transitions, counters and the global round cap (K13)."""
+"""Job state machine: explicit legal transitions, counters and the global round cap (K13).
+
+`awaiting-merge` (S13): the Reina approved a job whose risk is above
+`delivery.auto_merge_up_to`; the PR is ready and a person merges it. It is not terminal and,
+like the stages that wait for a person, does not hold a `concurrency` slot (flow.NO_SLOT).
+
+`needs-human → awaiting-merge` (L31): `atta handoff` retakes a job that a handoff escalated when
+the Reina's archived APPROVE still holds, the PR is open against the integration branch and
+HEAD is still the commit that passed merge-checks (flow.cmd_handoff checks all of it).
+"""
 
 from __future__ import annotations
 
@@ -11,7 +20,7 @@ from .timeutil import seconds_between, to_iso, utcnow
 
 STAGES = (
     "intake", "needs-info", "spec", "spec-review", "build", "gate", "review",
-    "approve", "merging", "needs-human", "merged", "rejected",
+    "approve", "merging", "awaiting-merge", "needs-human", "merged", "rejected",
 )
 
 TRANSITIONS = {
@@ -22,9 +31,10 @@ TRANSITIONS = {
     "build": ("gate", "needs-human"),
     "gate": ("review", "build", "needs-human"),
     "review": ("approve", "build", "needs-human"),
-    "approve": ("merging", "needs-human"),
+    "approve": ("merging", "awaiting-merge", "needs-human"),
     "merging": ("merged", "needs-human"),
-    "needs-human": ("build", "rejected"),
+    "awaiting-merge": ("merged", "needs-human"),
+    "needs-human": ("build", "rejected", "awaiting-merge"),
     "merged": (),
     "rejected": (),
 }
@@ -82,13 +92,27 @@ def apply(job: dict, to: str, now: datetime) -> dict:
     return new
 
 
+def _from_pending(pending, stage: str) -> tuple:
+    """(model, tier, agent, models) from a pending_agent recorded during `stage`."""
+    if isinstance(pending, dict) and pending.get("stage") == stage:
+        return pending.get("model"), pending.get("tier"), pending.get("agent"), None
+    if isinstance(pending, list):
+        entries = [{"agent": p.get("agent"), "model": p.get("model"), "tier": p.get("tier")}
+                   for p in pending if isinstance(p, dict) and p.get("stage") == stage]
+        if entries:
+            return None, None, None, entries
+    return None, None, None, None
+
+
 def advance(store: JobStore, jid: str, to: str, *, now: datetime | None = None,
             model: str | None = None, tier: str | None = None,
             tokens_in: int | None = None, tokens_out: int | None = None,
             cost_usd: float | None = None) -> dict:
     """Move job `jid` to stage `to` under its lock; append the event, then save job.json.
 
-    Refused leaves job.json and events.jsonl untouched.
+    T12: the `pending_agent` that `atta next` recorded for the stage being left gives the event
+    its `model`, `tier` and `agent` (a list gives `models`) unless `model`/`tier` are passed;
+    it is cleared on every transition. Refused leaves job.json and events.jsonl untouched.
     """
     now = now or utcnow()
     job_dir = store.job_dir(jid)
@@ -96,12 +120,16 @@ def advance(store: JobStore, jid: str, to: str, *, now: datetime | None = None,
         job = store.load(jid)
         check(job, to)
         new = apply(job, to, now)
+        pending = new.pop("pending_agent", None)
+        agent = models = None
+        if model is None and tier is None:
+            model, tier, agent, models = _from_pending(pending, job["stage"])
         if cost_usd is not None:
             new["cost_usd"] = round((job.get("cost_usd") or 0) + cost_usd, 6)
         event = make_event(
             job["id"], job["stage"], to, seconds_between(job["stage_since"], now), now,
             model=model, tier=tier, tokens_in=tokens_in, tokens_out=tokens_out,
-            cost_usd=cost_usd,
+            cost_usd=cost_usd, agent=agent, models=models,
         )
         append_event(job_dir, event)
         store.save(new)

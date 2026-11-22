@@ -5,14 +5,16 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import unittest
 from pathlib import Path
 
 import support  # noqa: F401
 from support import TempDirMixin
 
-from atta.spine import config, store
+from atta.spine import config, events, store
 from atta.spine import next as nxt
+from atta.spine.timeutil import from_iso
 
 JID = "12-agregar-exportacion-a-csv"
 PAST = "2020-01-01T00:00:00Z"
@@ -113,7 +115,10 @@ class IntakeTest(NextBase):
     def test_decisions_after_route(self):
         intake_md = str(self.dir / "intake.md")
         cases = {
-            "ACCEPT": self.run_action("advance", JID, "spec"),
+            # T11: the Exploradora's acceptance is announced on the issue before advancing.
+            "ACCEPT": self.run_action(
+                "comment", JID, "--role", "exploradora", "--on", "issue",
+                "--voice", "intake-accepted", then=[["atta", "advance", JID, "spec"]]),
             "NEEDS-INFO": self.run_action(
                 "label", JID, "add", "atta:needs-info",
                 then=[["atta", "comment", JID, "--role", "exploradora", "--file", intake_md],
@@ -354,6 +359,42 @@ class ApproveTest(NextBase):
         self.write("decision.md", "APPROVE\n\n## Summary\n\nOK.\n")
         self.assertEqual(self.decide(), self.run_action("merge", JID))
 
+    def test_delivery_threshold_matrix_merge_or_handoff(self):
+        # S13: Atta merges by itself only when the job risk is at most auto_merge_up_to.
+        self.write("decision.md", "APPROVE\n\n## Summary\n\nOK.\n")
+        merges = {
+            "none": set(), "low": {"low"}, "medium": {"low", "medium"},
+            "high": {"low", "medium", "high"},
+        }
+        for threshold, merged in merges.items():
+            for risk in ("low", "medium", "high"):
+                with self.subTest(threshold=threshold, risk=risk):
+                    self.cfg = config.with_defaults({"delivery": {"auto_merge_up_to": threshold}})
+                    self.routed(risk=risk)
+                    command = "merge" if risk in merged else "handoff"
+                    self.assertEqual(self.decide(), self.run_action(command, JID))
+
+    def test_code_default_high_keeps_merging_every_risk(self):
+        self.write("decision.md", "APPROVE\n\n## Summary\n\nOK.\n")
+        self.routed(risk="high")
+        self.assertEqual(self.cfg["delivery"]["auto_merge_up_to"], "high")
+        self.assertEqual(self.decide(), self.run_action("merge", JID))
+
+    def test_unknown_risk_counts_as_high(self):
+        self.write("decision.md", "APPROVE\n\n## Summary\n\nOK.\n")
+        self.job.pop("intake", None)
+        self.job.pop("agents", None)
+        self.cfg = config.with_defaults({"delivery": {"auto_merge_up_to": "medium"}})
+        self.assertEqual(self.decide(), self.run_action("handoff", JID))
+        self.cfg = config.with_defaults({"delivery": {"auto_merge_up_to": "high"}})
+        self.assertEqual(self.decide(), self.run_action("merge", JID))
+
+    def test_escalate_with_threshold_none_still_goes_to_needs_human(self):
+        self.cfg = config.with_defaults({"delivery": {"auto_merge_up_to": "none"}})
+        decision = self.write("decision.md", "ESCALATE\n\n## Question\n\n- ¿Seguro?\n")
+        self.assertEqual(self.decide()["argv"], ["atta", "label", JID, "add", "atta:needs-human"])
+        self.assertIn(str(decision), self.decide()["then"][0])
+
     def test_escalate_labels_comments_and_goes_to_needs_human(self):
         decision = self.write("decision.md", "ESCALATE\n\n## Question\n\n- ¿Seguro?\n")
         self.assertEqual(self.decide(), self.run_action(
@@ -370,8 +411,18 @@ class RestingStagesTest(NextBase):
             "action": "wait",
             "reason": "Esperando la respuesta del autor del issue (needs-info)."})
 
+    def test_merging_runs_merge_again_to_recover(self):
+        # L22: a merge cut halfway is finished (or resumed) by `atta merge`, never a wait.
+        self.job["stage"] = "merging"
+        self.assertEqual(self.decide(), {"action": "run", "argv": ["atta", "merge", JID]})
+
+    def test_awaiting_merge_runs_merge_to_check_the_human_merge(self):
+        # S13: `atta merge` asks GitHub whether the human merged the PR.
+        self.job["stage"] = "awaiting-merge"
+        self.assertEqual(self.decide(), {"action": "run", "argv": ["atta", "merge", JID]})
+
     def test_wait_and_done(self):
-        for stage in ("needs-info", "needs-human", "merging"):
+        for stage in ("needs-info", "needs-human"):
             with self.subTest(stage=stage):
                 self.job["stage"] = stage
                 action = self.decide()
@@ -384,7 +435,141 @@ class RestingStagesTest(NextBase):
                 self.assertEqual(self.decide(), {"action": "done", "stage": stage})
 
 
+def _git(cwd, *args):
+    out = subprocess.run(["git", "-C", str(cwd), "-c", "user.name=Atta Test",
+                          "-c", "user.email=atta@example.invalid", "-c", "commit.gpgsign=false",
+                          *args], capture_output=True, text=True, encoding="utf-8")
+    if out.returncode != 0:
+        raise AssertionError(f"git {args} falló: {out.stderr}")
+    return out.stdout.strip()
+
+
+class HandoffRecoveryTest(NextBase):
+    """L31 (c): a needs-human job that a handoff escalated, with the approval still valid and
+    HEAD at the Filtro's sha, runs `atta handoff` again; anything else keeps waiting."""
+
+    WAIT = {"action": "wait",
+            "reason": "Esperando una decisión humana (needs-human): deja tu feedback con /atta."}
+
+    def setUp(self):
+        super().setUp()
+        self.with_worktree()
+        _git(self.wt, "init", "-q")
+        _git(self.wt, "checkout", "-q", "-b", f"atta/{JID}")
+        _git(self.wt, "commit", "-q", "--allow-empty", "-m", "feature")
+        self.sha = _git(self.wt, "rev-parse", "HEAD")
+        self.set(stage="needs-human", branch=f"atta/{JID}", pr=101)
+        self.event("review", "approve", PAST)
+        self.event("approve", "needs-human", "2020-01-01T00:05:00Z")
+        self.write("decision-1.md", "APPROVE\n\n## Summary\n\nOk.\n")
+        self.write("round-1/merge-checks.md", f"GATE: PASS\nCOMMIT: {self.sha}\n")
+        self.write("handoff.md", "HANDOFF: FAIL\n\n## Summary\n\ngh pr ready falló: boom\n")
+
+    def event(self, frm, to, ts):
+        events.append_event(self.dir, events.make_event(JID, frm, to, 1, from_iso(ts)))
+
+    def test_recoverable_handoff_escalation_runs_handoff(self):
+        self.assertEqual(self.decide(), {"action": "run", "argv": ["atta", "handoff", JID]})
+
+    def test_l31_state_without_handoff_md_runs_handoff(self):
+        # Before handoff.md: a PASS merge-checks since approve and no merging means a handoff.
+        (self.dir / "handoff.md").unlink()
+        self.assertEqual(self.decide(), {"action": "run", "argv": ["atta", "handoff", JID]})
+
+    def test_waits_when_head_moved(self):
+        _git(self.wt, "commit", "-q", "--allow-empty", "-m", "otro")
+        self.assertEqual(self.decide(), self.WAIT)
+
+    def test_waits_when_the_decision_is_not_approve(self):
+        self.write("decision-1.md", "ESCALATE\n\n## Summary\n\nNo.\n")
+        self.assertEqual(self.decide(), self.WAIT)
+
+    def test_waits_when_the_escalation_did_not_come_from_a_handoff(self):
+        cases = {
+            "merge": lambda: self.event("needs-human", "build", "2020-01-01T00:06:00Z")
+            or self.event("build", "needs-human", "2020-01-01T00:07:00Z"),
+            "no evidence": lambda: [(self.dir / "handoff.md").unlink(),
+                                    (self.dir / "round-1" / "merge-checks.md").unlink()],
+        }
+        for name, change in cases.items():
+            with self.subTest(name):
+                change()
+                self.assertEqual(self.decide(), self.WAIT)
+
+    def test_waits_after_a_merge_escalation(self):
+        (self.dir / "handoff.md").unlink()
+        (self.dir / "events.jsonl").unlink()
+        self.event("review", "approve", PAST)
+        self.event("approve", "merging", "2020-01-01T00:01:00Z")
+        self.event("merging", "needs-human", "2020-01-01T00:05:00Z")
+        self.assertEqual(self.decide(), self.WAIT)
+
+
+class ProjectModelsTest(NextBase):
+    """S12: `atta next` resolves through models.resolve with the project's `models` config."""
+
+    def use(self, **entry):
+        self.cfg = config.with_defaults({"models": {"claude-code": entry}})
+
+    def decide_cfg(self):
+        self.jobs.save(self.job)
+        return nxt.decide(self.jobs.load(JID), self.dir, self.root, self.cfg)
+
+    def test_without_models_config_uses_the_packaged_defaults(self):
+        self.assertEqual(self.decide_cfg()["model"], "haiku")
+
+    def test_role_override_reaches_the_spawn(self):
+        self.use(roles={"exploradora": "sonnet"})
+        self.assertSpawn(self.decide_cfg(), "atta-exploradora", "sonnet")
+
+    def test_tier_override_reaches_the_spawn(self):
+        self.use(tiers={"T1": "claude-haiku-4-5"})
+        self.assertEqual(self.decide_cfg()["model"], "claude-haiku-4-5")
+
+    def test_cortadora_override_still_escalates_to_t3(self):
+        self.use(roles={"cortadora": "haiku"})
+        self.routed(risk="low")
+        self.with_worktree()
+        self.job["stage"] = "build"
+        self.assertEqual(self.decide_cfg()["model"], "haiku")
+        self.job["total_rounds"] = 2
+        self.assertEqual(self.decide_cfg()["model"], "opus")
+
+    def test_vigia_avoids_the_overridden_guia(self):
+        self.use(roles={"guia": "haiku"})
+        self.routed(risk="medium", spec_review=True)
+        self.with_worktree()
+        self.job["stage"] = "spec-review"
+        self.write("spec.md", "STATUS: READY\n")
+        self.assertEqual(self.decide_cfg()["model"], "sonnet")
+
+    def test_reviewer_override_and_router_t3(self):
+        self.use(roles={"jardinera-code": "opus", "soldado": "haiku"})
+        self.routed(risk="high", reviewers=(CODE, SECURITY, UX))
+        self.with_worktree()
+        self.job.update(stage="review", pr=7)
+        got = [(a["agent"], a["model"]) for a in self.decide_cfg()["agents"]]
+        self.assertEqual(got, [("atta-jardinera-code", "opus"), ("atta-soldado", "opus"),
+                               ("atta-jardinera-ux", "haiku")])
+
+    def test_reina_override_and_escalation(self):
+        self.use(roles={"reina": "haiku"})
+        self.routed(risk="low")
+        self.with_worktree()
+        self.job.update(stage="approve", pr=7)
+        self.assertEqual(self.decide_cfg()["model"], "haiku")
+        self.routed(risk="high")
+        self.assertEqual(self.decide_cfg()["model"], "opus")
+
+
 class CommandTest(NextBase):
+    def test_next_command_emits_the_overridden_model(self):
+        self.cfg = config.with_defaults({"models": {"claude-code": {"tiers": {"T1": "sonnet"}}}})
+        self.jobs.save(self.job)
+        code, out, err = self.call("next", JID)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["model"], "sonnet")
+
     def call(self, *argv):
         parser = argparse.ArgumentParser(prog="atta")
         nxt.register(parser.add_subparsers(dest="command"))
@@ -394,6 +579,83 @@ class CommandTest(NextBase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = args.func(args, self.cfg, self.jobs)
         return code, out.getvalue(), err.getvalue()
+
+    # ---- T12: telemetry of the decided model
+
+    def pending(self):
+        return self.jobs.load(JID).get("pending_agent")
+
+    def test_spawn_records_pending_agent(self):
+        self.jobs.save(self.job)
+        code, out, err = self.call("next", JID)
+        self.assertEqual((code, err), (0, ""))
+        action = json.loads(out)
+        self.assertEqual(set(action), {"action", "agent", "model", "prompt"})
+        pending = self.pending()
+        self.assertTrue(pending.pop("at").endswith("Z"))
+        self.assertEqual(pending, {"stage": "intake", "role": "exploradora",
+                                   "agent": "atta-exploradora", "model": "haiku",
+                                   "tier": "T1"})
+
+    def test_pending_agent_follows_overrides_and_escalation(self):
+        self.cfg = config.with_defaults({"models": {"claude-code": {"roles": {"cortadora": "haiku"}}}})
+        self.routed(risk="low")
+        self.with_worktree()
+        self.job["stage"] = "build"
+        self.jobs.save(self.job)
+        self.call("next", JID)
+        self.assertEqual({k: self.pending()[k] for k in ("role", "model", "tier")},
+                         {"role": "cortadora", "model": "haiku", "tier": "T2"})
+        self.job["total_rounds"] = 2
+        self.jobs.save(self.job)
+        self.call("next", JID)
+        self.assertEqual({k: self.pending()[k] for k in ("role", "model", "tier")},
+                         {"role": "cortadora", "model": "opus", "tier": "T3"})
+
+    def test_spawn_group_records_a_list_and_keeps_finished_reviewers(self):
+        self.routed(risk="high", reviewers=(CODE, SECURITY))
+        self.with_worktree()
+        self.job.update(stage="review", pr=7)
+        self.jobs.save(self.job)
+        self.call("next", JID)
+        got = [{k: e[k] for k in ("stage", "role", "agent", "model", "tier")}
+               for e in self.pending()]
+        self.assertEqual(got, [
+            {"stage": "review", "role": "jardinera-code", "agent": "atta-jardinera-code",
+             "model": "sonnet", "tier": "T2"},
+            {"stage": "review", "role": "soldado", "agent": "atta-soldado", "model": "opus",
+             "tier": "T3"}])
+        # The code reviewer finished; only the Soldado is spawned again. Both stay recorded.
+        self.write("round-1/review-code.md", PASS)
+        code, out, _ = self.call("next", JID)
+        self.assertEqual([a["agent"] for a in json.loads(out)["agents"]], ["atta-soldado"])
+        self.assertEqual([e["agent"] for e in self.pending()],
+                         ["atta-jardinera-code", "atta-soldado"])
+
+    def test_vigia_tier_is_the_tier_of_its_model(self):
+        self.routed(risk="medium", spec_review=True)
+        self.with_worktree()
+        self.job["stage"] = "spec-review"
+        self.write("spec.md", "STATUS: READY\n")
+        self.jobs.save(self.job)
+        code, out, _ = self.call("next", JID)
+        pending = self.pending()
+        self.assertEqual((pending["role"], pending["model"]), ("vigia", json.loads(out)["model"]))
+        self.assertEqual(nxt.mdl.table(self.cfg).tier_model(pending["tier"]), pending["model"])
+
+    def test_non_spawn_action_writes_nothing(self):
+        self.write("intake.md", INTAKE.format(d="ACCEPT", r="low"))
+        self.jobs.save(self.job)
+        before = (self.dir / "job.json").read_bytes()
+        code, out, _ = self.call("next", JID)
+        self.assertEqual(json.loads(out)["argv"], ["atta", "route", JID])
+        self.assertEqual((self.dir / "job.json").read_bytes(), before)
+
+    def test_decide_stays_pure(self):
+        self.jobs.save(self.job)
+        before = (self.dir / "job.json").read_bytes()
+        self.assertEqual(self.decide()["agent"], "atta-exploradora")
+        self.assertEqual((self.dir / "job.json").read_bytes(), before)
 
     def test_next_prints_one_json_line(self):
         self.jobs.save(self.job)
@@ -429,6 +691,55 @@ class CommandTest(NextBase):
             "cabecera inválida": (
                 "<<<ATTA-ARTIFACT\nDECISION: ACCEPT\nRISK: banana\nSURFACES: none\nATTA-ARTIFACT>>>\n",
                 "intake.md: línea 2: RISK «banana» no es válido; usa low, medium o high. "
+                "No se escribió intake.md.\n"),
+        }
+        for name, (text, message) in cases.items():
+            with self.subTest(name):
+                code, out, err = self.call("save-artifact", JID, "intake",
+                                           "--from-reply", self.reply(text))
+                self.assertEqual((code, out, err), (2, "", message))
+                self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["job.json"])
+
+    def test_save_artifact_tolerates_the_l17_malformed_reply(self):
+        """L17 (c): Haiku sent the opening marker twice and closed with `</ATTA-ARTIFACT>>>`."""
+        body = ("DECISION: ACCEPT\nRISK: low\nSURFACES: none\n\n## Summary\n\n"
+                "La Exploradora aceptó el issue: agregar la función de resta.\n")
+        replies = {
+            "L17": f"<<<ATTA-ARTIFACT\n<<<ATTA-ARTIFACT\n{body}</ATTA-ARTIFACT>>>\nDECISION: ACCEPT\n",
+            "cerco": f"Listo.\n<<<ATTA-ARTIFACT\n\n```markdown\n{body}```\n\nATTA-ARTIFACT>>>\n",
+            "cerco fuera": f"```text\n<<<ATTA-ARTIFACT\n{body}\n</ATTA-ARTIFACT>>>\n```\n",
+        }
+        for name, text in replies.items():
+            with self.subTest(name):
+                self.job["stage"] = "intake"
+                self.jobs.save(self.job)
+                (self.dir / "intake.md").unlink(missing_ok=True)
+                code, out, err = self.call("save-artifact", JID, "intake",
+                                           "--from-reply", self.reply(text))
+                self.assertEqual((code, err), (0, ""))
+                self.assertEqual(out, f"La Exploradora decidió ACCEPT en {JID}: intake.md guardado.\n")
+                self.assertEqual((self.dir / "intake.md").read_text(encoding="utf-8"), body)
+                self.assertEqual(sorted(p.name for p in self.dir.iterdir()),
+                                 ["intake.md", "job.json"])
+
+    def test_save_artifact_l17_shape_still_validates_and_refuses(self):
+        self.jobs.save(self.job)
+        missing = ("La respuesta no trae el artefacto entre «<<<ATTA-ARTIFACT» y "
+                   "«ATTA-ARTIFACT>>>». No se escribió intake.md.\n")
+        cases = {
+            "cabecera inválida": (
+                "<<<ATTA-ARTIFACT\n<<<ATTA-ARTIFACT\nDECISION: ACCEPT\nRISK: banana\n"
+                "SURFACES: none\n</ATTA-ARTIFACT>>>\nDECISION: ACCEPT\n",
+                "intake.md: línea 2: RISK «banana» no es válido; usa low, medium o high. "
+                "No se escribió intake.md.\n"),
+            "cierre antes de la última apertura": (
+                "<<<ATTA-ARTIFACT\nDECISION: ACCEPT\nRISK: low\nSURFACES: none\n"
+                "</ATTA-ARTIFACT>>>\n<<<ATTA-ARTIFACT\nDECISION: ACCEPT\n", missing),
+            "vacío": ("<<<ATTA-ARTIFACT\n\n```\n```\n</ATTA-ARTIFACT>>>\n", missing),
+            "cabecera no primero": (
+                "<<<ATTA-ARTIFACT\nHola.\nDECISION: ACCEPT\nRISK: low\nSURFACES: none\n"
+                "</ATTA-ARTIFACT>>>\n",
+                "intake.md: la primera línea debe ser «DECISION: ACCEPT|REJECT|NEEDS-INFO». "
                 "No se escribió intake.md.\n"),
         }
         for name, (text, message) in cases.items():

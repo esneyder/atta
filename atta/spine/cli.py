@@ -12,8 +12,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import (branches, config, gate, intake, issue, machine, project, router, store, term,
-               voice)
+from . import (branches, config, events, gate, intake, issue, machine, project, router, store,
+               term, voice)
 from .ids import InvalidId
 from .lock import LockTimeout, job_lock
 from .timeutil import from_iso, utcnow
@@ -146,13 +146,30 @@ def _cost(value) -> str:
     return "-" if value is None else f"US$ {value:.2f}"
 
 
-def _table(jobs_list: list[dict]) -> list[str]:
+def _models_used(job_dir) -> str:
+    """Models recorded in events.jsonl (T12), in order of first use; `-` when none."""
+    try:
+        evs = events.read_events(job_dir)
+    except (OSError, ValueError):
+        return "-"
+    seen: list[str] = []
+    for ev in evs:
+        found = [ev.get("model")] + [m.get("model") for m in ev.get("models") or []
+                                     if isinstance(m, dict)]
+        seen += [m for m in found if isinstance(m, str) and m and m not in seen]
+    return ", ".join(seen) or "-"
+
+
+def _table(jobs_list: list[dict], models: dict | None = None) -> list[str]:
+    """The jobs table; with `models` ({job id: text}) it adds the MODELOS column."""
     now = utcnow()
-    rows = [("JOB", "ISSUE", "ETAPA", "RONDAS", "COSTO", "TIEMPO")]
+    header = ("JOB", "ISSUE", "ETAPA", "RONDAS", "COSTO", "TIEMPO")
+    rows = [header + (("MODELOS",) if models is not None else ())]
     for j in jobs_list:
-        rows.append((j["id"], f"#{j['issue']}", j["stage"],
-                     f"{j['total_rounds']}/{j['max_total_rounds']}", _cost(j.get("cost_usd")),
-                     _elapsed(j, now)))
+        row = (j["id"], f"#{j['issue']}", j["stage"],
+               f"{j['total_rounds']}/{j['max_total_rounds']}", _cost(j.get("cost_usd")),
+               _elapsed(j, now))
+        rows.append(row + ((models.get(j["id"], "-"),) if models is not None else ()))
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     return ["  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in rows]
 
@@ -166,7 +183,10 @@ def cmd_status(args, cfg, jobs: store.JobStore) -> int:
     if not listed:
         print("No hay jobs.")
         return OK
-    print("\n".join(_table(listed)))
+    models = None
+    if getattr(args, "models", False):
+        models = {j["id"]: _models_used(jobs.job_dir(j["id"])) for j in listed}
+    print("\n".join(_table(listed, models)))
     return OK
 
 
@@ -194,8 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="atta",
         description="Atta, tu colonia de agentes: espina determinista y flujo con GitHub (init, "
-                    "queue, start, refresh, worktree, next, publish, comment, label, guard y merge "
-                    "seguro a develop).",
+                    "queue, start, refresh, worktree, next, publish, comment, label, guard, models, "
+                    "settings y merge seguro a develop).",
         epilog="Códigos de salida: 0 ok, 1 veredicto negativo, 2 rechazado o error de uso.",
     )
     p.add_argument("--project", metavar="<carpeta>",
@@ -234,8 +254,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.set_defaults(func=cmd_gate)
 
     s = sub.add_parser("status", help="Tabla de jobs (o de un job).",
-                       description="Tabla de jobs: id, issue, etapa, rondas, costo y tiempo.")
+                       description="Tabla de jobs: id, issue, etapa, rondas, costo y tiempo. "
+                                   "Con --models agrega los modelos usados (events.jsonl).")
     s.add_argument("job", nargs="?", help="id del job (opcional)")
+    s.add_argument("--models", action="store_true",
+                   help="agrega la columna MODELOS: los modelos que corrieron en cada job")
     s.set_defaults(func=cmd_status)
 
     m = sub.add_parser("summary", help="Tabla de todos los jobs con totales.",
@@ -254,11 +277,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     # F2 commands live in their own modules; imported here to keep startup cheap
     # for the F1 commands and to avoid import cycles.
-    from . import flow, guard, initcmd, next as next_cmd
+    from . import flow, guard, initcmd, models, next as next_cmd, settings
     initcmd.register(sub)
     next_cmd.register(sub)
     flow.register(sub)
     guard.register(sub)
+    models.register(sub)
+    settings.register(sub)
     return p
 
 

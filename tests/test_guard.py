@@ -29,8 +29,21 @@ def write(path, text="x"):
 
 
 class GuardBase(TempDirMixin, unittest.TestCase):
+    """Project under a test temp folder. The system temp dir allowed for writes (L17 b) is
+    pinned to `<tmp>/systmp` so the rest of the test temp folder counts as «outside the project»;
+    TempDirWriteTests uses the real system temp dir."""
+
+    real_temp = False
+
     def setUp(self):
         super().setUp()
+        self.systmp = Path(os.path.realpath(self.tmp / "systmp"))
+        self.systmp.mkdir()
+        if not self.real_temp:
+            patcher = mock.patch.object(guard, "temp_roots", create=True,
+                                        return_value=[self.systmp])
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.root = Path(os.path.realpath(self.tmp / "proj"))
         self.root.mkdir()
         self.make_job(JID, "build")
@@ -182,6 +195,14 @@ class WriteTests(GuardBase):
                 h["tool_input"] = tool_input
                 self.assertDenied(guard.evaluate(h, root=self.root))
 
+    def test_system_temp_dir_allowed_rest_outside_denied(self):
+        for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                self.assertAllowed(self.write_reason(self.systmp / "scratchpad" / "r.txt", tool))
+                self.assertDenied(self.write_reason(self.tmp / "fuera.txt", tool),
+                                  "fuera del proyecto")
+        self.assertDenied(self.write_reason(str(self.systmp) + "/../fuera.txt"))
+
     def test_other_tools_allowed(self):
         self.assertAllowed(guard.evaluate(self.hook("Read", file_path=str(self.root / "x")),
                                           root=self.root))
@@ -322,15 +343,14 @@ class CommandTests(GuardBase):
 
         Before the T5 correction (L9, M2) this test also stood for redirects anywhere in the
         project that were not protected paths. Now a redirect that lands inside the project but
-        outside the active job worktree is denied (see ShellWriteScopeTests); only the worktree,
-        null devices and folders outside the project (temp dirs) remain allowed.
+        outside the active job worktree is denied (see ShellWriteScopeTests); outside the project
+        only the system temp folder is allowed (L19, see OutsideShellWriteTests).
         """
         for cmd, cwd in (("echo x > out.txt", self.wt), ("echo x > /dev/null", self.root),
                          ("echo x 2>&1 | tee log.txt", self.wt),
                          (f"echo x > {(self.wt / 'src' / 'a.txt').as_posix()}", self.root),
-                         (f"echo x > {(self.tmp / 'scratch.txt').as_posix()}", self.root),
-                         (f"echo x > {Path(tempfile.gettempdir()).as_posix()}/atta-x.txt",
-                          self.wt)):
+                         (f"echo x > {(self.systmp / 'scratch.txt').as_posix()}", self.root),
+                         (f"echo x > {self.systmp.as_posix()}/atta-x.txt", self.wt)):
             with self.subTest(cmd=cmd):
                 self.assertAllowed(self.bash_reason(cmd, cwd=cwd))
 
@@ -522,7 +542,7 @@ class ShellWriteScopeTests(GuardBase):
 
     def test_redirect_inside_worktree_or_outside_project_allowed(self):
         for cmd, cwd in (("echo x > src/a.txt", self.wt),
-                         (f"echo x > {(self.tmp / 'fuera.txt').as_posix()}", self.root),
+                         (f"echo x > {(self.systmp / 'fuera.txt').as_posix()}", self.root),
                          ("echo x > /dev/null", self.root)):
             with self.subTest(cmd=cmd):
                 self.assertAllowed(self.bash_reason(cmd, cwd=cwd))
@@ -532,6 +552,269 @@ class ShellWriteScopeTests(GuardBase):
     def test_expected_allow_controls(self):
         self.assertAllowed(self.bash_reason(f"git push origin atta/{JID}"))
         self.assertAllowed(self.bash_reason("gh pr create --base develop --fill"))
+
+
+class OutsideShellWriteTests(GuardBase):
+    """L19: shell writes outside the project are allowed only in the system temp folder."""
+
+    def test_outside_project_and_temp_denied(self):
+        out = self.systmp.parent / "fuera"  # real path: no 8.3 short name with «~»
+        bashrc, profile = (out / ".bashrc").as_posix(), (out / ".profile").as_posix()
+        startup = (out / "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/a.cmd")
+        cases = (
+            f"echo x > {bashrc}", f"echo x >> {bashrc}", f"echo x >| {bashrc}",
+            f"echo x &> {bashrc}", f"echo x &>> {bashrc}", f"echo x 2> {bashrc}",
+            f"echo x 2>> {bashrc}", f"echo x | tee {bashrc}", f"echo x | tee -a {bashrc}",
+            f"echo x | tee {(self.systmp / 'ok.txt').as_posix()} {bashrc}",
+            f"cat <<EOF >> {profile}\nalias ls='git push origin main'\nEOF",
+            f"cat <<'EOF' > {profile}\nx\nEOF", f'echo x > "{startup.as_posix()}"',
+            f"cd {out.as_posix()} && echo x > .bashrc",
+            f"echo x > {self.systmp.as_posix()}/../fuera.txt",
+        )
+        for cmd in cases:
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd, cwd=self.wt), "carpeta temporal")
+        for cmd in (f"'x' | Out-File {bashrc}", f"Set-Content -Path {bashrc} -Value x",
+                    f"Add-Content {bashrc} x", f"'x' | Tee-Object -FilePath {bashrc}",
+                    f"'x' > {bashrc}", f"'x' >> '{startup}'"):
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd, tool="PowerShell", cwd=self.wt),
+                                  "carpeta temporal")
+
+    def test_home_and_variable_targets_denied(self):
+        for cmd in ("echo x >> ~/.bashrc", "cat <<EOF >> ~/.profile\nx\nEOF",
+                    'tee -a "$HOME/.zshrc"', "echo x > ~/.ssh/authorized_keys",
+                    "echo x | tee -a ~/.zshrc", "echo x > %APPDATA%/x.cmd"):
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd, cwd=self.wt))
+        for cmd in ("Add-Content $PROFILE x", "'x' | Out-File $env:APPDATA\\x.cmd",
+                    "Set-Content -Path ~/.bashrc -Value x"):
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd, tool="PowerShell", cwd=self.wt))
+
+    def test_temp_null_devices_and_worktree_still_allowed(self):
+        tmp = self.systmp.as_posix()
+        for cmd in (f"echo x > {tmp}/a.txt", f"echo x >> {tmp}/sub/a.txt",
+                    f"echo x 2> {tmp}/err.log", f"echo x &> {tmp}/all.log",
+                    f"echo x | tee -a {tmp}/t.txt", f"cat <<EOF > {tmp}/r.txt\nx\nEOF",
+                    "echo x > /dev/null", "echo x 2> /dev/stderr", "echo x > /dev/stdout",
+                    "echo x > out.txt", "echo x 2>&1 | tee log.txt"):
+            with self.subTest(cmd=cmd):
+                self.assertAllowed(self.bash_reason(cmd, cwd=self.wt))
+        for cmd in (f"'x' | Out-File {tmp}/a.txt", f"Add-Content {tmp}/a.txt x",
+                    "'x' > $null", "'x' | Out-File NUL", "Set-Content a.txt x"):
+            with self.subTest(cmd=cmd):
+                self.assertAllowed(self.bash_reason(cmd, tool="PowerShell", cwd=self.wt))
+
+    def test_reason_is_spanish_and_signed(self):
+        out = io.StringIO()
+        h = self.hook("Bash", command=f"echo x >> {(self.tmp / '.bashrc').as_posix()}")
+        guard.run(json.dumps(h), out, root=self.root)
+        reason = json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("fuera del proyecto", reason)
+        self.assertTrue(reason.endswith("«Atta»"), reason)
+
+
+RUN_BODY = (
+    "Aquí está el intake.\n"
+    "<<<ATTA-ARTIFACT\n"
+    "<<<ATTA-ARTIFACT\n"
+    "DECISION: ACCEPT\nRISK: low\nSURFACES: none\n\n## Summary\n\n"
+    "La Exploradora aceptó el issue: agregar la función de resta.\n\n## Scope\n\n"
+    "- Dentro: `def subtract(a: float, b: float) -> float:` en calculator.py.\n"
+    "def subtract(a: float, b: float) -> float:\n"
+    "    return a - b\n"
+    "Si x > y el resultado es positivo.\n"
+    "python -m unittest | tee salida.txt\n"
+    "git push origin main\n"
+    "</ATTA-ARTIFACT>>>\n"
+    "DECISION: ACCEPT"
+)
+
+
+class HeredocTests(GuardBase):
+    """L17 (a): heredoc and here-string bodies are data unless they feed a shell/interpreter."""
+
+    def denied_all(self, cmds, tool="Bash", cwd=None):
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd, tool=tool, cwd=cwd))
+
+    def allowed_all(self, cmds, tool="Bash", cwd=None):
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertAllowed(self.bash_reason(cmd, tool=tool, cwd=cwd))
+
+    def test_run_command_from_l17_allowed(self):
+        cmd = (f'cd "{self.root}" && atta save-artifact 1-agregar-la-funcion-de intake '
+               f"--from-reply - <<'ATTA_REPLY_END'\n{RUN_BODY}\nATTA_REPLY_END")
+        self.assertAllowed(self.bash_reason(cmd, cwd=self.root))
+        self.assertAllowed(self.bash_reason(cmd + "\n", cwd=self.root))
+
+    def test_heredoc_bodies_are_data(self):
+        self.allowed_all((
+            "cat <<EOF\ngit push origin main\nx > y\nEOF",
+            'cat <<"EOF"\ngh pr merge 1\n-> float\nEOF',
+            "cat <<-EOF\n\tgit push origin main\n\tEOF",
+            "cat << 'EOF' > out.txt\ngit push origin main | tee x\nEOF",
+            "cat <<EOF\nx > y\nEOF\necho listo",
+            "cat <<A <<B\ngit push origin main\nA\ngh pr merge 1\nB",
+            "python x.py <<EOF\ngit push origin main\nEOF",
+            "cat <<'EOF'\n$(gh pr merge 1) `gh pr merge 1`\nEOF",
+        ), cwd=self.wt)
+
+    def test_heredoc_feeding_a_shell_or_interpreter_denied(self):
+        self.denied_all((
+            "bash <<EOF\ngit push origin main\nEOF",
+            "sh <<'EOF'\ngh pr merge 1\nEOF",
+            "env bash <<EOF\nls\nEOF",
+            "cat <<EOF | bash\nls\nEOF",
+            "pwsh <<EOF\nGet-Date\nEOF",
+            "python <<EOF\nprint(1)\nEOF",
+            "python3 - <<'EOF'\nprint(1)\nEOF",
+            "py -3 - <<EOF\nprint(1)\nEOF",
+            "node <<EOF\nconsole.log(1)\nEOF",
+            "env perl <<EOF\nprint 1\nEOF",
+            "cat <<EOF | ruby\nputs 1\nEOF",
+            "source /dev/stdin <<EOF\ngit push origin main\nEOF",
+            "while read l; do $l; done <<EOF\ngit push origin main\nEOF",
+            "bash -c \"$(cat <<'EOF'\ngh pr merge 1\nEOF\n)\"",
+            "read -r -d '' X <<'EOF'\ngh pr merge 1\nEOF\neval \"$X\"",
+        ), cwd=self.wt)
+
+    def test_heredoc_redirects_and_trailing_commands_still_checked(self):
+        self.denied_all(("cat <<EOF > atta/checks.json\n{}\nEOF",
+                         "tee atta/checks.json <<EOF\n{}\nEOF",
+                         "cat <<'EOF' >> .claude/settings.json\nx\nEOF"), cwd=self.root)
+        self.denied_all((
+            "cat <<EOF\nx\nEOF\ngit push origin main",
+            "cat <<EOF\n$(gh pr merge 1)\nEOF",
+            "cat <<EOF\n`gh pr merge 1`\nEOF",
+            "cat <<EOF\ngit push origin main",
+            'echo "<<X"\ngit push origin main\nX',
+            "echo '<<X'\ngh pr merge 1\nX",
+            "# <<X\ngh pr merge 1\nX",
+        ), cwd=self.wt)
+
+    def test_audit_hidden_execution_denied(self):
+        """L19 audit: each way to run a heredoc body as code is denied (body = git push)."""
+        push = "git push origin main"
+        self.denied_all((
+            f"cat <<EOF | sh\n{push}\nEOF",
+            f"cat <<EOF|sh\n{push}\nEOF",
+            f"cat <<'EOF' | sh -s\n{push}\nEOF",
+            f"cat <<EOF \\\n| sh\n{push}\nEOF",
+            f"<<EOF bash\n{push}\nEOF",
+            f"<<'EOF' sh\n{push}\nEOF",
+            f"bash 3<<EOF\n{push}\nEOF",
+            f"exec 3<<EOF; bash <&3\n{push}\nEOF",
+            f"exec 3<<EOF\n{push}\nEOF\nbash <&3",
+            f"while read l; do $l; done <<EOF\n{push}\nEOF",
+            f"while read -r l; do eval \"$l\"; done <<'EOF'\n{push}\nEOF",
+            f'eval "$(cat <<EOF\n{push}\nEOF\n)"',
+            f"eval \"$(cat <<'EOF'\n{push}\nEOF\n)\"",
+            f"bash <(cat <<EOF\n{push}\nEOF\n)",
+            f"source <(cat <<'EOF'\n{push}\nEOF\n)",
+            f"cat <<A | bash\ncat <<B | bash\n{push}\nB\nA",
+            f"cat <<A\nx\nA\ncat <<B | sh\n{push}\nB",
+            f"cat <<A <<B | sh\nx\nA\n{push}\nB",
+            f"cat <<EOF | sh\r\n{push}\r\nEOF\r\n",
+            f"cat <<EOF\r\nx\r\nEOF\r\n{push}\r\n",
+            f'echo "<<EOF"\n{push}\nEOF',
+            f'echo "a <<EOF b"; echo x\n{push}\nEOF',
+            # Quote/expansion contexts where bash sees no heredoc (the body runs as code).
+            f'x="${{y:-"<<EOF"}}"\n{push}\nEOF}}',
+            f'echo ${{x#<<EOF}}\n{push}\nEOF}}',
+            f'x="$(echo "\ncat <<EOF ")"\n{push}\nEOF',
+            f'x="`echo "\ncat <<EOF "`"\n{push}\nEOF',
+            f"(( \")\" \")\"\" ; cat <<EOF ))\n{push}\nEOF",
+            f"cat >#<<EOF\n{push}\nEOF",
+            f"cat <<EOF | tee >(bash)\n{push}\nEOF",
+            f"at now <<EOF\n{push}\nEOF",
+            f"batch <<EOF\n{push}\nEOF",
+            f"sudo -s <<EOF\n{push}\nEOF",
+            f"ssh localhost <<EOF\n{push}\nEOF",
+            f"su -c x <<EOF\n{push}\nEOF",
+            f"script -q <<EOF\n{push}\nEOF",
+            f"wsl <<EOF\n{push}\nEOF",
+            f"busybox sh <<EOF\n{push}\nEOF",
+            f"make -f - <<EOF\nall:\n\t{push}\nEOF",
+            f"php <<EOF\n<?php system('{push}');\nEOF",
+            f"crontab - <<EOF\n* * * * * {push}\nEOF",
+        ), cwd=self.wt)
+        # PowerShell: contexts where the here-string opener is comment or string text.
+        self.denied_all((
+            "<#\n@'\n#>\ngh pr merge 1\n'@'",
+            "echo \u201cx @'\n\u201d; gh pr merge 1\n'@'",
+            "$x = \"$(echo \"@'\n\")\"\ngh pr merge 1\n'@'",
+            "@'\ngh pr merge 1\n'@ | & pwsh -Command -",
+        ), tool="PowerShell", cwd=self.wt)
+        # Real heredoc after a quoted fake one: data, the body only feeds cat.
+        self.allowed_all((f'echo "<<EOF"; cat <<EOF\n{push}\nEOF',
+                          f"cat <<EOF\r\n{push}\r\nEOF\r\n",
+                          f"cat <<'EOF' | grep push\n{push}\nEOF"), cwd=self.wt)
+
+    def test_powershell_here_strings(self):
+        self.allowed_all((
+            f"@'\n{RUN_BODY}\n'@ | atta save-artifact {JID} intake --from-reply -",
+            "$t = @'\ngit push origin main\nx > y\n'@",
+            '@"\ngh pr merge 1 -> float\n"@ | Out-Null',
+        ), tool="PowerShell", cwd=self.root)
+        self.denied_all((
+            "@'\ngh pr merge 1\n'@ | Invoke-Expression",
+            "Invoke-Expression @'\ngh pr merge 1\n'@",
+            "@'\ngh pr merge 1\n'@ | pwsh -Command -",
+            "$s = @'\ngh pr merge 1\n'@; iex $s",
+            "Set-Content -Path atta/checks.json -Value @'\n{}\n'@",
+            '@"\n$(gh pr merge 1)\n"@ | Out-Null',
+            "@'\nx\n'@\ngh pr merge 1",
+            "echo 'a@'\ngh pr merge 1\n'@",
+            "@'\ngh pr merge 1",
+        ), tool="PowerShell", cwd=self.root)
+
+
+class TempDirWriteTests(GuardBase):
+    """L17 (b): Write/Edit into the system temp dir are allowed; the rest outside stays denied."""
+
+    real_temp = True
+
+    def test_scratchpad_under_system_temp_allowed(self):
+        scratch = Path(tempfile.gettempdir()) / "claude" / "scratchpad" / "atta-reply.txt"
+        for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                self.assertAllowed(self.write_reason(scratch, tool))
+        self.assertAllowed(self.bash_reason(f"echo x > {scratch.as_posix()}", cwd=self.root))
+
+    def test_tmpdir_variable_counts_as_temp(self):
+        other = Path(os.path.realpath(self.tmp / "otro-temp"))
+        other.mkdir()
+        system = Path(os.path.realpath(tempfile.gettempdir()))
+        for var in ("TMPDIR", "TEMP", "TMP"):
+            with self.subTest(var=var):
+                roots = guard.temp_roots({var: str(other)})
+                self.assertIn(system, roots)
+                self.assertIn(other, roots)
+        roots = guard.temp_roots({"TEMP": str(Path.home()), "TMPDIR": Path.home().anchor or "/",
+                                  "TMP": "relativo"})
+        self.assertEqual(roots, [system])
+        h = self.hook("Write", file_path=str(other / "a.txt"))
+        self.assertAllowed(guard.evaluate(h, root=self.root, environ={"TMPDIR": str(other)}))
+
+    def test_home_files_stay_denied(self):
+        bashrc = Path.home() / ".bashrc"
+        for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            with self.subTest(tool=tool):
+                self.assertDenied(self.write_reason(bashrc, tool), "fuera del proyecto")
+        h = self.hook("Write", file_path=str(bashrc))
+        for env in ({"TEMP": str(Path.home())}, {"TMPDIR": Path.home().anchor or "/"}):
+            with self.subTest(env=env):
+                self.assertDenied(guard.evaluate(h, root=self.root, environ=env))
+
+    def test_project_rules_still_apply_inside_temp(self):
+        # The test project itself lives under the system temp dir: its own rules win.
+        self.assertDenied(self.write_reason(self.root / "atta" / "config.json"))
+        self.assertDenied(self.write_reason(self.root / "README.md"))
+        self.assertAllowed(self.write_reason(self.wt / "src" / "a.py"))
 
 
 class OutputTests(GuardBase):
@@ -609,6 +892,164 @@ class OutputTests(GuardBase):
             code = args.func(args, {}, None)
         self.assertEqual(code, 0)
         self.assertDenyJson(out.getvalue())
+
+
+class ConfigCommandTests(GuardBase):
+    """L29: `atta settings set|reset`, `atta models set|unset|reset` and `atta init` change
+    atta/config.json and .claude/ through the CLI; agents may only run the read-only forms."""
+
+    MESSAGE = ("Atta no deja que un agente cambie su propia configuración ({}). Corre ese "
+               "comando tú en tu terminal.")
+
+    def assertConfigDenied(self, reason, command):
+        self.assertEqual(reason, self.MESSAGE.format(command))
+
+    def test_hook_output_is_signed_deny(self):
+        out = io.StringIO()
+        code = guard.run(json.dumps(self.hook("Bash", command="atta settings set max_rounds 9")),
+                         out, root=self.root)
+        self.assertEqual(code, 0)
+        data = json.loads(out.getvalue())["hookSpecificOutput"]
+        self.assertEqual(data["permissionDecision"], "deny")
+        self.assertEqual(data["permissionDecisionReason"],
+                         self.MESSAGE.format("atta settings set") + " — «Atta»")
+
+    def test_mutating_subcommands_denied(self):
+        cases = [
+            ("atta settings set delivery.auto_merge_up_to high", "atta settings set"),
+            ("atta settings reset merge_method", "atta settings reset"),
+            ("atta models set T2 haiku", "atta models set"),
+            ("atta models set --role soldado opus", "atta models set"),
+            ("atta models unset --role soldado", "atta models unset"),
+            ("atta models reset", "atta models reset"),
+            ("atta models --runtime claude-code set T1 opus", "atta models set"),
+            ("atta models --runtime=claude-code reset", "atta models reset"),
+            ("atta models set --runtime claude-code T3 sonnet", "atta models set"),
+            ("atta init", "atta init"),
+            ("atta init --force", "atta init"),
+            ("atta init --force --no-github --runtime claude-code", "atta init"),
+        ]
+        for command, shown in cases:
+            with self.subTest(command=command):
+                self.assertConfigDenied(self.bash_reason(command), shown)
+
+    def test_every_invocation_form_denied(self):
+        cases = [
+            "atta.exe settings set max_rounds 9",
+            "atta.cmd models reset",
+            "ATTA.EXE init",
+            "./atta.sh init",
+            "/opt/bin/atta init --force",
+            "C:/Tools/atta.exe models set T2 haiku",
+            "python -m atta.spine.cli settings set max_rounds 9",
+            "python3 -m atta.spine.cli models reset",
+            "python3.11 -m atta.spine.cli init",
+            "python -X utf8 -m atta.spine.cli init",
+            "python -matta.spine.cli init",
+            "py -3.11 -m atta.spine.cli settings reset merge_method",
+            "python atta/bin/atta.py init --force",
+            "python3 /repo/atta/bin/atta.py models unset --role reina",
+            "py -3.11 atta/bin/atta.py settings set max_rounds 2",
+            "sh atta.sh init",
+            "bash ./atta.sh models reset",
+        ]
+        for command in cases:
+            with self.subTest(command=command):
+                self.assertDenied(self.bash_reason(command), "su propia configuración",
+                                  "Corre ese comando tú en tu terminal")
+
+    def test_global_options_before_subcommand_denied(self):
+        cases = [
+            ("atta --project /x settings set max_rounds 9", "atta settings set"),
+            ("atta --jobs-dir y models reset", "atta models reset"),
+            ("atta --project=/x --jobs-dir=y init", "atta init"),
+            ("atta --project /x --jobs-dir y models --runtime claude-code unset --role guia",
+             "atta models unset"),
+            ("atta --proj /x init", "atta init"),
+            ("python -m atta.spine.cli --project /x settings reset max_rounds",
+             "atta settings reset"),
+            ("py -3.11 -m atta.spine.cli --jobs-dir y init", "atta init"),
+        ]
+        for command, shown in cases:
+            with self.subTest(command=command):
+                self.assertConfigDenied(self.bash_reason(command), shown)
+
+    def test_wrappers_chaining_and_nesting_denied(self):
+        cases = [
+            "cd sub && atta init",
+            "echo ok; atta models reset",
+            "true || atta settings set max_rounds 9",
+            "atta queue | atta init",
+            "sudo atta init",
+            "env FOO=1 atta init",
+            "FOO=1 atta settings set max_rounds 9",
+            "nohup atta models reset",
+            "timeout 5 atta init",
+            "command atta init",
+            "if true; then atta init; fi",
+            "! atta init",
+            "bash -c 'atta settings set max_rounds 9'",
+            "echo $(atta init)",
+            "echo `atta models reset`",
+            "eval atta init",
+            "cmd /c atta init",
+            "atta \\\n  init",
+            "bash <<'EOF'\natta models reset\nEOF",
+            "cat <<EOF\n$(atta init)\nEOF",
+        ]
+        for command in cases:
+            with self.subTest(command=command):
+                self.assertDenied(self.bash_reason(command), "su propia configuración")
+
+    def test_powershell_forms_denied(self):
+        cases = [
+            "& atta.exe settings set max_rounds 9",
+            "atta models reset; Write-Output ok",
+            "py -3.11 -m atta.spine.cli init",
+            "& 'C:\\Tools\\atta.cmd' init --force",
+            "pwsh -Command \"atta models reset\"",
+        ]
+        for command in cases:
+            with self.subTest(command=command):
+                self.assertDenied(self.bash_reason(command, tool="PowerShell"),
+                                  "su propia configuración")
+
+    def test_read_only_forms_allowed(self):
+        for command in ("atta settings", "atta settings get delivery.auto_merge_up_to",
+                        "atta settings get set", "atta settings --help", "atta models",
+                        "atta models --runtime claude-code", "atta models --runtime=claude-code",
+                        "atta models -h", "atta --project /x models",
+                        "atta --project /x --jobs-dir y settings get max_rounds",
+                        "atta.exe models", "./atta.sh settings",
+                        "python -m atta.spine.cli settings get max_rounds",
+                        "py -3.11 -m atta.spine.cli models --runtime claude-code",
+                        "python atta/bin/atta.py settings"):
+            with self.subTest(command=command):
+                self.assertAllowed(self.bash_reason(command))
+
+    def test_other_atta_subcommands_allowed(self):
+        for command in (f"atta next {JID}", "atta queue", "atta start 3", f"atta refresh {JID}",
+                        f"atta worktree {JID}", f"atta publish {JID}",
+                        f"atta comment {JID} --role reina --file /tmp/c.md",
+                        f"atta label {JID} add atta:needs-info", f"atta merge {JID}",
+                        f"atta handoff {JID}", f"atta gate {JID} --worktree x",
+                        f"atta advance {JID} spec", f"atta route {JID}", f"atta status {JID}",
+                        "atta summary", f"atta save-artifact {JID} intake --from-reply r.md",
+                        "atta check-push atta/7", "atta guard",
+                        f"atta --project /x next {JID}",
+                        f"python -m atta.spine.cli next {JID}",
+                        f"py -3.11 -m atta.spine.cli --jobs-dir y status {JID}"):
+            with self.subTest(command=command):
+                self.assertAllowed(self.bash_reason(command))
+
+    def test_mentions_and_unrelated_programs_allowed(self):
+        for command in ('echo "atta init"', 'grep -n "atta settings set" README.md',
+                        'git commit -m "docs: atta models reset"',
+                        "python -m pytest init",
+                        f"atta save-artifact {JID} intake --from-reply - <<'E'\natta init\nE",
+                        "python -m atta.spine.board init"):
+            with self.subTest(command=command):
+                self.assertAllowed(self.bash_reason(command))
 
 
 class SettingsTemplateTests(unittest.TestCase):
