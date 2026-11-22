@@ -105,7 +105,8 @@ class WriteTests(GuardBase):
         job = self.root / "atta" / "jobs" / JID
         for rel in ("intake.md", "spec.md", "spec-review.md", "decision.md", "feedback-1.md",
                     "feedback-humano.md", "round-1/build.md", "round-2/review-code.md",
-                    "round-12/review-security.md"):
+                    "round-12/review-security.md", "round-1/refute.md",
+                    "round-3/refute-retry.md"):
             with self.subTest(rel=rel):
                 self.assertAllowed(self.write_reason(job / rel))
 
@@ -114,7 +115,8 @@ class WriteTests(GuardBase):
         for rel in ("job.json", "events.jsonl", "issue.md", "round-1/checks.md",
                     "round-1/checks.log", "round-0/build.md", "round-x/build.md", "notes.md",
                     "sub/intake.md", "round-1/review-.md", "feedback-.md", "intake.md.bak",
-                    ".lock"):
+                    "refute.md", "round-1/refute-x.md", "round-1/refute.md.bak",
+                    "round-0/refute.md", ".lock"):
             with self.subTest(rel=rel):
                 self.assertDenied(self.write_reason(job / rel), "artefactos")
 
