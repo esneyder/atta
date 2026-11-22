@@ -15,6 +15,7 @@ Rama: `feat/f3-calidad` (apilada sobre `feat/f2-colonia`, PR #9). Diseño: `docs
 - **S8** Rastreador (G6): rol adversarial solo en riesgo alto.
 - **S9** Plantillas: reporte estructurado de la Cortadora (G10), criterios citados textualmente por la Guía (G11), checklist núcleo corto (K2), plantilla de PR (K16), presupuesto de contexto (G12), tope del ciclo Vigía `REVISE`.
 - **S10** Regla vigente: multiplataforma (D2), Atta solo integra en `develop` (D3), configuración solo por humanos (L29).
+- **S11** Cierre de F3. Usuario: «continuar con la implementacion, ya hice pruebas con el sanbox y va bien». Las docs (README, `docs/design/arquitectura.md`, ayuda de la CLI) describen el comportamiento real de F3 (L5-L19) sin texto viejo; la CI cubre lo que F3 agregó y que hoy no se ejercita (ast-grep real, comandos nuevos del paquete instalado).
 
 ## Tasks
 
@@ -28,7 +29,9 @@ Rama: `feat/f3-calidad` (apilada sobre `feat/f2-colonia`, PR #9). Diseño: `docs
 | T6 | S8 | Rastreador en riesgo alto | hecho (falta verlo en una corrida real de riesgo alto) | f2124bb, 8474303 (aviso de upgrade) |
 | T7 | S9 | Plantillas con contrato estructurado + tope Vigía | hecho (plantillas + espina: contrato de `build.md`, PR con plantilla, tope de 3 REVISE) | 3ef4632, 5e1de0c |
 | T9 | S2, S10 | Falla de configuración del Filtro → needs-human sin quemar rondas + reintento del Filtro en la misma ronda; checkout principal en `integration_branch` (Filtro y doctor) | hecho (865 tests) | 306a1af |
-| T8 | S1-S10 | Corrida en el sandbox + docs + CI | en curso: corrida #11 (riesgo medio) → PR #12 en awaiting-merge en ~4 min sin rondas extra; faltan merge + cosecha, corrida de riesgo alto (Rastreador), docs y CI | — |
+| T8 | S1-S10 | Corrida en el sandbox | hecho: corrida #11 (riesgo medio) sin rondas extra; pruebas del usuario en el sandbox «va bien» (L20) | — |
+| T10 | S11 | Docs: README al día con F3 (rama `feat/f3-cierre`) | hecho (947 tests) | commit «docs(f3): bring README…» |
+| T11 | S11 | Diseño + ayuda de la CLI + CI para F3 (rama `feat/f3-cierre`) | hecho (947 tests; ast-grep real 2/2 local; CI nueva sin correr aún en GitHub) | a88e912 |
 
 ## Log
 
@@ -60,3 +63,5 @@ Rama: `feat/f3-calidad` (apilada sobre `feat/f2-colonia`, PR #9). Diseño: `docs
 - **L17** Fix guard: el Refutador no podía escribir `round-N/refute.md` ni `refute-retry.md` (hallado en T7b). Se permiten exactamente esos dos nombres; verificador independiente PASS (probes de rondas, variantes de nombre, formas Windows, traversal, shell).
 - **L18** Upgrade hallado en T8: `atta init` copia `routing` al config.json del proyecto, así que los proyectos existentes no reciben al Rastreador. `atta doctor` avisa (⚠) cuando el routing propio no lo tiene en `high`, con la salida; no se toca el archivo del humano.
 - **L19** Corrida real #11 en el sandbox (riesgo medio, `auto_merge_up_to: none`): intake→awaiting-merge en ~4 min, 0 rondas extra; `build.md` con contrato completo (rojo inicial, salida real, criterios textuales con ✓), `FILES:` respetado, PR #12 armado con `pr-body.md` sin advertencia de diff. Hallazgos: (a) la Exploradora clasificó medio y las reglas no subieron el riesgo, así que el Rastreador no entró → falta una corrida de riesgo alto; (b) un PASS con menores traía un `PREVENTION:` útil que la Cultivadora ignoraba → ahora cosecha reviews con hallazgos (CHANGES o PASS con menores).
+- **L20** (usuario) «continuar con la implementacion, ya hice pruebas con el sanbox y va bien». T8 se da por hecho con esa evidencia. F3 entró a `main` por el PR #11 (`develop` quedó 23 commits atrás). Cierre en la rama `feat/f3-cierre` desde `main`. Mapa de brechas (explorador): README §1, §2.3-§2.6, §4.1, §5.4, §7 (`gate`, `models`, `memory`, falta `settings`), §8.2, §9, §10, §11, §14.2, §15, §16 y §17 desactualizados; `arquitectura.md` §3, §4.1, §5 y §8 viejos; la ayuda de `gate`, `doctor`, `route` y `advance` no menciona F3; la CI no corre ast-grep real ni `doctor`/`init --check`/`memory` sobre el paquete instalado. Suite: 944 tests OK (5 skipped). No implementados: K7 (diff antes/después de sync) y el issue `atta:ratchet` de K1; se documentan como pendientes de F3.x, no se implementan en el cierre.
+- **L21** T10 y T11 hechos. Suite 947 OK (7 skipped; 2 son el test de ast-grep real sin binario). Con ast-grep 0.51.3 y `ATTA_REQUIRE_AST_GREP=1`: 947 OK (5 skipped). Correcciones del mapa: la corrección acotada no manda a `needs-human` (es aviso en `## Alcance`; con `scope.enforce` es falla normal del Filtro que gasta ronda); `arquitectura.md` tenía `atta run`/`atta board` y `atta/checklists/` inexistentes, ya corregidos. Riesgo abierto: los pasos nuevos de CI no corrieron en GitHub (Windows/macOS).

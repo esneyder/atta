@@ -76,6 +76,23 @@ class EntryTest(CliBase):
         self.assertIn("Crea un job", out)
         self.assertIn("--jobs-dir", out)
 
+    def test_help_of_f3_commands_describes_f3_behavior(self):
+        """S11: the help of gate, doctor, route and advance names what F3 added."""
+        wanted = {
+            "gate": ("ast-grep", "FILES:", "risk>=medium", "KIND: config",
+                     "sube el riesgo", "2 si el Filtro está mal configurado"),
+            "doctor": ("sgconfig.yml", "en develop", "Rastreador"),
+            "route": ("el Filtro puede volver a planear",),
+            "advance": ("needs-human → gate", "tercera REVISE"),
+        }
+        for name, phrases in wanted.items():
+            with self.subTest(command=name):
+                code, out, err = self.atta(name, "--help")
+                self.assertEqual((code, err), (0, ""))
+                text = " ".join(out.split())
+                for phrase in phrases:
+                    self.assertIn(phrase, text)
+
     def test_no_command_is_usage_error(self):
         code, out, err = self.atta()
         self.assertEqual(code, 2)
