@@ -1,9 +1,9 @@
 """Memoria cultivada (F3 T4, S6; arquitectura §8 K1 y §10; PLAN §6.1 G9 y G12).
 
 The Cultivadora as deterministic code. `collect(job_dir)` reads every `round-*/review-*.md` and
-`round-*/refute*.md` of a job and keeps each `PREVENTION:` line of a `VERDICT: CHANGES` review
-that still has at least one finding the Refutador did not refute (a finding with any UPHELD line
-stands, as in next.py; PASS reviews never count). `Lessons(root)` owns
+`round-*/refute*.md` of a job and keeps each `PREVENTION:` line of a review with findings (`CHANGES`, or a `PASS` with
+minors) that still has at least one finding the Refutador did not refute (a finding with any UPHELD line
+stands, as in next.py; a clean PASS never counts). `Lessons(root)` owns
 `<root>/atta/memory/lessons.md`: one `## <slug>` section per lesson, parsed and written
 deterministically, replaced atomically under the lock of `atta/memory/`.
 
@@ -171,7 +171,8 @@ def _refute_reviewer(token: str) -> str:
 def collect(job_dir: str | Path) -> list[dict]:
     """Preventions of one job: [{rule, job, reviewer, paths}] in round and reviewer order.
 
-    Skips PASS or malformed reviews and reviews whose every finding was REFUTED in a
+    Skips malformed reviews, reviews without findings (a clean PASS) and reviews whose every
+    finding was REFUTED in a
     `refute*.md` of the same round. `paths` are the non-refuted finding paths, without line."""
     job_dir = Path(job_dir)
     jid = job_dir.name
@@ -186,7 +187,7 @@ def collect(job_dir: str | Path) -> list[dict]:
             name = _REVIEW.match(rev.name)
             text = _read(rev)
             lines = text.splitlines()
-            if not name or not lines or lines[0].strip() != "VERDICT: CHANGES":
+            if not name or not lines or lines[0].strip() not in ("VERDICT: CHANGES", "VERDICT: PASS"):
                 continue
             reviewer = name.group(1)
             paths = []
@@ -508,7 +509,7 @@ def register(subparsers) -> None:
     p = subparsers.add_parser(
         "memory", help="Lecciones de la memoria cultivada (atta/memory/lessons.md).",
         description="Sin subcomando lista las lecciones: nombre, veces, si es mecanizable y la "
-                    "regla. `harvest <job>` agrega las PREVENTION: de las revisiones CHANGES del "
+                    "regla. `harvest <job>` agrega las PREVENTION: de las revisiones con hallazgos del "
                     "job que el Refutador no refutó; una lección parecida se actualiza en vez de "
                     "repetirse. Cosechar dos veces el mismo job no agrega nada.",
         epilog="Códigos de salida: 0 ok, 2 lessons.md dañado, job inexistente o id inválido.")

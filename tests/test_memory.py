@@ -177,6 +177,16 @@ class CollectHarvestTest(Base):
             ["probar el vencimiento de la sesión con reloj falso"]))
         return d
 
+    def test_pass_with_minor_findings_is_harvested(self):
+        # Sandbox #11: a PASS with minors carried a useful PREVENTION that was lost.
+        d = self.job("11-historial")
+        write(d / "round-1" / "review-code.md", review(
+            "PASS", [("minor", "history.py:41")],
+            ["cada temporal tiene un test por tipo de fallo"]))
+        self.assertEqual(memory.collect(d), [
+            {"rule": "cada temporal tiene un test por tipo de fallo", "job": "11-historial",
+             "reviewer": "code", "paths": ["history.py"]}])
+
     def test_collect_skips_refuted_and_pass(self):
         d = self.make_job()
         got = memory.collect(d)
