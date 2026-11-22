@@ -84,7 +84,9 @@ def cmd_route(args, cfg, jobs: store.JobStore) -> int:
     with job_lock(directory):
         job = jobs.load(jid)
         job["intake"] = {"risk": header["risk"], "surfaces": list(header["surfaces"]),
-                         "decision": header["decision"]}
+                         "decision": header["decision"],
+                         "blocked_by": list(header["blocked_by"]),
+                         "migration": header["migration"]}
         job["agents"] = plan
         jobs.save(job)
     reviewers = ", ".join(f"{r['reviewer']} {r['tier']}" for r in plan["reviewers"])
@@ -244,7 +246,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("route", help="Lee intake.md y guarda los reviewers del job.",
                        description="Lee RISK y SURFACES de intake.md y guarda el plan del router "
-                                   "(en riesgo alto suma al Rastreador). Después, si las reglas "
+                                   "(en riesgo alto suma al Rastreador); guarda también "
+                                   "BLOCKED-BY y MIGRATION, y la cola espera a los bloqueantes. "
+                                   "Después, si las reglas "
                                    "sobre el diff suben el riesgo, el Filtro puede volver a "
                                    "planear los reviewers con el riesgo efectivo.")
     r.add_argument("job", help="id del job")

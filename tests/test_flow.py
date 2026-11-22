@@ -246,6 +246,102 @@ class QueueTests(FlowBase):
         self.assertEqual(self.ok("queue"), "No hay issues abiertos con la label atta.\n")
 
 
+class BlockedByQueueTests(FlowBase):
+    """F4 S7 (K5): a job whose BLOCKED-BY is not merged waits; a rejected blocker holds it."""
+
+    def setUp(self):
+        super().setUp()
+        st = self.state()
+        st["issues"] = {str(n): issue(n, f"Tarea {n}") for n in (5, 7, 8)}
+        self.write_state(st)
+
+    def make_job(self, number, stage="build", blocked_by=None):
+        job = self.store.create(number, f"Tarea {number}", None, self.cfg)
+        fields = {"stage": stage}
+        if blocked_by is not None:
+            fields["intake"] = {"risk": "low", "surfaces": [], "decision": "ACCEPT",
+                                "blocked_by": list(blocked_by), "migration": False}
+        self.set_job(job["id"], **fields)
+        return job["id"]
+
+    def queue(self, cfg=None):
+        rows = json.loads(self.ok("queue", "--json", cfg=cfg))
+        return {r["issue"]: (r["action"], r["reason"]) for r in rows}
+
+    def test_unmerged_blocker_waits_and_frees_its_slot(self):
+        self.make_job(5, blocked_by=[7])
+        self.make_job(7)
+        cfg = config.with_defaults({"concurrency": 2})
+        self.assertEqual(self.queue(cfg), {
+            5: ("wait", "espera a #7: todavía no está mergeado."),
+            7: ("resume", "en curso en la etapa build."),
+            8: ("new", "sin job; hay cupo (1 de 2 corriendo)."),
+        })
+        # Blockers in the open queue need no extra gh call.
+        self.assertEqual(self.gh_by("issue", "view"), [])
+
+    def test_table_shows_the_wait(self):
+        self.make_job(5, blocked_by=[7])
+        line = next(ln for ln in self.ok("queue").splitlines() if "#5" in ln)
+        self.assertTrue(line.startswith("wait"), line)
+        self.assertTrue(line.endswith("espera a #7: todavía no está mergeado."), line)
+
+    def test_merged_blocker_resumes(self):
+        self.make_job(5, blocked_by=[7])
+        self.make_job(7, "merged")
+        self.assertEqual(self.queue()[5], ("resume", "en curso en la etapa build."))
+
+    def test_closed_blocker_issue_resumes_and_open_one_outside_the_queue_waits(self):
+        st = self.state()
+        st["issues"]["9"] = dict(issue(9, "Cerrado"), state="CLOSED")
+        st["issues"]["10"] = issue(10, "Sin label", labels=("bug",))
+        self.write_state(st)
+        self.make_job(5, blocked_by=[9])
+        self.make_job(8, blocked_by=[10])
+        rows = self.queue()
+        self.assertEqual(rows[5], ("resume", "en curso en la etapa build."))
+        self.assertEqual(rows[8], ("wait", "espera a #10: todavía no está mergeado."))
+        self.assertEqual(sorted(c[2] for c in self.gh_by("issue", "view")), ["10", "9"])
+
+    def test_unknown_blocker_issue_waits(self):
+        self.make_job(5, blocked_by=[99])
+        self.assertEqual(self.queue()[5], ("wait", "espera a #99: todavía no está mergeado."))
+
+    def test_rejected_blocker_holds(self):
+        self.make_job(5, blocked_by=[7])
+        self.make_job(7, "rejected")
+        rows = self.queue()
+        self.assertEqual(rows[5], ("hold", "su bloqueante #7 fue rechazado: decide una persona."))
+        self.assertEqual(rows[7], ("skip", "el job ya terminó (rejected)."))
+
+    def test_cycle_holds_both(self):
+        self.make_job(5, blocked_by=[7])
+        self.make_job(7, blocked_by=[5])
+        rows = self.queue()
+        self.assertEqual(rows[5], ("hold", "dependencia circular (#5 → #7 → #5): decide una persona."))
+        self.assertEqual(rows[7], ("hold", "dependencia circular (#7 → #5 → #7): decide una persona."))
+        self.assertEqual(rows[8][0], "new")
+
+    def test_jobs_without_blocked_by_are_unchanged(self):
+        old_shape = self.make_job(5)
+        self.set_job(old_shape, intake={"risk": "low", "surfaces": [], "decision": "ACCEPT"})
+        self.make_job(7, blocked_by=[])
+        cfg = config.with_defaults({"concurrency": 2})
+        self.assertEqual(self.queue(cfg), {
+            5: ("resume", "en curso en la etapa build."),
+            7: ("resume", "en curso en la etapa build."),
+            8: ("wait", "sin cupo: 2 de 2 jobs corriendo."),
+        })
+
+    def test_start_does_not_count_a_blocked_job(self):
+        self.make_job(5, blocked_by=[7])
+        cfg = config.with_defaults({"concurrency": 1})
+        self.assertEqual(self.ok("start", "7", cfg=cfg), "7-tarea-7\n")
+        code, out, err = self.run_cmd("start", "8", cfg=cfg)
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(err, "El issue #8 espera: sin cupo (1 de 1 jobs corriendo).\n")
+
+
 QUESTION = {"author": {"login": "operador"},
             "body": "<!-- atta -->\n¿En qué formato?\n\n— La Exploradora · Atta\n"}
 ANSWER = {"author": {"login": "autora"}, "body": "CSV separado por ;"}
