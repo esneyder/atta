@@ -34,7 +34,7 @@ RUNTIME = "claude-code"
 RUNTIMES = ("claude-code",)
 TIERS = ("T0", "T1", "T2", "T3")
 ROLES = ("exploradora", "guia", "vigia", "cortadora", "jardinera-code", "jardinera-resilience",
-         "jardinera-ux", "jardinera-ui", "soldado", "refutador", "reina")
+         "jardinera-ux", "jardinera-ui", "soldado", "rastreador", "refutador", "reina")
 ESCALATING = ("cortadora", "soldado", "reina")
 # Fallback order for the Vigía when its model equals the Guía's (L8), and for the Refutador
 # when its model equals a reviewer's it judges (G4).
@@ -338,7 +338,8 @@ def render(root: Path, tab: Table) -> str:
     out += ["  ".join([*(c.ljust(w) for c, w in zip(r, widths)), r[3]]) for r in rows]
     out += [
         _tiers_line(tab),
-        "Las Jardineras y el Soldado corren en el tier que les asigna el router; "
+        "Las Jardineras, el Soldado y el Rastreador corren en el tier que les asigna el "
+        "router; "
         "un modelo por rol lo reemplaza.",
         "Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o "
         "`atta models set --role <rol> <modelo>`.",

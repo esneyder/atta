@@ -111,7 +111,7 @@ class DoctorBase(TempDirMixin, unittest.TestCase):
             "✓ gh tiene una sesión iniciada",
             "✓ la cuenta operador de gh ve el repo proj",
             "✓ labels de Atta en el repo: " + ", ".join(LABELS),
-            "✓ .claude/agents: los 11 agentes de Atta",
+            "✓ .claude/agents: los 12 agentes de Atta",
             "✓ .claude/skills/atta/SKILL.md existe",
             "✓ /atta registrado (.claude/commands/atta.md)",
             "✓ hook del guard instalado (.claude/settings.json)",

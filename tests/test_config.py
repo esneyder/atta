@@ -41,6 +41,12 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
         cfg = config.load_config(self.write({"concurrency": 1}))
         self.assertEqual(set(cfg["routing"]["risk"]), {"low", "medium", "high"})
         self.assertEqual(router.plan("low", [], cfg)["reviewers"][0]["reviewer"], "code")
+        self.assertEqual(cfg["routing"], config.DEFAULT_ROUTING)
+        self.assertIn({"reviewer": "rastreador", "lenses": ["adversarial"], "tier": "T3"},
+                      cfg["routing"]["risk"]["high"]["reviewers"])
+        for risk in ("low", "medium"):
+            self.assertNotIn("rastreador", [r["reviewer"] for r in
+                                            cfg["routing"]["risk"][risk]["reviewers"]])
 
     def test_rejects_forbidden_integration_branch(self):
         path = self.write({"integration_branch": "main"})
@@ -196,7 +202,7 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
             ({"claude-code": {"roles": {"obrera": "haiku"}}},
              "models.claude-code.roles.obrera: El rol «obrera» no existe: usa exploradora, guia, "
              "vigia, cortadora, jardinera-code, jardinera-resilience, jardinera-ux, "
-             "jardinera-ui, soldado, refutador o reina."),
+             "jardinera-ui, soldado, rastreador, refutador o reina."),
             ({"claude-code": {"roles": {"soldado": "gpt-4"}}},
              "models.claude-code.roles.soldado: «gpt-4» no es un modelo válido para "
              "claude-code: usa haiku, sonnet u opus, o un id completo que cumpla "

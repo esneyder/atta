@@ -18,7 +18,7 @@ Checks, in order (each one catches a stumble of the real runs, odd/tasks/f2-colo
 - gh (`github.command()`, so $ATTA_GH works): installed, logged in, the active account sees the
   repository (`gh repo view --json name`), and every Atta label of the config exists
   (`gh label list`; L31: a missing `atta:needs-review`). `--no-github` skips them (⚠);
-- Claude Code: the 11 agents, the skill, `.claude/commands/atta.md` (L16: «Unknown command:
+- Claude Code: one agent per role of `models.ROLES` (12), the skill, `.claude/commands/atta.md` (L16: «Unknown command:
   /atta»), the `atta guard` PreToolUse hook, `claude --version` (⚠ when missing), and the
   project files up to date with this Atta (the comparison of `atta init --check`, ⚠).
 

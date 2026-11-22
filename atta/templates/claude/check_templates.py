@@ -11,14 +11,17 @@ Checks every `agents/atta-*.md`:
 - `name` equals the file name without `.md`;
 - `model` is exactly `{{model:Tn}}` with Tn a tier of models.json `claude-code`;
 - `tools` is exactly the role's tool set (Exploradora without Bash/Write/Edit; Guía, Vigía,
-  Jardineras, Soldado, Refutador and Reina without Edit);
+  Jardineras, Soldado, Rastreador, Refutador and Reina without Edit);
 - the prompt contains its contract tokens, `## Summary`, `issue.md`, the one-line reply rule and
   its context budget (`## Context budget`, «do not read the whole repo», G12);
 - the Cortadora's `build.md` (G10) and the Guía's `spec.md` artifact blocks have exactly their
   fixed sections in order; the Guía copies the issue's criteria verbatim and `FILES:` is
   mandatory (G11); the Vigía caps `REVISE` at 2 rounds of factual errors only;
-- reviewers (Jardineras, Soldado) keep the bounded scope and a `## Core checklist` of 1 to 12
-  items with the core points (K2);
+- reviewers (Jardineras, Soldado, Rastreador) keep the bounded scope and a `## Core checklist`
+  of 1 to 12 items with the core points (K2);
+- the Rastreador (G6, high risk only) runs on T3 only and keeps its adversarial contract: try
+  to break the change, grep the call and not the loop it touched, every caller, writer and
+  reader, bypasses, concurrency, partial failure, data loss, and never edits code;
 - no URLs and no references to other factories or projects.
 
 Exits 0 and prints «OK» when everything passes; otherwise prints one line per problem and exits 1.
@@ -99,6 +102,16 @@ AGENTS = {
         "tiers": ("T2", "T3"),
         "tokens": REVIEW_TOKENS + ("review-security.md",),
     },
+    "atta-rastreador": {
+        "tools": READ | {"Bash", "Write"},
+        "tiers": ("T3",),
+        "tokens": REVIEW_TOKENS + ("VERDICT: PASS|CHANGES", "review-rastreador.md",
+                                   "try to break the change",
+                                   "grep the call, not the loop you touched",
+                                   "every caller, writer and reader", "bypass", "edge inputs",
+                                   "concurrency", "partial failure", "data loss",
+                                   "Never edit code"),
+    },
     "atta-refutador": {
         "tools": READ | {"Bash", "Write"},
         "tiers": ("T0", "T1"),
@@ -116,13 +129,14 @@ AGENTS = {
 COMMON_TOKENS = ("## Summary", "issue.md", "exactly one line", "## Context budget",
                  "do not read the whole repo")
 REVIEWERS = {"atta-jardinera-code", "atta-jardinera-resilience", "atta-jardinera-ux",
-             "atta-jardinera-ui", "atta-soldado"}
+             "atta-jardinera-ui", "atta-soldado", "atta-rastreador"}
 FORBIDDEN_TOOLS = {
     "atta-exploradora": ("Bash", "Write", "Edit"),
     "atta-guia": ("Edit",),
     "atta-vigia": ("Edit",),
     "atta-reina": ("Edit",),
     "atta-soldado": ("Edit",),
+    "atta-rastreador": ("Edit",),
     "atta-refutador": ("Edit",),
 }
 for _name in AGENTS:

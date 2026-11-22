@@ -158,11 +158,15 @@ class FreshInitTest(InitBase):
         src = sorted(p.name for p in (project.TEMPLATES_DIR / "claude" / "agents").glob("atta-*.md"))
         dst = sorted(p.name for p in (self.root / ".claude" / "agents").glob("atta-*.md"))
         self.assertEqual(src, dst)
-        self.assertEqual(len(dst), 11)
+        self.assertEqual(len(dst), 12)
         self.assertIn("atta-refutador.md", dst)
         refutador = (self.root / ".claude" / "agents" / "atta-refutador.md").read_text(
             encoding="utf-8")
         self.assertIn("\nmodel: haiku\n", refutador)
+        self.assertIn("atta-rastreador.md", dst)
+        rastreador = (self.root / ".claude" / "agents" / "atta-rastreador.md").read_text(
+            encoding="utf-8")
+        self.assertIn("\nmodel: opus\n", rastreador)
         models = set()
         for name in dst:
             text = (self.root / ".claude" / "agents" / name).read_text(encoding="utf-8")
@@ -522,7 +526,8 @@ class CheckTest(InitBase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             code = cli.main(["--project", str(self.root), "init", "--check"])
         self.assertEqual(code, 0, out.getvalue())
-        self.assertIn(": al día (14 archivos).", out.getvalue())
+        # 12 agents + SKILL.md + commands/atta.md + settings.json hook
+        self.assertIn(": al día (15 archivos).", out.getvalue())
         self.assertEqual(tree(self.root), before)
 
 

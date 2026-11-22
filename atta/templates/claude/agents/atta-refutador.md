@@ -71,7 +71,7 @@ El Refutador revisó dos hallazgos: uno es real y el otro ya estaba resuelto.
   only. `REFUTED` when every one of them is refuted, `UPHELD` when every one of them stands, and
   `PARTIAL` when some stand and some are refuted.
 - Then one line per finding: `- UPHELD|REFUTED <reviewer> <path:line> — reason`. `<reviewer>` is
-  the name in the review file (`review-<reviewer>.md`: code, resilience, ux, ui, security) and
+  the name in the review file (`review-<reviewer>.md`: code, resilience, ux, ui, security, rastreador) and
   `<path:line>` is copied exactly from the finding. Every `blocker` and `major` finding needs its
   line; a missing one counts as a broken file.
 - Never invent findings, never change a severity, never suggest new work.

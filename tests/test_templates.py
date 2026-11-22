@@ -23,7 +23,76 @@ class TemplateTests(unittest.TestCase):
     def test_templates_pass_checker(self):
         done = run_checker()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertIn("OK: 11 plantillas válidas.", done.stdout)
+        self.assertIn("OK: 12 plantillas válidas.", done.stdout)
+
+
+class RastreadorRuleTests(TempDirMixin, unittest.TestCase):
+    """The checker enforces the Rastreador's tools, T3 tier and adversarial contract (G6)."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.tmp / "claude"
+        (self.root / "agents").mkdir(parents=True)
+        shutil.copy(TEMPLATES / "models.json", self.root / "models.json")
+        for path in (TEMPLATES / "agents").glob("atta-*.md"):
+            shutil.copy(path, self.root / "agents" / path.name)
+        self.path = self.root / "agents" / "atta-rastreador.md"
+        self.text = self.path.read_text(encoding="utf-8")
+
+    def check(self, old, new):
+        self.assertIn(old, self.text)
+        self.path.write_text(self.text.replace(old, new), encoding="utf-8")
+        done = run_checker(str(self.root))
+        self.assertEqual(done.returncode, 1, done.stdout)
+        return done.stdout
+
+    def test_rastreador_cannot_edit(self):
+        out = self.check("tools: Read, Grep, Glob, Bash, Write",
+                         "tools: Read, Grep, Glob, Bash, Write, Edit")
+        self.assertIn("agents/atta-rastreador.md: este rol no puede tener la herramienta Edit.",
+                      out)
+
+    def test_rastreador_needs_bash_to_grep(self):
+        out = self.check("tools: Read, Grep, Glob, Bash, Write", "tools: Read, Grep, Glob, Write")
+        self.assertIn("agents/atta-rastreador.md: tools debe ser Bash, Glob, Grep, Read, Write; "
+                      "es Read, Grep, Glob, Write.", out)
+
+    def test_rastreador_runs_only_on_t3(self):
+        for tier in ("T0", "T1", "T2"):
+            with self.subTest(tier=tier):
+                out = self.check("{{model:T3}}", "{{model:%s}}" % tier)
+                self.assertIn(f"agents/atta-rastreador.md: model usa {tier}; para este rol "
+                              "usa T3.", out)
+
+    def test_rastreador_keeps_its_contract_tokens(self):
+        for token in ("VERDICT: PASS|CHANGES", "review-rastreador.md", "PREVENTION:",
+                      "[blocker|major|minor] path:line", "try to break the change",
+                      "grep the call, not the loop you touched",
+                      "every caller, writer and reader", "bypass", "partial failure",
+                      "data loss", "concurrency", "Never edit code"):
+            with self.subTest(token=token):
+                out = self.check(token, "xyz")
+                self.assertIn(f"agents/atta-rastreador.md: el prompt no contiene «{token}».",
+                              out)
+
+    def test_rastreador_scope_and_context_budget(self):
+        for token in ("correctness and the stated requirements only; do not invent work",
+                      "## Context budget", "do not read the whole repo", "## Summary"):
+            with self.subTest(token=token):
+                out = self.check(token, "xyz")
+                self.assertIn(f"agents/atta-rastreador.md: el prompt no contiene «{token}».",
+                              out)
+
+    def test_rastreador_checklist_has_at_most_twelve_items(self):
+        out = self.check("\n\n## Verdict rules", "\n13. One more item.\n\n## Verdict rules")
+        self.assertIn("agents/atta-rastreador.md: «## Core checklist» debe tener entre 1 y "
+                      "12 puntos; tiene 13.", out)
+
+    def test_missing_rastreador_template_is_reported(self):
+        self.path.unlink()
+        done = run_checker(str(self.root))
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("agents/atta-rastreador.md: falta la plantilla.", done.stdout)
 
 
 class RefutadorRuleTests(TempDirMixin, unittest.TestCase):

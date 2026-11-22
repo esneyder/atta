@@ -12,7 +12,7 @@ from support import TempDirMixin
 from atta.spine import cli, config, initcmd, models
 
 ROLES = ("exploradora", "guia", "vigia", "cortadora", "jardinera-code", "jardinera-resilience",
-         "jardinera-ux", "jardinera-ui", "soldado", "refutador", "reina")
+         "jardinera-ux", "jardinera-ui", "soldado", "rastreador", "refutador", "reina")
 T2_ROLES = ("guia", "cortadora", "jardinera-code", "jardinera-resilience", "jardinera-ux",
             "soldado", "reina")
 DEFAULT_TABLE = """\
@@ -26,10 +26,11 @@ jardinera-resilience  T2    sonnet  tier
 jardinera-ux          T2    sonnet  tier
 jardinera-ui          T1    haiku   tier
 soldado               T2    sonnet  tier · escala a T3 (opus)
+rastreador            T3    opus    tier
 refutador             T1    haiku   tier
 reina                 T2    sonnet  tier · escala a T3 (opus)
 Tiers: T0 haiku · T1 haiku · T2 sonnet · T3 opus
-Las Jardineras y el Soldado corren en el tier que les asigna el router; un modelo por rol lo reemplaza.
+Las Jardineras, el Soldado y el Rastreador corren en el tier que les asigna el router; un modelo por rol lo reemplaza.
 Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o `atta models set --role <rol> <modelo>`.
 — Atta
 """
@@ -85,7 +86,16 @@ class TableTest(ModelsBase):
         self.assertEqual(models.role_tiers(), {
             "exploradora": "T1", "guia": "T2", "vigia": "T2", "cortadora": "T2",
             "jardinera-code": "T2", "jardinera-resilience": "T2", "jardinera-ux": "T2",
-            "jardinera-ui": "T1", "soldado": "T2", "refutador": "T1", "reina": "T2"})
+            "jardinera-ui": "T1", "soldado": "T2", "rastreador": "T3", "refutador": "T1",
+            "reina": "T2"})
+
+    def test_there_are_twelve_roles_and_the_rastreador_is_t3(self):
+        self.assertEqual(models.ROLES, ROLES)
+        self.assertEqual(len(models.ROLES), 12)
+        tab = models.table(config.with_defaults({}))
+        self.assertEqual(tab.tier_of("rastreador"), "T3")
+        self.assertEqual(tab.agent_model("rastreador"), "opus")
+        self.assertEqual(self.agent_model("rastreador"), ["opus"])
 
     def test_init_agents_match_the_table(self):
         tab = models.table(config.with_defaults({}))
@@ -128,7 +138,7 @@ class SetTest(ModelsBase):
                 self.assertEqual(self.agent_model(role), ["sonnet"], role)
         self.assertIn("Atta: soldado ahora usa opus en atta/config.json (claude-code).", out)
         self.assertIn("  actualicé: .claude/agents/atta-soldado.md → opus\n", out)
-        self.assertIn("  sin cambios: 10 agentes\n", out)
+        self.assertIn("  sin cambios: 11 agentes\n", out)
         self.assertIn("soldado               T2    opus    rol · escala a T3 (opus)\n",
                       self.atta("models")[1])
 
@@ -136,6 +146,15 @@ class SetTest(ModelsBase):
         code, _, err = self.atta("models", "set", "--role", "Guía", "claude-sonnet-4-5")
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(self.agent_model("guia"), ["claude-sonnet-4-5"])
+
+    def test_set_role_rastreador_changes_its_agent(self):
+        code, out, err = self.atta("models", "set", "--role", "Rastreador", "sonnet")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(self.stored()["models"],
+                         {"claude-code": {"roles": {"rastreador": "sonnet"}}})
+        self.assertEqual(self.agent_model("rastreador"), ["sonnet"])
+        self.assertIn("  actualicé: .claude/agents/atta-rastreador.md → sonnet\n", out)
+        self.assertIn("rastreador            T3    sonnet  rol\n", self.atta("models")[1])
 
     def test_set_role_refutador_changes_its_agent(self):
         code, out, err = self.atta("models", "set", "--role", "Refutador", "sonnet")
@@ -189,7 +208,7 @@ class RefusalTest(ModelsBase):
     def test_invalid_role(self):
         msg = ("El rol «obrera» no existe: usa exploradora, guia, vigia, cortadora, "
                "jardinera-code, jardinera-resilience, jardinera-ux, jardinera-ui, soldado, "
-               "refutador o reina. No cambié nada.\n")
+               "rastreador, refutador o reina. No cambié nada.\n")
         self.assertRefused(("models", "set", "--role", "obrera", "haiku"), msg)
         self.assertRefused(("models", "unset", "--role", "obrera"), msg)
 

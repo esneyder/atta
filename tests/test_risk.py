@@ -244,7 +244,7 @@ class EffectiveTest(unittest.TestCase):
         out = risk.evaluate(job, self.found("high", ["data"]), hits, cfg)
         self.assertTrue(out["escalated"])
         names = [r["reviewer"] for r in out["agents"]["reviewers"]]
-        self.assertEqual(names, ["code", "security", "resilience"])
+        self.assertEqual(names, ["code", "security", "resilience", "rastreador"])
         self.assertEqual(out["agents"]["risk"], "high")
         self.assertEqual(out["message"],
                          "El Filtro subió el riesgo a alto: migrations/0003.sql (datos).")
