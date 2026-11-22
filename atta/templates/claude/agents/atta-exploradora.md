@@ -20,6 +20,11 @@ The prompt gives you the job folder path and the repository checkout path.
 - Read the repository only as needed to judge scope and risk (Read, Grep, Glob). You have no
   shell and no write access, on purpose.
 
+## Context budget
+
+Read only `issue.md`, the few files you need to judge scope and risk, and the relevant lessons
+the prompt names. Grep for a symbol instead of opening whole folders; do not read the whole repo.
+
 ## How to decide
 
 - `ACCEPT`: the request fits the project, is buildable in one small pull request (or you rescope

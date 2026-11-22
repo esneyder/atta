@@ -74,15 +74,55 @@ en la sección 13 de [`arquitectura.md`](design/arquitectura.md).
 |---|---|---|---|
 | **F0 Fundación: repo, marca, diseño y plan** ✅ | Repo `atta`, marca en `brand/`, [`arquitectura.md`](design/arquitectura.md), este plan | — | Repo con marca, diseño y plan |
 | **F1 Espina propia, identidad y ramas** ✅ | Escrita desde cero en Python 3.10+ solo con stdlib: máquina de estados con transiciones legales, job store en `atta/jobs/<id>/` (único escritor de `job.json`), Filtro con `atta/checks.json` fail-fast, router por riesgo, CLI `atta`. Multiplataforma completo (lock portable, `pathlib`, sin herramientas Unix-only). `events.jsonl` con tiempos y costo no bloqueante; título del issue citado; `protected_paths` (`atta/**`, `.claude/**`, `.pi/**`, `.github/workflows/**`); contadores separados y tope global (K13). Política de ramas en código (`develop`, `main` prohibida). Mensajes del bot en español con la voz de marca. CI en Windows, macOS y Linux | — | Tests de la espina verdes en los tres sistemas; un PR con base `main` es rechazado |
-| **F2 Colonia en Claude Code** (en curso: piezas hechas, falta confirmar la corrida de punta a punta, ver [`f2-colonia.md`](../odd/tasks/f2-colonia.md)) | Definiciones propias de los roles (Exploradora, Guía, Cortadora, Jardineras, Soldado, Reina), comando `/atta`, guard de herramientas en Python, dashboard con tokens y logo; **fixtures propios** (jobs ficticios en español, uno por camino: aceptado y mergeado, rechazado, filtro fallido, escalado) | Claude Code | Los fixtures se ven en el dashboard; un issue de prueba llega a PR contra `develop` |
-| **F2.x Operación** | `atta doctor` (G1), `atta init --check` (G2) | Claude Code | `atta doctor` detecta cada tropiezo de la corrida real de F2 |
-| **F3 Calidad determinista (Kernia + gentle-ai)** | Ratchet `PREVENTION:` + Cultivadora + `atta/memory/` (K1) como **tema que evoluciona** (G9), `CHANGES` sin hallazgos rechazado (K12), ast-grep bloqueante en el Filtro (K4), alcance del diff `FILES:` (K8), merge `--match-head-commit` (K6), diff antes/después de sync (K7), preflight de frescura (K14), plantilla de PR (K16), checklist núcleo corto (K2); **riesgo por reglas** con la lista de alto riesgo (G3), **Refutador** antes de bloquear (G4), **corrección acotada** (G5), **Rastreador** adversarial en riesgo alto (G6), reporte estructurado de la Cortadora (G10), criterios de aceptación citados textualmente (G11), presupuesto de contexto por agente (G12) | Claude Code | Cada mecanismo con su test de rechazo; menos rondas por job |
+| **F2 Colonia en Claude Code** ✅ (corridas reales en el sandbox: self-merge, merge reanudado y handoff con merge humano; PR #9 a `develop`, ver [`f2-colonia.md`](../odd/tasks/f2-colonia.md)) | Definiciones propias de los roles (Exploradora, Guía, Cortadora, Jardineras, Soldado, Reina), comando `/atta`, guard de herramientas en Python, dashboard con tokens y logo; **fixtures propios** (jobs ficticios en español, uno por camino: aceptado y mergeado, rechazado, filtro fallido, escalado) | Claude Code | Los fixtures se ven en el dashboard; un issue de prueba llega a PR contra `develop` |
+| **F2.x Operación** ✅ (hecha dentro de F3 T1) | `atta doctor` (G1), `atta init --check` (G2) | Claude Code | `atta doctor` detecta cada tropiezo de la corrida real de F2 |
+| **F2.y Configuración interactiva** | Menús seleccionables para modelos, entrega, rondas, labels, riesgo y alcance (§6.2) | Claude Code + terminal | Cambiar cualquier configuración sin escribir claves ni valores a mano |
+| **F3 Calidad determinista (Kernia + gentle-ai)** (en curso: mecanismos hechos y probados; falta la corrida de riesgo alto, docs y CI, ver [`f3-calidad.md`](../odd/tasks/f3-calidad.md)) | Ratchet `PREVENTION:` + Cultivadora + `atta/memory/` (K1) como **tema que evoluciona** (G9), `CHANGES` sin hallazgos rechazado (K12), ast-grep bloqueante en el Filtro (K4), alcance del diff `FILES:` (K8), merge `--match-head-commit` (K6), diff antes/después de sync (K7), preflight de frescura (K14), plantilla de PR (K16), checklist núcleo corto (K2); **riesgo por reglas** con la lista de alto riesgo (G3), **Refutador** antes de bloquear (G4), **corrección acotada** (G5), **Rastreador** adversarial en riesgo alto (G6), reporte estructurado de la Cortadora (G10), criterios de aceptación citados textualmente (G11), presupuesto de contexto por agente (G12) | Claude Code | Cada mecanismo con su test de rechazo; menos rondas por job |
 | **F4 Ruteo y velocidad** | Router para todas las etapas (tiers T0-T3, matriz etapa×riesgo, escalera por intento, independencia de modelo), lentes por riesgo, Reina determinista en `low`, Vigía en medio/alto (K10), dependencias `BLOCKED-BY` en la cola (K5), timeouts por etapa; **cadenas de fallback de modelos** en `atta models` (G7); orquestador de `/atta` en Haiku (G8) | Claude Code | Job `low` sin LLM en la Reina; tiempos por etapa en el dashboard |
 | **F5 Pi como segundo runtime** | Adaptador `PiRunner` con el contrato headless (`pi --mode json`, parseo de eventos, `agent_settled`, `--no-approve`, `--tools`, `-ne`/`-e atta-guard`, versiones fijadas, contenedor); Exploradora y Jardineras en modelos no-Claude | Claude Code + Pi | Mismos issues de referencia: costo y calidad comparados |
 | **F6 Benchmark** | Repo de demostración propio + issues de referencia propios; re-ejecutarlos con varias matrices de modelos; `atta models report` (S12); comparar **juicio doble ciego** contra un juez caro (G13). Los jobs reales resultantes pasan a ser los **ejemplos oficiales** de Atta | ambos | Tabla costo × tasa de merge × rondas × tiempo |
 | **F7 Conductor sin LLM** (si F6 lo justifica) | Orquestación determinista, Cortadora multi-tier, `/atta` como comando de Pi | Pi | Un issue de punta a punta sin orquestador LLM |
 
 Cada fase se entrega en commits de unidad de trabajo (~400 líneas) con tests y docs junto al comportamiento.
+
+### 6.2 Configuración interactiva (F2.y, backlog)
+
+Pedido del usuario: «todo el tema de configuraciones es completo y poco practico con comandos …
+necesitamos incluir un menu seleccionable para que todo lo relacionado con configuraciones, modelos,
+etc sea manipulable desde la interfaz de forma mas fluida as como lo hace gentle-ai: gentle:models,
+gentle:profiles, etc».
+
+Idea: un menú por área, con la opción actual marcada y una vista previa del efecto antes de guardar.
+
+| Comando | Qué gestiona |
+|---|---|
+| `/atta:config` (hub) | Entrada única: elige el área y salta a su menú |
+| `/atta:models` | Modelo por tier y por rol; vista «quién corre con qué» y reglas de escalada |
+| `/atta:profiles` | Perfiles guardados (por ejemplo `económico`, `equilibrado`, `calidad`) que fijan modelos y entrega de una vez, y se aplican por proyecto |
+| `/atta:delivery` | Umbral de auto-merge (`none/low/medium/high`) con la tabla de qué se mergea solo |
+| `/atta:rounds` | Rondas por contador, tope global, concurrencia |
+| `/atta:risk` | Categorías de riesgo y alcance (`scope.enforce`, `scope.max_files`) |
+| `/atta:labels` | Labels de la cola y de espera |
+
+Decisiones:
+
+1. **Dónde vive el menú: dentro de Claude Code** (decisión del usuario: «que el menú esté dentro del
+   claude se siente más profesional»). Cada comando `/atta:*` muestra preguntas seleccionables con la
+   opción actual marcada y la vista previa del efecto. La fuente de verdad sigue siendo
+   `atta/config.json`; `atta settings` y `atta models` quedan como base y para uso sin Claude Code.
+
+Preguntas abiertas (se deciden antes de implementar):
+
+2. **Seguridad (L29 de F2).** Propuesta a validar: el guard responde `ask` (no `deny`) a
+   `atta settings set`, `atta models set` y `atta init` cuando el comando viene del menú, así
+   Claude Code le pide al humano que apruebe ese comando exacto y el modelo no puede aplicarlo solo.
+   Hay que verificar cómo se comporta `ask` en los modos de permisos que omiten confirmaciones.
+   Alternativa: el menú solo prepara el cambio y muestra el comando exacto para que el humano lo
+   corra en su terminal.
+3. **Hormiguero editable.** Hoy es de solo lectura por diseño; editar desde la web exige protección
+   contra CSRF y confirmación local.
+4. **Perfiles.** Formato (archivo por usuario o por proyecto) y cómo conviven con los overrides de
+   `atta models`.
 
 ### 6.1 Lecciones de gentle-ai para Atta (backlog G1-G13)
 

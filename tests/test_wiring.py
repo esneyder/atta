@@ -9,7 +9,7 @@ from atta.spine import cli
 
 F2_COMMANDS = ("init", "next", "save-artifact", "guard", "queue", "start", "refresh",
                "worktree", "publish", "comment", "label", "merge", "models",
-               "settings")
+               "settings", "doctor", "memory")
 
 
 class WiringTests(unittest.TestCase):
@@ -30,6 +30,19 @@ class WiringTests(unittest.TestCase):
                     code = cli.main([name, "--help"])
                 self.assertEqual(code, 0)
                 self.assertIn(f"atta {name}", out.getvalue())
+
+
+    def test_memory_lists_lessons_through_the_cli(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "atta").mkdir()
+            (Path(tmp) / "atta" / "config.json").write_text("{}\n", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.main(["--project", tmp, "memory"])
+        self.assertEqual((code, out.getvalue()),
+                         (0, "Todavía no hay lecciones en atta/memory/lessons.md.\n"))
 
 
 if __name__ == "__main__":

@@ -31,7 +31,8 @@
         "reviewers": [
           {"reviewer": "code", "lenses": ["reliability", "readability"], "tier": "T2"},
           {"reviewer": "security", "lenses": ["security"], "tier": "T3"},
-          {"reviewer": "resilience", "lenses": ["resilience"], "tier": "T2"}
+          {"reviewer": "resilience", "lenses": ["resilience"], "tier": "T2"},
+          {"reviewer": "rastreador", "lenses": ["adversarial"], "tier": "T3"}
         ]
       }
     },

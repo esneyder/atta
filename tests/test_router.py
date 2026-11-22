@@ -26,15 +26,32 @@ class RouterTests(unittest.TestCase):
             "reviewers": [R("code", ["reliability", "readability"], "T2")],
         })
 
-    def test_high_plan_is_4r_plus_soldado(self):
+    def test_high_plan_is_4r_plus_soldado_plus_rastreador(self):
         self.assertEqual(router.plan("high", [], self.cfg), {
             "risk": "high", "surfaces": [], "spec_review": True,
             "reviewers": [
                 R("code", ["reliability", "readability"], "T2"),
                 R("security", ["security"], "T3"),
                 R("resilience", ["resilience"], "T2"),
+                R("rastreador", ["adversarial"], "T3"),
             ],
         })
+
+    def test_rastreador_only_on_high_risk(self):
+        for risk in ("low", "medium"):
+            for surfaces in ([], ["ui"], ["security"], ["ui", "security"]):
+                with self.subTest(risk=risk, surfaces=surfaces):
+                    names = [r["reviewer"] for r in
+                             router.plan(risk, surfaces, self.cfg)["reviewers"]]
+                    self.assertNotIn("rastreador", names)
+        for surfaces in ([], ["ui"], ["security"]):
+            with self.subTest(risk="high", surfaces=surfaces):
+                found = [r for r in router.plan("high", surfaces, self.cfg)["reviewers"]
+                         if r["reviewer"] == "rastreador"]
+                self.assertEqual(found, [R("rastreador", ["adversarial"], "T3")])
+
+    def test_default_table_matches_the_packaged_config(self):
+        self.assertEqual(self.cfg["routing"], config.DEFAULT_ROUTING)
 
     def test_ui_surface_adds_ux_and_ui(self):
         p = router.plan("low", ["ui"], self.cfg)
@@ -57,7 +74,7 @@ class RouterTests(unittest.TestCase):
     def test_security_surface_on_high_does_not_duplicate_soldado(self):
         p = router.plan("high", ["security", "ui"], self.cfg)
         self.assertEqual([r["reviewer"] for r in p["reviewers"]],
-                         ["code", "security", "resilience", "ux", "ui"])
+                         ["code", "security", "resilience", "rastreador", "ux", "ui"])
         self.assertEqual(p["reviewers"][1]["tier"], "T3")
 
     def test_plan_from_intake_header(self):

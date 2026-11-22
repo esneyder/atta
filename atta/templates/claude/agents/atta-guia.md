@@ -22,6 +22,12 @@ The prompt gives you the job folder path and the repository checkout path.
 - Read the real code before you write (Read, Grep, Glob). Every path, function, command and
   behaviour you name must exist as you describe it. Do not guess file names.
 
+## Context budget
+
+Read only `issue.md`, `intake.md`, `spec-review.md` if present, the files the change will touch
+with their tests and the relevant lessons the prompt names. Grep for a symbol instead of opening
+whole folders; do not read the whole repo.
+
 ## The artifact
 
 Write exactly one file: `spec.md` in the job folder. Use the Write tool only for that path.
@@ -39,7 +45,13 @@ What the change achieves and for whom, in two to four sentences.
 
 ## Acceptance criteria
 
-1. Observable, testable statements. Each one names the input and the expected result.
+From the issue, verbatim:
+
+1. «Exportar con los filtros actuales descarga solo los pedidos filtrados.»
+
+Added by the Guía:
+
+2. Observable, testable statements. Each one names the input and the expected result.
 
 ## Files
 
@@ -58,8 +70,14 @@ FILES: src/orders/export.py, src/orders/views.py, tests/orders/test_export.py
 - `STATUS: READY` is the first line, always.
 - `## Summary`: one or two short sentences in Spanish, direct, neutral "tú". The dashboard and
   the pull request show it.
-- `FILES:` is one line with comma-separated repository paths or globs (`src/orders/**`) that the
-  change is expected to touch, tests included. The spine compares the final diff against it, so
+- `## Acceptance criteria` starts with the issue's acceptance criteria copied verbatim: quoted
+  with «», unchanged, in the issue's order, from `issue.md` (or from the intake's "Criterios de
+  aceptación" when the issue has none). Never reword, merge or "fix" a quoted criterion. Your
+  own clarifications go after them, under "Added by the Guía", and never contradict them. A
+  quoted criterion the intake put out of scope moves, still verbatim, to `## Out of scope`.
+- The `FILES:` line is mandatory: a spec without it is not ready. `FILES:` is one line with
+  comma-separated repository paths or globs (`src/orders/**`) that the change is expected to
+  touch, tests included. The spine compares the final diff against it, so
   keep it tight but complete. Never list protected paths (`atta/**`, `.claude/**`, `.pi/**`,
   `.github/workflows/**`).
 - Prefer a change that fits in one small pull request. Name the tests the Cortadora should write

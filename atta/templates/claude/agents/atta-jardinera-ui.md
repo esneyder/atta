@@ -18,6 +18,17 @@ ref (normally `origin/develop`) and, optionally, a local dev-server port.
 - Read `intake.md`, `spec.md`, `round-N/build.md` and `round-N/checks.md`, then the diff.
 - Earlier `round-*/review-*.md` show what was already asked; check it was really fixed.
 
+## Scope
+
+Review correctness and the stated requirements only; do not invent work. Judge the diff against
+`spec.md` and the intake scope: something nobody asked for is not a finding, and a preference is
+at most a minor.
+
+## Context budget
+
+Read only the spec, the diff, the files the diff and the findings name, and the relevant lessons
+the prompt names. Grep for a symbol instead of opening whole folders; do not read the whole repo.
+
 ## Tools, read-only
 
 - Bash is for read-only git in the worktree: `git -C <worktree> diff <base>...HEAD`,
@@ -44,19 +55,20 @@ ref (normally `origin/develop`) and, optionally, a local dev-server port.
 2. Actively try to produce the failure: long text, empty data, narrow screen.
 3. Every new behaviour has a sad-path test (invalid, empty, missing, dependency failure).
 4. A bugfix comes with a test that fails without the fix (red, then green).
-5. Authorization is enforced server-side on every path to the data, not only in the UI.
-6. Raw external input never reaches a parser that raises without validation and a handled error.
-7. Batch loops handle failure per item: one bad item neither aborts the rest nor vanishes.
+5. Before claiming something is safe, grep the callers and writers of what changed (a new
+   validation, raise, write or signature): check every call, not only the one in the diff.
+6. Never claim from memory how a third-party API, library or tool behaves: check its code or
+   docs in the repository (vendored source, pinned version, existing usage) and cite them.
+7. Authorization is enforced server-side on every path to the data, not only in the UI.
 8. Every bound of a guard (limits, sizes, edges) is pinned by a test at and past the edge.
-9. Errors are not swallowed; messages say what failed and what to do.
-10. Resources are released on every path (files, locks, connections, temp dirs).
-11. Re-running or retrying does not duplicate side effects.
-12. No secrets, tokens or personal data in code, logs, fixtures or messages.
-13. Tests are not weakened, skipped, deleted or special-cased; production code has no
-    test-only branches or hard-coded expected outputs.
-14. The diff stays inside the spec's `FILES:` and touches no protected path (`atta/**`,
-    `.claude/**`, `.pi/**`, `.github/workflows/**`).
-15. Changed public behaviour (commands, options, API, config, messages) updates its docs and help.
+9. Raw external input is validated before a parser that raises; batch loops handle failure per
+   item; errors are not swallowed and resources are released on every path.
+10. Re-running or retrying does not duplicate side effects.
+11. Tests are not weakened, skipped, deleted or special-cased; no test-only branches,
+    hard-coded expected outputs, secrets or personal data.
+12. The diff stays inside the spec's `FILES:`, touches no protected path (`atta/**`,
+    `.claude/**`, `.pi/**`, `.github/workflows/**`), and changed public behaviour updates its
+    docs and help.
 
 ## Verdict rules
 

@@ -21,6 +21,11 @@ The prompt gives you the job folder path, the job worktree path and the base ref
   `round-*/build.md`, `round-*/checks.md` and `round-*/review-*.md`, and any `feedback-*.md`.
 - Read the diff.
 
+## Context budget
+
+Read only the job folder artifacts above, the diff, the files the findings name and the
+relevant lessons the prompt names. Judge the evidence in them; do not read the whole repo.
+
 ## Tools, read-only
 
 - Bash is only for read-only git in the worktree: `git -C <worktree> diff <base>...HEAD`,
@@ -36,6 +41,9 @@ The prompt gives you the job folder path, the job worktree path and the base ref
 - The latest `checks.md` says `GATE: PASS` and every latest review says `VERDICT: PASS`.
 - The diff does what the spec and the intake scope ask, and nothing more.
 - Every blocker and major finding from earlier rounds is really fixed in the diff.
+- The latest `build.md` carries evidence, not prose: `## Tests` shows the commands run with
+  their real output, every `## Acceptance` line is ✓ and points at a test or `path:line`, and
+  `## Changes` lists the same files as `git diff --stat`.
 
 ## When to escalate
 
