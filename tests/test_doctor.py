@@ -169,6 +169,28 @@ class FailureTest(DoctorBase):
         if hint is not None:
             self.assertEqual(lines[lines.index(line) + 1], f"    → {hint}", out)
 
+    # T9: on another branch the Filtro reads another checks.json (L7: `main` of a fresh clone).
+    def test_main_checkout_on_another_branch_fails_with_the_filtro_hint(self):
+        git("checkout", "-q", "-b", "main", cwd=self.root)
+        before = tree(self.root)
+        code, out = self.run_doctor()
+        self.assertEqual(code, 1, out)
+        self.assert_line(out, "✗ el checkout principal está en «main», no en develop",
+                         "Atta lee checks.json y las reglas desde develop. Corre: git switch "
+                         "develop")
+        self.assertFalse(any("está al día con origin/develop" in line
+                             for line in out.splitlines()), out)
+        self.assertIn("Resumen: 18 bien, 0 avisos, 1 falla.", out.splitlines())
+        self.assertEqual(tree(self.root), before)
+
+    def test_detached_main_checkout_fails(self):
+        git("checkout", "-q", "--detach", cwd=self.root)
+        code, out = self.run_doctor()
+        self.assertEqual(code, 1, out)
+        self.assert_line(out, "✗ el checkout principal está en «HEAD suelto», no en develop",
+                         "Atta lee checks.json y las reglas desde develop. Corre: git switch "
+                         "develop")
+
     def test_missing_label(self):
         self.set_gh({"user": "operador", "repo": {"name": "proj"}, "repo_labels": LABELS[:3]})
         code, out = self.run_doctor()

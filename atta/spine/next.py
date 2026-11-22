@@ -48,6 +48,15 @@ APPROVE and the worktree HEAD is still the commit that passed merge-checks; othe
 That check reads the job folder and runs two local, read-only git commands in the worktree
 (never the network): whether the PR is still open is checked by `atta handoff` itself.
 
+Configuration failures of the Filtro (T9, S2): a `checks.md` FAIL with `KIND: config` (see
+gate.py; a FAIL without `KIND:` is `code`) never goes back to build and never spends a round: the
+job goes `gate → needs-human` (the reason is in checks.md and job.json `gate_failure`). On that
+needs-human job (last transition gate → needs-human, `gate_failure.kind == "config"`),
+`gate.config_problems` re-checks the main checkout cheaply (branch, checks.json, shells,
+ast-grep binary; local read-only git only): while a problem holds it waits with the reason; once
+it is fixed it runs `atta advance <job> gate` and then `atta gate <job> …` in the same round
+(no counter changes). A `code` FAIL keeps the round budget (build or needs-human).
+
 An artifact only counts when it was written during the current stage (mtime >= `stage_since`):
 re-entering a stage (spec-review → spec, needs-human → build, needs-info → intake) never reuses
 the previous stage's answer.
@@ -69,7 +78,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import branches, config, intake, machine
+from . import branches, config, gate, intake, machine
 from . import models as mdl
 from .events import append_event, read_events
 from .lock import job_lock
@@ -413,10 +422,43 @@ def _gate(c: _Ctx) -> dict:
         return _run("worktree", c.jid)
     checks = c.round_dir / "checks.md"
     if not c.fresh(checks):
-        return _run("gate", c.jid, "--worktree", str(c.worktree), "--base", c.base)
+        return _gate_run(c)
     if _first_line(checks) == "GATE: PASS":
         return _run("advance", c.jid, "review")
+    if gate.report_kind(checks) == gate.KIND_CONFIG:
+        # T9: a configuration failure is for a person; it never spends a round.
+        return _run("advance", c.jid, "needs-human")
     return _rework(c.job, c.cfg)
+
+
+def _gate_run(c: _Ctx) -> dict:
+    return _run("gate", c.jid, "--worktree", str(c.worktree), "--base", c.base)
+
+
+def _last_transition(job_dir: Path) -> tuple | None:
+    try:
+        evs = read_events(job_dir)
+    except (OSError, ValueError):
+        return None
+    moves = [e for e in evs if "to" in e and "from" in e]
+    return (moves[-1]["from"], moves[-1]["to"]) if moves else None
+
+
+def _gate_config_retry(c: _Ctx) -> dict | None:
+    """T9: on a needs-human job the Filtro stopped for configuration, wait while the problem
+    holds and run the gate again in the same round once it is fixed; None otherwise."""
+    if not machine.gate_config_stop(c.job) or c.worktree is None:
+        return None
+    if _last_transition(c.dir) != ("gate", "needs-human"):
+        return None
+    problems = gate.config_problems(c.root, c.cfg)
+    if problems:
+        return {"action": "wait", "reason": (
+            "El Filtro está detenido por configuración y no gasta ronda; cuando lo corrijas, "
+            f"/atta run lo vuelve a correr en la misma ronda. {problems[0]}")}
+    action = _run("advance", c.jid, "gate")
+    action["then"] = [_gate_run(c)["argv"]]
+    return action
 
 
 def _reviewer_spawn(c: _Ctx, spec: dict, out: Path) -> dict:
@@ -636,6 +678,9 @@ def _needs_human(c: _Ctx) -> dict:
     sha, _ = handoff_recovery(c.job, c.dir, c.worktree)
     if sha:
         return _run("handoff", c.jid)
+    retry = _gate_config_retry(c)
+    if retry is not None:
+        return retry
     return {"action": "wait", "reason": _WAIT["needs-human"]}
 
 

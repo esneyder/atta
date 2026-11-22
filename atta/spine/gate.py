@@ -38,8 +38,23 @@ The gate FAILS without running checks when:
 - the worktree has uncommitted changes (`git status --porcelain` not empty, or index entries
   hidden with skip-worktree / assume-unchanged).
 
-For misconfiguration (bad checks.json, bad base_ref, bad risk_rules) it raises GateError and
-writes no report.
+Failure kinds (T9, S2): every FAIL is `config` or `code`, written as the third line of the report
+(`KIND: config|code`) and in `GateResult.kind`. `config` is what a person fixes in the main
+checkout and the Cortadora never can: no checks in checks.json, checks.json unreadable or invalid,
+a check's shell or the ast-grep binary missing, ast-grep rules failing their own tests, or the main
+checking out another branch than `integration_branch` (only checked when that branch exists in
+the main checkout, locally or as origin/<branch>; message: «El checkout principal está en «main»;
+Atta lee checks.json y las reglas desde develop. Corre: git switch develop»). Those are checked
+first (`## Configuración`) and run nothing else. Everything else is `code`: protected paths,
+dirty worktree, scope enforce, ast-grep error findings or bad output, a failing or timed-out
+check. A report without `KIND:` (older Atta) counts as `code` (`report_kind`). `atta next`
+sends a `config` FAIL to needs-human without spending a round and retries the gate in the same
+round once `config_problems` finds nothing (next.py). A `checks` run records the outcome in
+job.json (`gate_failure: {kind: config, reason}`, removed by any other outcome) when
+`<round_dir>/..` is a job folder.
+
+For misconfiguration of Atta itself (bad base_ref, bad protected_paths, bad risk_rules) it raises
+GateError and writes no report.
 
 Then, in this order (checks.md gets one section each):
 - `## Frescura` (K14, `checks` only): `git ls-remote` (never a fetch) tells whether the main
@@ -65,8 +80,9 @@ risk above the routed one re-plans the review and is appended to the summary
 («El Filtro subió el riesgo a alto: migrations/0003.sql (datos).»). `merge-checks` and a FAIL
 never touch the risk.
 
-The report goes to `<round_dir>/<kind>.md` (first line `GATE: PASS|FAIL`, second `COMMIT: <sha>`)
-and the combined output of the checks to `<round_dir>/<kind>.log`.
+The report goes to `<round_dir>/<kind>.md` (first line `GATE: PASS|FAIL`, second `COMMIT: <sha>`,
+on a FAIL a third `KIND: config|code`) and the combined output of the checks to
+`<round_dir>/<kind>.log`.
 """
 
 from __future__ import annotations
@@ -127,6 +143,14 @@ _which = shutil.which  # patched in tests
 # Freshness preflight (K14): `git ls-remote` never waits longer than this.
 FRESHNESS_TIMEOUT_S = 15
 
+# Failure kinds (T9): `config` is for a person (never spends a round), `code` for the Cortadora.
+KIND_CONFIG, KIND_CODE = "config", "code"
+FAILURE_KINDS = (KIND_CONFIG, KIND_CODE)
+CONFIG_NOTE = ("Esto lo corrige una persona en el checkout principal, nunca la Cortadora: no "
+               "gasta ronda.")
+AST_GREP_MISSING = ("hay reglas de ast-grep (sgconfig.yml) y no encontré el binario ast-grep "
+                    "(ni sg) en el PATH.")
+
 
 class GateError(RuntimeError):
     """The gate is misconfigured (never raised for a failing check)."""
@@ -142,6 +166,7 @@ class GateResult:
     report: Path
     log: Path
     risk: dict | None = None  # {risk, categories, reasons} when `checks` passed
+    kind: str | None = None  # on a FAIL: `config` (for a person) or `code` (for the Cortadora)
 
 
 @dataclass
@@ -568,10 +593,9 @@ def run_ast_grep(main_checkout: Path, worktree: Path, files: list[str], timeout:
         return {"status": "skipped", "summary": None, "lines": [rules["reason"]], "output": ""}
     exe = ast_grep_binary()
     if exe is None:
-        summary = ("El Filtro no pasó: hay reglas de ast-grep (sgconfig.yml) y no encontré el "
-                   "binario ast-grep (ni sg) en el PATH.")
+        summary = f"El Filtro no pasó: {AST_GREP_MISSING}"
         return {"status": "fail", "summary": summary, "lines": [summary, AST_GREP_HINT],
-                "output": ""}
+                "output": "", "kind": KIND_CONFIG}
     config_path = str(rules["config"].resolve())
     output = []
     if rules["has_tests"]:
@@ -582,7 +606,8 @@ def run_ast_grep(main_checkout: Path, worktree: Path, files: list[str], timeout:
             summary = "El Filtro no pasó: las reglas de ast-grep no pasan sus propios tests."
             return {"status": "fail", "summary": summary,
                     "lines": ["Las reglas no pasan sus propios tests (ast-grep test):", "",
-                              "```", _tail(out + err), "```"], "output": "\n".join(output)}
+                              "```", _tail(out + err), "```"], "output": "\n".join(output),
+                    "kind": KIND_CONFIG}
     if not files:
         return {"status": "pass", "summary": None, "output": "\n".join(output),
                 "lines": ["El diff no agrega ni modifica archivos: nada que revisar."]}
@@ -703,6 +728,129 @@ def freshness(main_checkout: Path, branch: str) -> tuple[list[str], bool]:
     return lines + [f"El checkout principal ({branch}) está al día con {remote}."], False
 
 
+# ---------------------------------------------------------------- configuration (T9)
+
+def branch_hint(branch: str) -> str:
+    return f"Atta lee checks.json y las reglas desde {branch}. Corre: git switch {branch}"
+
+
+def branch_problem(current: str, branch: str) -> str:
+    """The message when the main checkout is on `current` instead of `branch`."""
+    return f"El checkout principal está en «{current}»; {branch_hint(branch)}"
+
+
+def main_branch_problem(main_checkout: Path, branch: str) -> str | None:
+    """branch_problem when the main checkout is not on `branch`, else None.
+
+    Only checked when `branch` exists in the main checkout (refs/heads/<branch> or
+    refs/remotes/origin/<branch>): without it there is nothing to switch to (and outside a git
+    repo nothing to check). A detached HEAD counts as «HEAD suelto»."""
+    main_checkout = Path(main_checkout)
+    known = False
+    for ref in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"):
+        proc = _git_quick(main_checkout, "rev-parse", "--verify", "-q", ref)
+        if proc is not None and proc.returncode == 0:
+            known = True
+            break
+    if not known:
+        return None
+    proc = _git_quick(main_checkout, "symbolic-ref", "--short", "-q", "HEAD")
+    current = (proc.stdout.decode("utf-8", "replace").strip()
+               if proc is not None and proc.returncode == 0 else "")
+    return None if current == branch else branch_problem(current or "HEAD suelto", branch)
+
+
+def _preflight(main_checkout: Path, config: dict) -> tuple[list[str], dict | None]:
+    """(config problems found before running anything, loaded checks.json or None).
+
+    Order: main checkout branch (a wrong branch explains every other problem), checks.json
+    readable and valid, at least one check, the shell of every check on the PATH."""
+    problems = []
+    branch = config.get("integration_branch") or "develop"
+    wrong = main_branch_problem(main_checkout, branch)
+    if wrong:
+        problems.append(wrong)
+    try:
+        spec = load_checks(main_checkout)
+    except GateError as exc:
+        problems.append(str(exc))
+        return problems, None
+    if not spec["checks"]:
+        problems.append(f"atta/checks.json no tiene checks. {PLACEHOLDER_HINT}")
+    missing = []
+    for check in spec["checks"]:
+        if check["shell"] not in missing and not _find_shell(check["shell"]):
+            missing.append(check["shell"])
+            problems.append(f"No se encontró el shell «{check['shell']}» en el PATH de este "
+                            f"equipo (check «{check['name']}»).")
+    return problems, spec
+
+
+def config_problems(main_checkout: Path, config: dict) -> list[str]:
+    """What would make the gate FAIL with kind `config` right now (cheap, read-only, no diff):
+    the preflight plus ast-grep rules without the binary. Empty when the config is ready."""
+    main_checkout = Path(main_checkout)
+    problems, _spec = _preflight(main_checkout, config)
+    try:
+        rules = ast_grep_rules(main_checkout)
+    except GateError as exc:
+        return problems + [str(exc)]
+    if rules["has_rules"] and ast_grep_binary() is None:
+        problems.append(f"{_sentence(AST_GREP_MISSING)} {AST_GREP_HINT}")
+    return problems
+
+
+def report_kind(path: Path) -> str | None:
+    """`config` or `code` for a FAIL report, None for a PASS or a missing file. A FAIL without
+    a `KIND:` line (written by an older Atta) counts as `code`."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()[:3]
+    except OSError:
+        return None
+    if not lines or lines[0].strip() != "GATE: FAIL":
+        return None
+    for line in lines[1:]:
+        m = re.fullmatch(r"KIND:\s*(\S+)\s*", line)
+        if m and m.group(1) in FAILURE_KINDS:
+            return m.group(1)
+    return KIND_CODE
+
+
+def _sentence(text: str) -> str:
+    """`text` starting with a capital letter (for a standalone sentence)."""
+    return text[:1].upper() + text[1:]
+
+
+def _after_colon(text: str) -> str:
+    """`text` after «El Filtro no pasó:»: a leading capital of a plain word is lowered."""
+    if len(text) > 1 and text[0].isupper() and text[1].islower():
+        return text[0].lower() + text[1:]
+    return text
+
+
+def _record_failure(job_dir: Path, jid: str, kind: str | None, reason: str | None) -> None:
+    """job.json `gate_failure` = {kind: config, reason} of a config FAIL; any other outcome
+    removes it (job.json is only written when it changes)."""
+    from .lock import job_lock
+    from .store import JobStore, StoreError
+    if not (job_dir / "job.json").is_file():
+        return
+    jobs = JobStore(job_dir.parent)
+    try:
+        with job_lock(job_dir):
+            job = jobs.load(jid)
+            value = {"kind": kind, "reason": reason} if kind else None
+            if job.get("gate_failure") == value:
+                return
+            if value is None:
+                job.pop("gate_failure", None)
+            else:
+                job["gate_failure"] = value
+            jobs.save(job)
+    except StoreError as exc:
+        raise GateError(str(exc)) from None
+
+
 # ---------------------------------------------------------------- the gate
 
 def _effective_risk(assessed: dict | None) -> str | None:
@@ -722,14 +870,16 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
     globs = config.get("protected_paths")
     if not isinstance(globs, list) or not all(isinstance(g, str) and g for g in globs):
         raise GateError("config.json: protected_paths debe ser una lista de textos.")
-    spec = load_checks(main_checkout)
     commit = _sha(_git(worktree, "rev-parse", "--verify", "HEAD^{commit}"))
     base = resolve_base(worktree, base_ref, commit)
+    # T9: configuration first; a config FAIL is for a person and runs nothing else.
+    problems, spec = _preflight(main_checkout, config)
+    spec = spec or {"checks": [], "timeout_s": DEFAULT_TIMEOUT_S}
     violations = protected_violations(worktree, base, globs, commit)
     dirty = dirty_entries(worktree)
     checks = spec["checks"]
     build = kind == "checks"
-    blocked = bool(violations or dirty or not checks)
+    blocked = bool(problems or violations or dirty)
 
     # Everything below reads the diff; nothing is written before the report.
     entries = changed_entries(worktree, f"{base}...{commit}") if not blocked else []
@@ -769,13 +919,13 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
     sg_fail = sg["summary"] if sg is not None and sg["status"] == "fail" else None
 
     failed_name = None
-    if violations:
+    if problems:
+        summary = f"El Filtro no pasó: {_after_colon(problems[0])}"
+    elif violations:
         listed = ", ".join(_entry_text(paths) for _, paths in violations)
         summary = f"El Filtro no pasó: el diff toca rutas protegidas ({listed})."
     elif dirty:
         summary = DIRTY_SUMMARY
-    elif not checks:
-        summary = f"El Filtro no pasó: atta/checks.json no tiene checks. {PLACEHOLDER_HINT}"
     elif scope_fail:
         summary = scope_fail
     elif sg_fail:
@@ -796,6 +946,10 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
             summary += f" ({len(skipped)} salteado{plural} por riesgo bajo)"
         summary += "."
     passed = not blocked and not scope_fail and not sg_fail and failed is None
+    failure_kind = None
+    if not passed:
+        config_fail = bool(problems) or (sg_fail is not None and sg.get("kind") == KIND_CONFIG)
+        failure_kind = KIND_CONFIG if config_fail else KIND_CODE
 
     warned = (scope["warnings"] if scope is not None else []) + (["frescura"] if fresh_warn
                                                                   else [])
@@ -816,8 +970,13 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
         log.append(f"\n== {run.name} ({status}, {_secs(run.duration_s)} s) ==\n{run.output}")
     log_path.write_text("".join(log), encoding="utf-8")
 
-    md = [f"GATE: {'PASS' if passed else 'FAIL'}", f"COMMIT: {commit}", "",
-          "## Summary", "", summary, "", "## Protected paths", "", f"Base: `{base}`", ""]
+    md = [f"GATE: {'PASS' if passed else 'FAIL'}", f"COMMIT: {commit}"]
+    if failure_kind:
+        md.append(f"KIND: {failure_kind}")
+    md += ["", "## Summary", "", summary, ""]
+    if problems:
+        md += ["## Configuración", "", *[f"- {p}" for p in problems], "", CONFIG_NOTE, ""]
+    md += ["## Protected paths", "", f"Base: `{base}`", ""]
     if violations:
         md += [f"- {letter} {_entry_text(paths)}" for letter, paths in violations]
     else:
@@ -835,12 +994,14 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
     if sg is not None:
         md += ["", f"## {AST_GREP_STEP}", "", *sg["lines"]]
     md += ["", "## Checks", ""]
-    if violations:
+    if problems:
+        empty = any(p.startswith("atta/checks.json no tiene checks") for p in problems)
+        md.append(f"No hay checks configurados. {PLACEHOLDER_HINT}" if empty
+                  else "No se corrieron: la configuración del Filtro no está lista.")
+    elif violations:
         md.append("No se corrieron: el diff toca rutas protegidas.")
     elif dirty:
         md.append("No se corrieron: el worktree tiene cambios sin commitear.")
-    elif not checks:
-        md.append(f"No hay checks configurados. {PLACEHOLDER_HINT}")
     elif scope_fail:
         md.append("No se corrieron: el diff sale del alcance.")
     elif sg_fail:
@@ -869,10 +1030,16 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
     (round_dir / f"{kind}.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     if assessed is not None:
         risk_rules.record(round_dir.parent, job_id, assessed["found"], assessed["outcome"])
+    if build:
+        reason = None
+        if failure_kind == KIND_CONFIG:
+            reason = (problems[0] if problems else
+                      _sentence(summary.removeprefix("El Filtro no pasó: ")))
+        _record_failure(round_dir.parent, job_id, KIND_CONFIG if reason else None, reason)
 
     return GateResult(passed, commit, failed_name, duration, summary,
                       round_dir / f"{kind}.md", log_path,
-                      assessed["found"] if assessed is not None else None)
+                      assessed["found"] if assessed is not None else None, failure_kind)
 
 
 def _assess_risk(worktree: Path, base: str, commit: str, job, round_dir: Path,

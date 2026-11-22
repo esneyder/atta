@@ -12,7 +12,7 @@ from pathlib import Path
 import support  # noqa: F401
 from support import TempDirMixin
 
-from atta.spine import config, events, store
+from atta.spine import config, events, gate, machine, store
 from atta.spine import next as nxt
 from atta.spine.timeutil import from_iso
 
@@ -281,6 +281,15 @@ class GateTest(NextBase):
 
     def test_fail_goes_back_to_build(self):
         self.write("round-1/checks.md", "GATE: FAIL\nCOMMIT: abc\n")
+        self.assertEqual(self.decide(), self.run_action("advance", JID, "build"))
+
+    # T9: a config FAIL is for a person: needs-human, never build, never a round.
+    def test_config_fail_goes_to_needs_human_even_with_budget_left(self):
+        self.write("round-1/checks.md", "GATE: FAIL\nCOMMIT: abc\nKIND: config\n")
+        self.assertEqual(self.decide(), self.run_action("advance", JID, "needs-human"))
+
+    def test_code_fail_goes_back_to_build(self):
+        self.write("round-1/checks.md", "GATE: FAIL\nCOMMIT: abc\nKIND: code\n")
         self.assertEqual(self.decide(), self.run_action("advance", JID, "build"))
 
     def test_fail_with_budget_exhausted_goes_to_needs_human(self):
@@ -570,6 +579,156 @@ def _git(cwd, *args):
     if out.returncode != 0:
         raise AssertionError(f"git {args} falló: {out.stderr}")
     return out.stdout.strip()
+
+
+OK_CHECKS = json.dumps({"checks": [{"name": "ok", "run": "git --version"}]})
+
+
+class GateConfigRecoveryTest(NextBase):
+    """T9 (S2): a Filtro stopped by configuration waits for a person, then retries the gate in
+    the same round; no round is spent."""
+
+    def setUp(self):
+        super().setUp()
+        self.routed()
+        self.with_worktree()
+        self.job.update(stage="gate", pr=7)
+        self.jobs.save(self.job)
+
+    def checks(self, text):
+        path = self.root / "atta" / "checks.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def stop(self, kind="config"):
+        job = self.jobs.load(JID)
+        job["gate_failure"] = {"kind": kind, "reason": "atta/checks.json no tiene checks."}
+        self.jobs.save(job)
+        machine.advance(self.jobs, JID, "needs-human")
+        self.job = self.jobs.load(JID)
+
+    def gate_argv(self):
+        return ["atta", "gate", JID, "--worktree", str(self.wt), "--base", "origin/develop"]
+
+    def test_still_broken_waits_with_the_reason(self):
+        self.checks('{"checks": []}')
+        self.stop()
+        self.assertEqual(self.decide(), {"action": "wait", "reason": (
+            "El Filtro está detenido por configuración y no gasta ronda; cuando lo corrijas, "
+            "/atta run lo vuelve a correr en la misma ronda. atta/checks.json no tiene checks. "
+            "Agrega los checks reales del proyecto en atta/checks.json.")})
+
+    def test_fixed_runs_the_gate_again_in_the_same_round(self):
+        self.checks(OK_CHECKS)
+        self.stop()
+        self.assertEqual(self.decide(), self.run_action("advance", JID, "gate",
+                                                        then=[self.gate_argv()]))
+
+    def test_only_after_a_config_stop(self):
+        self.checks(OK_CHECKS)
+        self.stop(kind="code")
+        self.assertEqual(self.decide(), {"action": "wait", "reason": nxt._WAIT["needs-human"]})
+
+    def test_needs_human_reached_from_elsewhere_just_waits(self):
+        self.checks(OK_CHECKS)
+        self.job.update(stage="review")
+        self.jobs.save(self.job)
+        job = self.jobs.load(JID)
+        job["gate_failure"] = {"kind": "config", "reason": "x"}
+        self.jobs.save(job)
+        machine.advance(self.jobs, JID, "needs-human")
+        self.job = self.jobs.load(JID)
+        self.assertEqual(self.decide(), {"action": "wait", "reason": nxt._WAIT["needs-human"]})
+
+    def test_main_checkout_on_main_waits_with_the_branch_message(self):
+        _git(self.root, "init", "-q")
+        _git(self.root, "checkout", "-q", "-b", "develop")
+        self.checks(OK_CHECKS)
+        _git(self.root, "add", "atta/checks.json")
+        _git(self.root, "commit", "-q", "-m", "base")
+        _git(self.root, "checkout", "-q", "-b", "main")
+        self.stop()
+        action = self.decide()
+        self.assertEqual(action["action"], "wait")
+        self.assertTrue(action["reason"].endswith(
+            "El checkout principal está en «main»; Atta lee checks.json y las reglas desde "
+            "develop. Corre: git switch develop"), action["reason"])
+        _git(self.root, "checkout", "-q", "develop")
+        self.assertEqual(self.decide(), self.run_action("advance", JID, "gate",
+                                                        then=[self.gate_argv()]))
+
+
+class GateConfigEndToEndTest(NextBase):
+    """T9 with the real Filtro: empty checks.json → needs-human without a round → fixed →
+    the gate runs again in the same round → PASS → review."""
+
+    def setUp(self):
+        super().setUp()
+        _git(self.root, "init", "-q")
+        _git(self.root, "checkout", "-q", "-b", "develop")
+        (self.root / ".gitignore").write_text("atta/jobs/\n.worktrees/\n", encoding="utf-8")
+        self.checks('{"checks": []}')
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-q", "-m", "base")
+        self.base = _git(self.root, "rev-parse", "HEAD")
+        _git(self.root, "worktree", "add", "-q", "-b", f"atta/{JID}", str(self.wt), self.base)
+        self.addCleanup(subprocess.run, ["git", "-C", str(self.root), "worktree", "remove",
+                                         "--force", str(self.wt)], capture_output=True)
+        (self.wt / "feature.py").write_text("x = 1\n", encoding="utf-8")
+        _git(self.wt, "add", "-A")
+        _git(self.wt, "commit", "-q", "-m", "feature")
+        self.routed()
+        self.job.update(stage="gate", pr=7, worktree=str(self.wt))
+        self.jobs.save(self.job)
+
+    def checks(self, text):
+        path = self.root / "atta" / "checks.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def gate(self):
+        return gate.run_gate(self.root, self.wt, JID, self.dir / "round-1",
+                             base_ref=self.base, config=self.cfg)
+
+    def now(self):
+        self.job = self.jobs.load(JID)
+        return nxt.decide(self.job, self.dir, self.root, self.cfg, MODELS)
+
+    def counters(self):
+        job = self.jobs.load(JID)
+        return job["gate_rounds"], job["review_rounds"], job["total_rounds"]
+
+    def test_config_stop_and_retry_in_the_same_round(self):
+        gate_argv = ["atta", "gate", JID, "--worktree", str(self.wt), "--base",
+                     "origin/develop"]
+        self.assertEqual(self.now(), {"action": "run", "argv": gate_argv})
+        result = self.gate()
+        self.assertEqual((result.passed, result.kind), (False, "config"))
+        self.assertEqual(self.now(), self.run_action("advance", JID, "needs-human"))
+        job = machine.advance(self.jobs, JID, "needs-human")
+        self.assertEqual(self.counters(), (0, 0, 0))
+        self.assertEqual(job["gate_failure"]["kind"], "config")
+        self.assertEqual(self.now()["action"], "wait")
+        self.checks(OK_CHECKS)
+        action = self.now()
+        self.assertEqual(action, self.run_action("advance", JID, "gate", then=[gate_argv]))
+        machine.advance(self.jobs, JID, "gate")
+        self.assertEqual(self.counters(), (0, 0, 0))
+        result = self.gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertEqual(result.report, self.dir / "round-1" / "checks.md")
+        self.assertNotIn("gate_failure", self.jobs.load(JID))
+        self.assertEqual(self.now(), self.run_action("advance", JID, "review"))
+        self.assertEqual(self.counters(), (0, 0, 0))
+
+    def test_code_fail_still_spends_a_round(self):
+        self.checks(json.dumps({"checks": [{"name": "rojo",
+                                            "run": "git no-existe-este-comando"}]}))
+        result = self.gate()
+        self.assertEqual((result.passed, result.kind), (False, "code"))
+        self.assertEqual(self.now(), self.run_action("advance", JID, "build"))
+        machine.advance(self.jobs, JID, "build")
+        self.assertEqual(self.counters(), (1, 0, 1))
 
 
 class HandoffRecoveryTest(NextBase):

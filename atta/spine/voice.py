@@ -59,6 +59,18 @@ def rounds_exhausted(rounds: int) -> str:
     return f"{word} {noun} sin pasar el filtro. Te lo dejamos a ti."
 
 
+def gate_config_stopped(reason: str | None = None) -> str:
+    """T9: the Filtro stopped on a configuration failure (gate → needs-human, no round spent)."""
+    text = ("El Filtro se detuvo por configuración: esto lo corrige una persona en el checkout "
+            "principal, no la Cortadora, y no gasta ronda.")
+    return f"{text} {reason}" if reason else text
+
+
+def gate_config_retry() -> str:
+    """T9: the configuration is fixed; the Filtro runs again in the same round."""
+    return "La configuración ya está lista: el Filtro vuelve a correr en la misma ronda."
+
+
 def reina_approved(pr: int) -> str:
     return f"La Reina aprobó el PR #{pr} (APPROVE)."
 
@@ -127,7 +139,13 @@ def for_transition(job: dict, frm: str, to: str, integration_branch: str = "deve
     if frm == "intake" and to == "rejected":
         return intake_rejected(job["issue"])
     if frm == "gate" and to == "needs-human":
+        failure = job.get("gate_failure")
+        if isinstance(failure, dict) and failure.get("kind") == "config":
+            reason = failure.get("reason")
+            return gate_config_stopped(reason if isinstance(reason, str) else None)
         return rounds_exhausted(job["gate_rounds"])
+    if frm == "needs-human" and to == "gate":
+        return gate_config_retry()
     if frm == "approve" and to == "merging":
         return reina_approved(job["pr"])
     if frm == "merging" and to == "merged":

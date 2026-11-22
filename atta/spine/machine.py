@@ -7,6 +7,10 @@ like the stages that wait for a person, does not hold a `concurrency` slot (flow
 `needs-human → awaiting-merge` (L31): `atta handoff` retakes a job that a handoff escalated when
 the Reina's archived APPROVE still holds, the PR is open against the integration branch and
 HEAD is still the commit that passed merge-checks (flow.cmd_handoff checks all of it).
+
+`needs-human → gate` (T9): the Filtro stopped on a configuration failure (job.json
+`gate_failure.kind == "config"`, written by gate.run_gate) and a person fixed it; the gate runs
+again in the same round. Like every move into gate, it changes no counter.
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ TRANSITIONS = {
     "approve": ("merging", "awaiting-merge", "needs-human"),
     "merging": ("merged", "needs-human"),
     "awaiting-merge": ("merged", "needs-human"),
-    "needs-human": ("build", "rejected", "awaiting-merge"),
+    "needs-human": ("build", "rejected", "awaiting-merge", "gate"),
     "merged": (),
     "rejected": (),
 }
@@ -47,6 +51,12 @@ ROUND_COUNTERS = {"gate": "gate_rounds", "review": "review_rounds"}
 
 class Refused(Exception):
     """An illegal transition. Nothing was written."""
+
+
+def gate_config_stop(job: dict) -> bool:
+    """True when the job's last Filtro run failed on configuration (T9)."""
+    failure = job.get("gate_failure")
+    return isinstance(failure, dict) and failure.get("kind") == "config"
 
 
 def check(job: dict, to: str) -> None:
@@ -63,6 +73,11 @@ def check(job: dict, to: str) -> None:
         raise Refused(
             f"Transición ilegal en {job['id']}: {frm} → {to}. "
             f"Desde {frm} solo se puede ir a: {', '.join(exits)}."
+        )
+    if frm == "needs-human" and to == "gate" and not gate_config_stop(job):
+        raise Refused(
+            f"El job {job['id']} no vuelve de needs-human a gate: el Filtro solo se retoma "
+            "cuando lo detuvo una falla de configuración."
         )
     # K13: total_rounds is never reset; once another round would exceed the cap,
     # the only way out of the rework loop is needs-human.

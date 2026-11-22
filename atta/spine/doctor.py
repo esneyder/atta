@@ -11,8 +11,10 @@ Checks, in order (each one catches a stumble of the real runs, odd/tasks/f2-colo
 - the project root is a git repo, `atta/config.json` loads and validates (missing: ⚠, defaults),
   `atta/checks.json` has at least one check (without checks the Filtro always fails);
 - with a `sgconfig.yml`, the `ast-grep` (or `sg`) binary on the PATH (⚠: the Filtro fails);
-- remote `origin`, `origin/<integration_branch>` (`git ls-remote --heads`), and the main checkout
-  is not behind it (⚠; L31: the Filtro reads checks.json from this checkout);
+- remote `origin`, `origin/<integration_branch>` (`git ls-remote --heads`), the main checkout is
+  on that branch (✗ otherwise, T9: on `main` the Filtro reads an empty checks.json; same hint as
+  the Filtro: «Atta lee checks.json y las reglas desde develop. Corre: git switch develop») and
+  not behind it (⚠; L31: the Filtro reads checks.json from this checkout);
 - gh (`github.command()`, so $ATTA_GH works): installed, logged in, the active account sees the
   repository (`gh repo view --json name`), and every Atta label of the config exists
   (`gh label list`; L31: a missing `atta:needs-review`). `--no-github` skips them (⚠);
@@ -246,6 +248,11 @@ def _git(r: Report, root: Path, is_repo: bool, branch: str) -> None:
     r.ok(f"{remote} existe: ahí integra Atta")
     head = _proc(["git", "rev-parse", "--abbrev-ref", "HEAD"], root)
     current = head.stdout.strip() if head is not None and head.returncode == 0 else "HEAD"
+    if current != branch:
+        shown = "HEAD suelto" if current == "HEAD" else current
+        r.fail(f"el checkout principal está en «{shown}», no en {branch}",
+               gate.branch_hint(branch))
+        return
     known = _proc(["git", "cat-file", "-e", f"{sha}^{{commit}}"], root)
     ancestor = None
     if known is not None and known.returncode == 0:

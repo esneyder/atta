@@ -188,7 +188,7 @@ approve ──► merging ──► merged  (gh pr merge contra develop)
 | `approve` | `merging`, `awaiting-merge`, `needs-human` |
 | `merging` | `merged`, `needs-human` |
 | `awaiting-merge` | `merged`, `needs-human` |
-| `needs-human` | `build`, `rejected`, `awaiting-merge` (solo con `atta handoff`, sección 8.2) |
+| `needs-human` | `build`, `rejected`, `awaiting-merge` (solo con `atta handoff`, sección 8.2), `gate` (solo si el Filtro se detuvo por configuración, sección 9) |
 | `merged`, `rejected` | — (terminales) |
 
 Cualquier otra transición se rechaza con código de salida `2` y **no modifica** ni `job.json` ni
@@ -572,6 +572,27 @@ Una transición ilegal se rechaza sin tocar nada:
 Transición ilegal en 12-agregar-exportacion-a-csv: build → merged. Desde build solo se puede ir a: gate, needs-human.
 (código de salida 2)
 ```
+
+Si el Filtro falla por **configuración** (`KIND: config` en `checks.md`: `atta/checks.json` sin
+checks o inválido, falta un shell o `ast-grep`, o el checkout principal no está en `develop`), no
+es culpa de la Cortadora: `atta next` manda el job a `needs-human` **sin gastar ronda**. Corriges
+la configuración en el checkout principal y `atta next` vuelve a correr el Filtro en la misma
+ronda:
+
+```powershell
+atta gate 12-agregar-exportacion-a-csv --worktree .worktrees/12-agregar-exportacion-a-csv --base origin/develop
+#   → El Filtro no pasó: el checkout principal está en «main»; Atta lee checks.json y las reglas desde develop. Corre: git switch develop
+atta next 12-agregar-exportacion-a-csv
+#   → {"action": "run", "argv": ["atta", "advance", "12-agregar-exportacion-a-csv", "needs-human"]}
+atta advance 12-agregar-exportacion-a-csv needs-human
+#   → El Filtro se detuvo por configuración: esto lo corrige una persona en el checkout principal, no la Cortadora, y no gasta ronda. El checkout principal está en «main»; …
+git switch develop
+atta next 12-agregar-exportacion-a-csv
+#   → {"action": "run", "argv": ["atta", "advance", "12-agregar-exportacion-a-csv", "gate"], "then": [["atta", "gate", "12-agregar-exportacion-a-csv", "--worktree", "…", "--base", "origin/develop"]]}
+```
+
+Mientras el problema siga, `atta next` espera (`wait`) con el motivo. Una falla de **código**
+(`KIND: code`) sigue como siempre: vuelve a `build` y gasta una ronda.
 
 ---
 
@@ -1009,6 +1030,14 @@ El Filtro decide si una rama está en condiciones de ser revisada (y, antes del 
 
 ### Qué hace, en orden
 
+0. **Configuración** (falla de tipo `config`, la arregla una persona): el checkout principal está
+   en `develop` (si existe `develop` local u `origin/develop`; si no: «El checkout principal está en
+   «main»; Atta lee checks.json y las reglas desde develop. Corre: git switch develop»),
+   `atta/checks.json` se puede leer, es válido y tiene checks, y el shell de cada check está en el
+   `PATH`. También son `config` las reglas de `ast-grep` sin el binario o que no pasan sus propios
+   tests. Una falla `config` no corre nada más y nunca gasta ronda. Todo lo demás (rutas
+   protegidas, worktree sucio, alcance, hallazgos de `ast-grep`, un check que falla o vence) es
+   `code`.
 1. **Valida la base** (`--base`): rechaza refs vacías, que empiecen con `-`, que no existan, que sean
    el mismo commit que `HEAD`, que no compartan historia o que ya contengan a `HEAD`. Así nadie puede
    ocultar el diff.
@@ -1067,7 +1096,9 @@ Base: `<sha de la base>`
 ```
 
 Si falla, `## Checks` incluye el código de salida, la duración y las últimas 80 líneas del check que
-falló.
+falló, y la tercera línea dice el tipo de falla: `KIND: config` (la corrige una persona; el reporte
+suma `## Configuración`) o `KIND: code` (la corrige la Cortadora). Un `checks.md` sin `KIND:` (de
+un Atta anterior) cuenta como `code`.
 
 ---
 
@@ -1399,6 +1430,7 @@ cambia nada; revisa, en orden:
 | Python de Atta con pip | `⚠`: para actualizar usa `pipx` o un Python con pip |
 | Repo git, `atta/config.json` válido, `atta/checks.json` con al menos un check | `✗`: sin checks el Filtro siempre falla (sección 4.2) |
 | Remoto `origin` y `origin/develop` | `✗`: Atta integra solo en `develop`; créala en `origin` |
+| Checkout principal en `develop` | `✗`: «Atta lee checks.json y las reglas desde develop. Corre: git switch develop» (en `main` el Filtro lee otro `checks.json`) |
 | Checkout principal al día con `origin/develop` | `⚠`: `git pull --ff-only origin develop` (el Filtro lee `checks.json` de ahí) |
 | `gh` instalado, con sesión y con acceso al repo (`gh repo view`) | `✗`: `gh auth login`, o `gh auth switch -u <usuario>` a la cuenta con acceso |
 | Labels de Atta en el repo (incluida `atta:needs-review`) | `✗`: corre `atta init` en tu terminal (crea las que faltan) |
@@ -1442,7 +1474,9 @@ Corrige lo marcado con ✗ antes de correr /atta.
 | En un checkout de Atta, PowerShell no reconoce `atta` | Sin el comando global, usa el lanzador con prefijo: `.\atta <comando>` |
 | PowerShell: «Falta una expresión después del operador unario '-'» | Se copió el guion de una lista: el comando empieza en `atta` |
 | `./atta.sh: Permission denied` | `chmod +x atta.sh` |
-| El Filtro falla con «no tiene checks» | `atta/checks.json` está vacío a propósito (`atta doctor` lo marca): agrega los checks del proyecto |
+| El Filtro falla con «no tiene checks» | `atta/checks.json` está vacío a propósito (`atta doctor` lo marca): agrega los checks del proyecto. Si en `origin/develop` sí tiene checks, el checkout principal está en otra rama (p. ej. `main`): `git switch develop` |
+| El Filtro falla con «El checkout principal está en «main»…» | Atta lee `checks.json` y las reglas del checkout principal: corre `git switch develop` ahí |
+| Un job quedó en `needs-human` por una falla de configuración del Filtro (`KIND: config`) | No gastó ronda. Corrige lo que dice `checks.md` en el checkout principal (nunca le pidas a la Cortadora que toque `atta/`) y corre `/atta run`: el Filtro vuelve a correr en la misma ronda |
 | El Filtro rechaza `--base` | La base no existe, es igual a `HEAD` o no comparte historia: usa `origin/develop` tras un `git fetch` |
 | «el worktree tiene cambios sin commitear» | Commitea o descarta los cambios del worktree antes de correr el Filtro |
 | `atta comment` dice que el archivo no es UTF-8 | Guárdalo en UTF-8 (en PowerShell 5: `Set-Content -Encoding utf8`) |

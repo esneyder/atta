@@ -54,6 +54,8 @@ class GateFixture(TempDirMixin):
         self.main = self.tmp / "main"
         self.main.mkdir()
         git(self.main, "init", "-q")
+        # T9: the main checkout is on the integration branch, as Atta expects.
+        git(self.main, "checkout", "-q", "-b", "develop")
         write(self.main / "atta" / "checks.json", checks_json([check("ok", OK)]))
         write(self.main / "atta" / "config.json", "{}\n")
         write(self.main / ".github" / "workflows" / "ci.yml", "on: push\n")
@@ -128,7 +130,8 @@ class GateTests(GateFixture, unittest.TestCase):
         result = self.run_gate()
         self.assertFalse(result.passed)
         lines = self.report().splitlines()
-        self.assertEqual(lines[:3], ["GATE: FAIL", f"COMMIT: {sha}", ""])
+        self.assertEqual(lines[:4], ["GATE: FAIL", f"COMMIT: {sha}", "KIND: code", ""])
+        self.assertEqual(result.kind, "code")
         self.assertEqual(len(sha), 40)
 
     # S7: fail-fast
@@ -253,20 +256,26 @@ class GateTests(GateFixture, unittest.TestCase):
         with self.assertRaises(gate.GateError):
             self.run_gate(kind="otra")
 
-    def test_missing_checks_json_raises_spanish(self):
+    # T9: a missing or invalid checks.json is a config FAIL (for a person), never a GateError.
+    def test_missing_checks_json_is_a_config_fail_in_spanish(self):
         (self.main / "atta" / "checks.json").unlink()
-        with self.assertRaises(gate.GateError) as ctx:
-            self.run_gate()
-        self.assertIn("No se pudo leer", str(ctx.exception))
+        result = self.run_gate()
+        self.assertFalse(result.passed)
+        self.assertEqual(result.kind, "config")
+        self.assertTrue(result.summary.startswith("El Filtro no pasó: no se pudo leer "),
+                        result.summary)
+        self.assertEqual(self.report().splitlines()[2], "KIND: config")
 
-    def test_invalid_checks_json_raises(self):
+    def test_invalid_checks_json_is_a_config_fail(self):
         write(self.main / "atta" / "checks.json", "{no es json")
-        with self.assertRaises(gate.GateError):
-            self.run_gate()
+        result = self.run_gate()
+        self.assertEqual((result.passed, result.kind), (False, "config"))
+        self.assertIn("checks.json no es JSON válido", result.summary)
         write(self.main / "atta" / "checks.json",
               json.dumps({"checks": [{"name": "x", "run": "y", "shell": {"default": "zsh9"}}]}))
-        with self.assertRaises(gate.GateError):
-            self.run_gate()
+        result = self.run_gate()
+        self.assertEqual((result.passed, result.kind), (False, "config"))
+        self.assertIn("shell «zsh9» no soportado", result.summary)
 
     def test_bad_base_ref_raises(self):
         with self.assertRaises(gate.GateError):
@@ -377,6 +386,9 @@ class AstGrepTests(AstGrepFixture, unittest.TestCase):
         self.assertIn("No se corrieron: ast-grep no pasó.", self.section("Checks"))
         self.assertFalse((self.wt / "marca.txt").exists())
         self.assertTrue(self.report().startswith("GATE: FAIL\n"))
+        # T9: a missing binary is for a person.
+        self.assertEqual(result.kind, "config")
+        self.assertEqual(self.report().splitlines()[2], "KIND: config")
 
     def test_rule_tests_run_first_and_their_failure_blocks(self):
         self.add_rules(tests=True)
@@ -435,6 +447,8 @@ class AstGrepTests(AstGrepFixture, unittest.TestCase):
         self.assertIn("- ✗ `src/feature.py:1` no-print (error): no uses print",
                       self.section("ast-grep"))
         self.assertFalse((self.wt / "marca.txt").exists())
+        # T9: a finding is the Cortadora's to fix.
+        self.assertEqual(result.kind, "code")
 
     def test_warnings_inform_and_never_block(self):
         self.add_rules()
@@ -558,10 +572,10 @@ class TieredChecksTests(GateFixture, unittest.TestCase):
 
     def test_invalid_when_is_a_config_error(self):
         self.set_checks([{**check("x", OK), "when": "risk>=alto"}])
-        with self.assertRaises(gate.GateError) as ctx:
-            self.gate("low")
-        self.assertIn("checks[0].when debe ser «always» o «risk>=medium»", str(ctx.exception))
-        self.assertFalse((self.round / "checks.md").exists())
+        result = self.gate("low")
+        self.assertEqual((result.passed, result.kind), (False, "config"))
+        self.assertIn("checks[0].when debe ser «always» o «risk>=medium»", result.summary)
+        self.assertEqual(self.report().splitlines()[2], "KIND: config")
 
 
 class FreshnessTests(GateFixture, unittest.TestCase):
@@ -573,7 +587,6 @@ class FreshnessTests(GateFixture, unittest.TestCase):
         subprocess.run(["git", "init", "-q", "--bare", str(self.origin)], check=True,
                        capture_output=True)
         git(self.main, "remote", "add", "origin", str(self.origin))
-        git(self.main, "branch", "develop", self.base)
         git(self.main, "push", "-q", "origin", "develop")
 
     def test_up_to_date_is_noted(self):
@@ -606,7 +619,7 @@ class FreshnessTests(GateFixture, unittest.TestCase):
 
     def test_local_ahead_is_up_to_date(self):
         head = git(self.wt, "rev-parse", "HEAD")
-        git(self.main, "branch", "-f", "develop", head)
+        git(self.main, "merge", "-q", "--ff-only", head)
         result = self.run_gate()
         self.assertTrue(result.passed, result.summary)
         self.assertIn("está al día con origin/develop", self.section("Frescura"))
@@ -625,6 +638,165 @@ class FreshnessTests(GateFixture, unittest.TestCase):
         self.assertTrue(result.passed, result.summary)
         self.assertNotIn("## Frescura", self.report("merge-checks"))
         self.assertNotIn("Avisos", result.summary)
+
+
+BRANCH_MSG = ("El checkout principal está en «main»; Atta lee checks.json y las reglas desde "
+              "develop. Corre: git switch develop")
+
+
+class FailureKindTests(GateFixture, unittest.TestCase):
+    """T9 (S2, S10): a FAIL is `config` (for a person) or `code` (for the Cortadora)."""
+
+    def marker_check(self):
+        return check("marca", py("open('marca.txt', 'w').write('x')"))
+
+    def test_empty_checks_is_config_with_header_and_section(self):
+        self.set_checks([])
+        result = self.run_gate()
+        self.assertEqual((result.passed, result.kind), (False, "config"))
+        self.assertEqual(result.summary, "El Filtro no pasó: atta/checks.json no tiene checks. "
+                                         "Agrega los checks reales del proyecto en "
+                                         "atta/checks.json.")
+        lines = self.report().splitlines()
+        self.assertEqual(lines[0], "GATE: FAIL")
+        self.assertTrue(lines[1].startswith("COMMIT: "))
+        self.assertEqual(lines[2:4], ["KIND: config", ""])
+        section = self.section("Configuración")
+        self.assertIn("- atta/checks.json no tiene checks.", section)
+        self.assertIn(gate.CONFIG_NOTE, section)
+        self.assertIn("No hay checks configurados.", self.section("Checks"))
+
+    def test_main_checkout_on_another_branch_is_config_with_the_exact_message(self):
+        git(self.main, "checkout", "-q", "-b", "main")
+        self.set_checks([self.marker_check()])
+        result = self.run_gate()
+        self.assertEqual((result.passed, result.kind), (False, "config"))
+        self.assertEqual(result.summary,
+                         "El Filtro no pasó: el checkout principal está en «main»; Atta lee "
+                         "checks.json y las reglas desde develop. Corre: git switch develop")
+        self.assertIn(f"- {BRANCH_MSG}", self.section("Configuración"))
+        self.assertEqual(self.report().splitlines()[2], "KIND: config")
+        self.assertIn("No se corrieron: la configuración del Filtro no está lista.",
+                      self.section("Checks"))
+        self.assertFalse((self.wt / "marca.txt").exists())
+
+    def test_wrong_branch_is_listed_before_an_empty_checks_json(self):
+        git(self.main, "checkout", "-q", "-b", "main")
+        self.set_checks([])
+        result = self.run_gate()
+        self.assertIn("el checkout principal está en «main»", result.summary)
+        section = self.section("Configuración")
+        self.assertLess(section.index(BRANCH_MSG), section.index("atta/checks.json no tiene"))
+
+    def test_detached_main_checkout_is_config(self):
+        git(self.main, "checkout", "-q", "--detach")
+        result = self.run_gate()
+        self.assertEqual(result.kind, "config")
+        self.assertIn("el checkout principal está en «HEAD suelto»", result.summary)
+
+    def test_without_the_integration_branch_the_branch_is_not_checked(self):
+        git(self.main, "checkout", "-q", "-b", "otra")
+        git(self.main, "branch", "-q", "-D", "develop")
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIsNone(result.kind)
+        self.assertNotIn("KIND:", self.report())
+
+    def test_origin_integration_branch_alone_is_enough_to_check(self):
+        origin = self.tmp / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True,
+                       capture_output=True)
+        git(self.main, "remote", "add", "origin", str(origin))
+        git(self.main, "push", "-q", "origin", "develop")
+        git(self.main, "fetch", "-q", "origin")
+        git(self.main, "checkout", "-q", "-b", "main")
+        git(self.main, "branch", "-q", "-D", "develop")
+        result = self.run_gate()
+        self.assertEqual(result.kind, "config")
+        self.assertIn(BRANCH_MSG, self.report())
+
+    def test_missing_shell_is_config_and_runs_nothing(self):
+        self.set_checks([self.marker_check()])
+        shell = gate.select_shell(SHELL)
+        with mock.patch.object(gate, "_find_shell", return_value=None):
+            result = self.run_gate()
+        self.assertEqual((result.passed, result.kind), (False, "config"))
+        self.assertEqual(result.summary, f"El Filtro no pasó: no se encontró el shell "
+                                         f"«{shell}» en el PATH de este equipo (check «marca»).")
+        self.assertFalse((self.wt / "marca.txt").exists())
+
+    def test_config_comes_before_protected_paths(self):
+        write(self.wt / "atta" / "config.json", '{"max_rounds": 99}\n')
+        self.commit_wt()
+        self.set_checks([])
+        result = self.run_gate()
+        self.assertEqual(result.kind, "config")
+        self.assertIn("M `atta/config.json`", self.section("Protected paths"))
+
+    def test_code_failures(self):
+        self.set_checks([check("tests", FAIL)])
+        self.assertEqual(self.run_gate().kind, "code")
+        self.set_checks([check("ok", OK)])
+        write(self.wt / "sucio.txt", "x\n")
+        self.assertEqual(self.run_gate().kind, "code")
+        self.assertEqual(self.report().splitlines()[2], "KIND: code")
+        (self.wt / "sucio.txt").unlink()
+        write(self.wt / "atta" / "config.json", '{"max_rounds": 99}\n')
+        self.commit_wt()
+        self.assertEqual(self.run_gate().kind, "code")
+
+    def test_report_kind_reads_the_header_and_legacy_fail_is_code(self):
+        path = self.tmp / "checks.md"
+        cases = [("GATE: FAIL\nCOMMIT: abc\nKIND: config\n\n## Summary\n", "config"),
+                 ("GATE: FAIL\nCOMMIT: abc\nKIND: code\n", "code"),
+                 ("GATE: FAIL\nCOMMIT: abc\n\n## Summary\n", "code"),
+                 ("GATE: FAIL\n", "code"),
+                 ("GATE: PASS\nCOMMIT: abc\n", None)]
+        for text, want in cases:
+            with self.subTest(text=text):
+                path.write_text(text, encoding="utf-8")
+                self.assertEqual(gate.report_kind(path), want)
+        self.assertIsNone(gate.report_kind(self.tmp / "no-existe.md"))
+
+    def test_config_problems_is_empty_when_ready_and_lists_what_breaks(self):
+        self.assertEqual(gate.config_problems(self.main, self.cfg), [])
+        self.set_checks([])
+        self.assertEqual(gate.config_problems(self.main, self.cfg),
+                         ["atta/checks.json no tiene checks. Agrega los checks reales del "
+                          "proyecto en atta/checks.json."])
+        self.set_checks([check("ok", OK)])
+        git(self.main, "checkout", "-q", "-b", "main")
+        self.assertEqual(gate.config_problems(self.main, self.cfg), [BRANCH_MSG])
+        git(self.main, "checkout", "-q", "develop")
+        write(self.main / "sgconfig.yml", "ruleDirs:\n  - rules\n")
+        write(self.main / "rules" / "r.yml", "id: r\n")
+        with mock.patch.object(gate, "_which", return_value=None):
+            problems = gate.config_problems(self.main, self.cfg)
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("Hay reglas de ast-grep (sgconfig.yml) y no "
+                                               "encontré el binario"), problems)
+
+    def test_job_json_records_a_config_stop_and_any_other_outcome_clears_it(self):
+        from atta.spine import store
+        jobs = store.JobStore(self.tmp / "jobs")
+        job = jobs.create(12, "job", None, self.cfg)
+        self.round = jobs.job_dir(job["id"]) / "round-1"
+        self.set_checks([])
+        result = gate.run_gate(self.main, self.wt, job["id"], self.round, base_ref=self.base,
+                               config=self.cfg)
+        self.assertEqual(result.kind, "config")
+        self.assertEqual(jobs.load(job["id"])["gate_failure"], {
+            "kind": "config", "reason": "atta/checks.json no tiene checks. Agrega los checks "
+                                        "reales del proyecto en atta/checks.json."})
+        self.set_checks([check("tests", FAIL)])
+        gate.run_gate(self.main, self.wt, job["id"], self.round, base_ref=self.base,
+                      config=self.cfg)
+        self.assertNotIn("gate_failure", jobs.load(job["id"]))
+        # merge-checks never touches it.
+        self.set_checks([])
+        gate.run_gate(self.main, self.wt, job["id"], self.round, base_ref=self.base,
+                      config=self.cfg, kind="merge-checks")
+        self.assertNotIn("gate_failure", jobs.load(job["id"]))
 
 
 class ShellCommandTests(unittest.TestCase):
