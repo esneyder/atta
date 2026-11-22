@@ -5,7 +5,9 @@ MERGED and "headRefOid" from --match-head-commit), "fail" ({"<cmd> <sub>": "stde
 that command exit 1), "calls" (appended: {"argv": [...], "stdin": text|null}), "repo_labels"
 (optional list of label names that exist in the repository: when present, `issue edit
 --add-label X` fails like GitHub if X is not in it, and `label create X` adds it).
-Without "repo_labels" every label exists and `label create` is unsupported (exits 1).
+Without "repo_labels" every label exists and `label create` / `label list` are unsupported (exit 1).
+`gh --version`, `auth status` (logged in unless "fail" has "auth status") and `repo view`
+("repo" object, default {"name": "r"}) are what `atta doctor` asks.
 Only the subcommands Atta uses are implemented; anything else exits 1.
 """
 
@@ -70,7 +72,16 @@ def main(argv):
         return 1
     fields = _opt(argv, "--json")
 
-    if key == "api user":
+    if key == "--version":
+        sys.stdout.write("gh version 2.0.0 (fakegh)\nhttps://github.com/cli/cli\n")
+    elif key == "auth status":
+        sys.stdout.write("github.com\n  Logged in to github.com account "
+                         f"{state.get('user', 'operador')}\n")
+    elif key == "repo view":
+        _out(_pick(state.get("repo", {"name": "r"}), fields))
+    elif key == "label list" and "repo_labels" in state:
+        _out([_pick({"name": n}, fields) for n in state["repo_labels"]])
+    elif key == "api user":
         sys.stdout.write(state.get("user", "operador") + "\n")
     elif key == "issue list":
         label = _opt(argv, "--label")

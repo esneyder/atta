@@ -19,7 +19,7 @@ allowed only:
   `protected_paths` (relative to that worktree) and outside any `.git` folder; or
 - for exactly one of the job artifacts inside `<root>/atta/jobs/<id>/` of an active job:
   `intake.md`, `spec.md`, `spec-review.md`, `decision.md`, `feedback-<x>.md`,
-  `round-<N>/build.md`, `round-<N>/review-<x>.md`.
+  `round-<N>/build.md`, `round-<N>/review-<x>.md`, `round-<N>/refute.md`, `round-<N>/refute-retry.md`.
 - outside the project, inside the system temp folder (`tempfile.gettempdir()` plus `$TEMP`,
   `$TMP`, `$TMPDIR` when absolute; a folder that is a drive root, the user's home or an ancestor
   of it never counts), e.g. the orchestrator's scratchpad. Project rules win when the project
@@ -170,7 +170,7 @@ DEFAULT_DENY_COMMANDS = (
 _ARTIFACT = re.compile(
     r"(?:intake|spec|spec-review|decision)\.md"
     r"|feedback-[0-9a-z][0-9a-z-]*\.md"
-    r"|round-[1-9][0-9]{0,3}/(?:build|review-[0-9a-z][0-9a-z-]*)\.md"
+    r"|round-[1-9][0-9]{0,3}/(?:build|refute(?:-retry)?|review-[0-9a-z][0-9a-z-]*)\.md"
 )
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 _SUBST_DOLLAR = re.compile(r"\$\(((?:[^()]|\([^()]*\))*)\)")

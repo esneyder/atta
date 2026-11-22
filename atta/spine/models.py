@@ -8,7 +8,7 @@ each agent template's `{{model:Tn}}` (role → default tier). A project may over
 
 Resolution (L18): a role override replaces the tier model of that role; escalation (high risk,
 round ≥ 3, the router's T3) always goes to the T3 model; the Vigía never shares the Guía's model
-when another tier allows it. `atta next`, `atta init` and `atta models` all resolve here.
+when another tier allows it, and the Refutador (G4) never shares the model of a reviewer it judges. `atta next`, `atta init` and `atta models` all resolve here.
 
 `atta models [--runtime R]` prints the table; `set <Tn> <modelo>`, `set --role <rol> <modelo>`,
 `unset --role <rol>` and `reset` change `atta/config.json` (atomically, keeping every other key
@@ -34,9 +34,10 @@ RUNTIME = "claude-code"
 RUNTIMES = ("claude-code",)
 TIERS = ("T0", "T1", "T2", "T3")
 ROLES = ("exploradora", "guia", "vigia", "cortadora", "jardinera-code", "jardinera-resilience",
-         "jardinera-ux", "jardinera-ui", "soldado", "reina")
+         "jardinera-ux", "jardinera-ui", "soldado", "rastreador", "refutador", "reina")
 ESCALATING = ("cortadora", "soldado", "reina")
-# Fallback order for the Vigía when its model equals the Guía's (L8).
+# Fallback order for the Vigía when its model equals the Guía's (L8), and for the Refutador
+# when its model equals a reviewer's it judges (G4).
 AVOID_ORDER = ("T2", "T1", "T3", "T0")
 SHORT_NAMES = {"claude-code": ("haiku", "sonnet", "opus")}
 FULL_ID = {"claude-code": re.compile(r"claude-[a-z0-9.-]+")}
@@ -172,16 +173,23 @@ class Table:
         return model
 
     def resolve(self, role: str, *, tier: str | None = None, escalate: bool = False,
-                avoid: str | None = None) -> str:
+                avoid=None, floor: str | None = None) -> str:
         """Model for `role`: escalation → T3; else the role override, else the model of `tier`
-        (the router's) or of the role's default tier; `avoid` is skipped when another tier allows."""
+        (the router's) or of the role's default tier. `avoid` (one model or a collection) is
+        skipped for the first tier of AVOID_ORDER whose model is not avoided, when one exists."""
         if escalate:
             return self.tier_model("T3")
-        model = self.roles.get(role) or self.tier_model(tier or self.tier_of(role))
-        if avoid is None or model != avoid:
+        base = tier or self.tier_of(role)
+        if floor in TIERS and TIERS.index(floor) > TIERS.index(base):
+            base = floor  # never weaker than what this role judges
+        model = self.roles.get(role) or self.tier_model(base)
+        avoided = {avoid} if isinstance(avoid, str) else set(avoid or ())
+        if model not in avoided:
             return model
         for other in AVOID_ORDER:
-            if self.tiers.get(other) and self.tiers[other] != avoid:
+            if floor in TIERS and TIERS.index(other) < TIERS.index(floor):
+                continue
+            if self.tiers.get(other) and self.tiers[other] not in avoided:
                 return self.tiers[other]
         return model
 
@@ -219,10 +227,12 @@ def table(cfg: dict | None = None, runtime: str = RUNTIME,
     return Table(tiers, entry.get("roles") or {}, role_tiers(templates), base, runtime)
 
 
-def resolve(role: str, cfg: dict | None, *, escalate: bool = False, avoid: str | None = None,
-            tier: str | None = None, runtime: str = RUNTIME) -> str:
+def resolve(role: str, cfg: dict | None, *, escalate: bool = False, avoid=None,
+            tier: str | None = None, floor: str | None = None,
+            runtime: str = RUNTIME) -> str:
     """Model for `role` with the project's config (see Table.resolve)."""
-    return table(cfg, runtime).resolve(role, tier=tier, escalate=escalate, avoid=avoid)
+    return table(cfg, runtime).resolve(role, tier=tier, escalate=escalate, avoid=avoid,
+                                       floor=floor)
 
 
 # ---------------------------------------------------------------- writing
@@ -328,7 +338,8 @@ def render(root: Path, tab: Table) -> str:
     out += ["  ".join([*(c.ljust(w) for c, w in zip(r, widths)), r[3]]) for r in rows]
     out += [
         _tiers_line(tab),
-        "Las Jardineras y el Soldado corren en el tier que les asigna el router; "
+        "Las Jardineras, el Soldado y el Rastreador corren en el tier que les asigna el "
+        "router; "
         "un modelo por rol lo reemplaza.",
         "Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o "
         "`atta models set --role <rol> <modelo>`.",

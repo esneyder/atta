@@ -70,6 +70,12 @@ SETTINGS = (
            "listo y tú mergeas. none = nunca mergea (siempre PR; lo que escribe atta init), "
            "low = solo riesgo bajo, medium = bajo y medio, high = todo (por defecto en el "
            "código).", choices=config.RISK_LEVELS),
+    _entry("scope.enforce", "bool",
+           "Si el diff sale de FILES: del spec, o una ronda de corrección toca archivos que los "
+           "hallazgos no nombran, el Filtro falla (sí) o solo avisa en checks.md (no)."),
+    _entry("scope.max_files", "int",
+           "Archivos cambiados a partir de los cuales el Filtro avisa que el diff es grande "
+           "(nunca falla por esto)."),
     _entry("guard.deny_commands", "list",
            "Comandos de despliegue que el guard bloquea (reemplaza la lista de fábrica).",
            default=list(DEFAULT_DENY_COMMANDS)),
@@ -78,6 +84,10 @@ SETTINGS = (
            editable=False, how=EDIT_BY_HAND),
     _entry("routing", "summary",
            f"Reviewers por riesgo y superficie (solo lectura: {EDIT_BY_HAND}).",
+           editable=False, how=EDIT_BY_HAND),
+    _entry("risk_rules", "summary",
+           "Reglas que suben el riesgo según el diff: datos, seguridad, contratos, "
+           f"concurrencia, entrega y código sin test (solo lectura: {EDIT_BY_HAND}).",
            editable=False, how=EDIT_BY_HAND),
     _entry("models", "summary", "Modelo de cada tier y rol (solo lectura: usa atta models).",
            default={}, editable=False, how="usa atta models"),

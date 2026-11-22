@@ -1,5 +1,5 @@
 {
-  "_comment": "Placeholder de Atta: sin checks el Filtro siempre falla. Agrega los checks reales del proyecto en orden (ver docstring de atta/spine/gate.py). Ejemplo: {\"name\": \"tests\", \"run\": \"python -m unittest\", \"shell\": {\"windows\": \"pwsh\", \"default\": \"bash\"}}",
+  "_comment": "Placeholder de Atta: sin checks el Filtro siempre falla. Agrega los checks reales del proyecto en orden (ver docstring de atta/spine/gate.py). Ejemplo: {\"name\": \"tests\", \"run\": \"python -m unittest\", \"shell\": {\"windows\": \"pwsh\", \"default\": \"bash\"}}. Un check lento puede llevar \"when\": \"risk>=medium\": con riesgo efectivo bajo el Filtro lo saltea (merge-checks siempre corre todo).",
   "checks": [],
   "timeout_s": 900
 }

@@ -76,6 +76,23 @@ class EntryTest(CliBase):
         self.assertIn("Crea un job", out)
         self.assertIn("--jobs-dir", out)
 
+    def test_help_of_f3_commands_describes_f3_behavior(self):
+        """S11: the help of gate, doctor, route and advance names what F3 added."""
+        wanted = {
+            "gate": ("ast-grep", "FILES:", "risk>=medium", "KIND: config",
+                     "sube el riesgo", "2 si el Filtro está mal configurado"),
+            "doctor": ("sgconfig.yml", "en develop", "Rastreador"),
+            "route": ("el Filtro puede volver a planear",),
+            "advance": ("needs-human → gate", "tercera REVISE"),
+        }
+        for name, phrases in wanted.items():
+            with self.subTest(command=name):
+                code, out, err = self.atta(name, "--help")
+                self.assertEqual((code, err), (0, ""))
+                text = " ".join(out.split())
+                for phrase in phrases:
+                    self.assertIn(phrase, text)
+
     def test_no_command_is_usage_error(self):
         code, out, err = self.atta()
         self.assertEqual(code, 2)
@@ -240,6 +257,30 @@ class AdvanceBudgetInProcessTest(TempDirMixin, unittest.TestCase):
         self.assertEqual(self.files(), before)
 
 
+class SpecReviseCapTest(CliBase):
+    """S9: `atta advance` enforces the Vigía's REVISE cap and speaks the reason in Spanish."""
+
+    def test_third_revise_refuses_spec_and_needs_human_speaks(self):
+        self.create()
+        self.ok("advance", JID, "spec")
+        for _ in range(2):
+            self.ok("advance", JID, "spec-review")
+            self.ok("advance", JID, "spec")
+        self.ok("advance", JID, "spec-review")
+        before = self.files()
+        code, out, err = self.atta("advance", JID, "spec")
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(err, f"La Vigía ya pidió cambios al spec de {JID} 2 veces (REVISE); la "
+                              "vez 3 no vuelve a spec. Desde spec-review solo se puede ir a "
+                              "build o needs-human.\n")
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.ok("advance", JID, "needs-human"),
+                         "La Vigía pidió cambios al spec tres veces (REVISE) y sigue sin estar "
+                         "listo. Te lo dejamos a ti: revisa spec-review.md y deja tu feedback "
+                         "con /atta.\n")
+        self.assertEqual((self.job()["spec_reviews"], self.job()["total_rounds"]), (3, 0))
+
+
 class RouteTest(CliBase):
     def setUp(self):
         super().setUp()
@@ -249,8 +290,8 @@ class RouteTest(CliBase):
         self.write_intake("DECISION: ACCEPT\nRISK: high\nSURFACES: ui\n\nResumen.\n")
         code, out, err = self.atta("route", JID)
         self.assertEqual((code, err), (0, ""))
-        self.assertEqual(out, f"El router asignó 5 reviewers a {JID} (riesgo alto, spec-review sí): "
-                              "code T2, security T3, resilience T2, ux T2, ui T1.\n")
+        self.assertEqual(out, f"El router asignó 6 reviewers a {JID} (riesgo alto, spec-review sí): "
+                              "code T2, security T3, resilience T2, rastreador T3, ux T2, ui T1.\n")
         job = self.job()
         expected = router.plan("high", ["ui"], config.load_config())
         self.assertEqual(job["agents"], expected)

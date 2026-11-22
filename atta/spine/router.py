@@ -6,6 +6,9 @@ The tables live in `config.json` under `routing`, so routing changes without cod
     routing.surfaces.<name>  = {"<risk>": [reviewer, ...], ...}
     reviewer                 = {"reviewer": str, "lenses": [str, ...], "tier": "T0".."T3"}
 
+The default table adds the adversarial `rastreador` (lens `adversarial`, T3; agent
+`atta-rastreador`, file `review-rastreador.md`) to the `high` risk plan only (G6).
+
 Tiers are logical (resolved to models in F4). A surface reviewer already present
 from the risk table is not added twice; the risk table's entry wins.
 """

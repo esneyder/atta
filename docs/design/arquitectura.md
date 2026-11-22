@@ -1,6 +1,8 @@
 # Atta: arquitectura y diseño
 
-> Estado: diseño, sin código todavía. Este documento define cómo funciona Atta y por qué.
+> Estado: F1, F2 y F3 implementadas; F3.x pendiente (K7 y el issue `atta:ratchet` de K1, §8). Lo que
+> describe F4 en adelante (matriz completa de §5, Pi en §6.2) sigue siendo diseño. Este documento
+> define cómo funciona Atta y por qué.
 > El orden de construcción está en [`docs/PLAN.md`](../PLAN.md) y la identidad en [`brand/README.md`](../../brand/README.md).
 > Los tokens de contrato (`VERDICT: PASS`, `GATE: FAIL`…) y los identificadores de código van en inglés; todo lo demás, en español.
 
@@ -53,13 +55,17 @@ determinista. Los modelos de lenguaje solo hacen lo que el código no puede: juz
 | **Filtro** | `gate` | Corre los checks del proyecto. **Es un script, no un agente** | `checks.md` | `GATE: PASS\|FAIL` |
 | **Jardineras** | `reviewer-code`, `reviewer-ux`, `reviewer-ui` | Revisan calidad y detalle con lentes 4R (reliability, readability, resilience) | `review-<lente>.md` | `VERDICT: PASS\|CHANGES` |
 | **Soldado** | `reviewer-security` | Defiende el hormiguero: lente de riesgo y seguridad | `review-security.md` | `VERDICT: PASS\|CHANGES` |
+| **Rastreador** | `rastreador` | Solo riesgo alto. Revisor adversarial: intenta romper el cambio siguiendo a cada caller, writer y reader de lo que tocó (G6) | `review-rastreador.md` | `VERDICT: PASS\|CHANGES` |
+| **Refutador** | `refutador` | Antes de abrir otra ronda por un `CHANGES` con hallazgos blocker o major, contrasta cada hallazgo con el diff real; no agrega hallazgos (G4) | `refute.md` | `REFUTE: UPHELD\|REFUTED\|PARTIAL` |
 | **Reina** | `approver` | Decide qué entra: aprueba o escala a un humano. En `low`, regla determinista | `decision.md` | `APPROVE\|ESCALATE` |
-| **Cultivadora** | `ratchet` | Convierte los `PREVENTION:` de las Jardineras en lecciones de `atta/memory/` o en reglas ast-grep | `atta/memory/lessons.md` | — (lo ejecuta la espina al cerrar el job) |
+| **Cultivadora** | `ratchet` | Cosecha los `PREVENTION:` de las revisiones con hallazgos (`CHANGES` o `PASS` con menores) que el Refutador no descartó: actualiza una lección parecida o crea una nueva (G9) | `atta/memory/lessons.md` | — (es código de la espina, no un agente: corre al cerrar el merge y con `atta memory harvest <job>`) |
 
 Reglas del contrato:
 
 - Toda revisión `CHANGES` trae al menos un hallazgo estructurado y una línea `PREVENTION:`. Si no, la
   espina la rechaza.
+- Un `CHANGES` con solo hallazgos menores no abre ronda: la Reina decide y los menores quedan como
+  notas. Si el Refutador refuta todos los blocker y major (`REFUTED`), tampoco hay ronda.
 - Cada artefacto termina con una sección `## Summary` corta, que es lo que leen el dashboard y el PR.
 - Los mensajes del bot van firmados por rol: «La Exploradora aceptó el issue #12 (riesgo bajo).»,
   «El Filtro no pasó: 2 tests fallan.», «La Reina lo deja en tus manos: …».
@@ -99,13 +105,14 @@ Reglas del contrato:
 | Pieza | Responsabilidad | Naturaleza |
 |---|---|---|
 | **Cola** | Issues con label `atta`; dependencias `BLOCKED-BY: #n`; migraciones serializadas | Externa + script |
-| **Espina** (`atta/bin/job.py`) | Máquina de estados, único escritor de `job.json`, transiciones legales, contadores, `events.jsonl` | Determinista |
-| **Filtro** (`atta/bin/gate.py`) | Corre `atta/checks.json` desde el checkout principal, ast-grep, alcance del diff | Determinista |
-| **Router** (`atta/bin/route.py`) | Resuelve modelo, tier, thinking y tools para cada etapa | Determinista |
-| **CLI** (`atta`) | Punto de entrada: `atta run`, `atta queue`, `atta status`, `atta board` | Determinista |
+| **Espina** (`atta/spine/machine.py`, `store.py`, `next.py`) | Máquina de estados, único escritor de `job.json`, transiciones legales, contadores, `events.jsonl`; `atta next` decide el próximo paso | Determinista |
+| **Filtro** (`atta/spine/gate.py`, `scope.py`, `risk.py`) | Corre `atta/checks.json` y las reglas de `sgconfig.yml` desde el checkout principal; alcance del diff, frescura y riesgo por reglas | Determinista |
+| **Router** (`atta/spine/router.py`, `models.py`) | Plan de reviewers por riesgo y superficies; modelo y tier de cada rol | Determinista |
+| **Cultivadora** (`atta/spine/memory.py`) | Lecciones de `atta/memory/lessons.md` y las relevantes para cada prompt | Determinista |
+| **CLI** (`atta`, `atta/spine/cli.py`) | Punto de entrada: `atta init`, `atta doctor`, `atta queue`, `atta next`, `atta gate`, `atta status`, `atta memory`, entre otros | Determinista |
 | **Adaptador de runtime** | Lanza un agente, espera, recoge el artefacto y el uso | Código por runtime |
 | **Agentes** | Los roles de la sección 3, uno por archivo de definición | LLM |
-| **Dashboard** («el hormiguero») | `python atta/bin/board.py`: sirve los jobs en JSON y una vista con `brand/tokens.css` | Determinista |
+| **Dashboard** («el hormiguero») | `atta-board` o `python atta/bin/board.py`: sirve los jobs en JSON y una vista con `brand/tokens.css` | Determinista |
 
 ### 4.2 Pipeline
 
@@ -154,10 +161,19 @@ Los modelos concretos se eligen con el benchmark; la tabla define la **política
 | Jardinera de código | T1 (1 lente: reliability) | T2 (+ readability) | T2 (4R) | `read,grep,find` + `git diff/log` |
 | Soldado | — | T2 si toca seguridad | T3 siempre | `read,grep,find` |
 | Jardinera de resiliencia | — | — | T2 | `read,grep,find` |
+| Rastreador | — | — | T3 | `read,grep,find` + `git diff/log` |
+| Refutador (si hay `CHANGES` grave) | T1, nunca bajo el revisor que juzga | ídem | T3 | `read,grep,find` + `git diff/log` |
 | Jardineras UX / UI | T1/T0 si hay UI | T2/T1 si hay UI | T2/T1 si hay UI | lectura + navegador CLI |
 | Reina | **determinista** | T2 | T3 | `read,grep,find` |
 
-**Cantidad de lentes por riesgo:** `low` = 1 Jardinera, `medium` = 2 lentes, `high` = 4R más el Soldado.
+**Cantidad de lentes por riesgo** (tabla `routing` de fábrica): `low` = 1 Jardinera (reliability),
+`medium` = 1 Jardinera con 2 lentes (reliability y readability), `high` = Jardinera de código con 2
+lentes, resiliencia, Soldado (T3) y Rastreador (T3). Las superficies suman reviewers: `ui` agrega UX y
+UI, `security` agrega al Soldado. El riesgo que cuenta es el efectivo: si el Filtro lo sube por reglas
+(G3), el router vuelve a planear los reviewers.
+
+**Refutador:** nunca corre con un modelo más débil que el del revisor más fuerte que juzga, evita
+repetir el modelo de esos revisores cuando hay otro y en riesgo alto sube a T3.
 
 **Escalera por intento:** si la ronda N falla (`GATE: FAIL` o `VERDICT: CHANGES`), la ronda N+1 sube a la
 Cortadora un tier (`T1 → T2 → T3`) y la última ronda siempre usa T3. Lo caro solo se paga cuando lo barato
@@ -243,30 +259,52 @@ determinista de la espina cuando sea mecanizable.**
 
 | # | Mecanismo | Debilidad en Kernia | Cómo entra en Atta | Tipo |
 |---|---|---|---|---|
-| K1 | **Ratchet**: cada `CHANGES` trae `PREVENTION:`; la lección generalizada va al checklist o, si es mecánica, a una regla ast-grep o un test | Depende de que el agente cumpla | `PREVENTION:` obligatorio; la espina rechaza la revisión sin él. La Cultivadora acumula las prevenciones en `atta/memory/lessons.md` (+ Engram) y abre un issue `atta:ratchet` para convertirlas en regla | Script + prompt |
-| K2 | **Checklist de bugs**: releer el diff arriba-abajo y abajo-arriba; intentar producir la falla, no confirmar el happy path; sad path por comportamiento nuevo; bugfix empieza con test rojo; autorización del lado del servidor; cada límite de un guard fijado por un test; mutation-check | Muy largo y de dominio: diluye | `atta/checklists/bug-core.md` corto (≈30 ítems genéricos) + `atta/checklists/project.md` generado por repo. Lo usan la Cortadora (autorrevisión) y la Jardinera de código | Prompt |
-| K3 | **DoD**: no se termina sin tests corridos y revisión independiente | Solo prueba que el comando se intentó; se apaga con texto | El Filtro corre los checks él mismo y exige `GATE: PASS` más todas las revisiones. Se suma: test nuevo en el diff cuando hay código nuevo (heurística configurable). Nunca hay opt-out por texto | Script |
-| K4 | **ast-grep** como guardarraíl | Nunca bloquea | `atta/rules/` + `ast-grep scan` dentro del Filtro, **bloqueante**; destino natural de K1 | Script |
+| K1 | **Ratchet**: cada `CHANGES` trae `PREVENTION:`; la lección generalizada va al checklist o, si es mecánica, a una regla ast-grep o un test | Depende de que el agente cumpla | `PREVENTION:` obligatorio; la espina rechaza la revisión sin él. La Cultivadora (`atta/spine/memory.py`) cosecha las prevenciones al cerrar el merge en `atta/memory/lessons.md` como temas que evolucionan (G9). **Pendiente (F3.x):** abrir un issue `atta:ratchet` para convertir una lección mecanizable en regla; hoy no se abre ninguno | Script + prompt |
+| K2 | **Checklist de bugs**: releer el diff arriba-abajo y abajo-arriba; intentar producir la falla, no confirmar el happy path; sad path por comportamiento nuevo; bugfix empieza con test rojo; autorización del lado del servidor; cada límite de un guard fijado por un test; mutation-check | Muy largo y de dominio: diluye | Núcleo corto («## Core checklist») dentro de los prompts de los revisores, con «grep a callers y writers antes de afirmar» y «no trabajar de memoria con APIs de terceros»; los revisores juzgan correctness y requisitos declarados, sin inventar trabajo | Prompt |
+| K3 | **DoD**: no se termina sin tests corridos y revisión independiente | Solo prueba que el comando se intentó; se apaga con texto | El Filtro corre los checks él mismo y exige `GATE: PASS` más todas las revisiones. Un diff de código sin tests cambiados sube el riesgo (categoría `untested` de G3, configurable en `risk_rules`). Nunca hay opt-out por texto | Script |
+| K4 | **ast-grep** como guardarraíl | Nunca bloquea | Reglas del `sgconfig.yml` del checkout principal (nunca las de la rama) + `ast-grep scan` sobre los archivos del diff dentro del Filtro; solo `severity: error` **bloquea**, los warnings informan. Con `testConfigs`, las reglas pasan sus propios tests antes. Sin `sgconfig.yml` el paso se saltea; con reglas y sin binario falla como configuración. Destino natural de K1 | Script |
 | K5 | **Cola con grafo de dependencias**: `blocked_by`, máximo paralelo, migraciones solas, dependientes de un fallo se saltan, ciclos detectados | Orquestado por agentes | La Exploradora extrae `BLOCKED-BY: #n` y `MIGRATION: yes/no`; `atta queue` respeta dependencias y serializa migraciones | Script |
 | K6 | **Merge seguro**: CI verde en el SHA exacto | Lo ejecuta un agente | `job merge` usa `gh pr merge --match-head-commit` con el SHA que pasó el Filtro tras la sincronización | Script |
-| K7 | **Diff antes/después de sincronizar** | Manual | Tras sincronizar con `develop`, la espina compara `origin/develop...HEAD` antes y después; si cambió algo fuera de conflictos triviales, vuelve a revisión | Script |
+| K7 | **Diff antes/después de sincronizar** | Manual | **Pendiente (F3.x), no implementado:** tras sincronizar con `develop`, la espina comparará `origin/develop...HEAD` antes y después; si cambió algo fuera de conflictos triviales, vuelve a revisión | Script |
 | K8 | **Alcance del diff**: nada filtrado ni perdido | Checklist de agente | El spec declara `FILES:` (rutas o globs); el Filtro falla o avisa si el diff sale del alcance o supera el límite de archivos | Script |
 | K9 | **Reglas de planificación**: plan solo si hay varios PR, migración, cambio de contrato o proveedor nuevo; PR de pocos archivos; sección de fallos | Prompt | La Exploradora divide issues grandes en sub-issues enlazados (K5); `spec.md` exige `## Failure paths`; tope de archivos validado por K8 | Prompt + script |
 | K10 | **Revisor del plan con contexto limpio**: verifica contra el código real, corrige errores de hecho, deja preguntas de producto | — | La Vigía, con modelo distinto de la Guía: `VERDICT: READY\|REVISE` antes de construir | Agente |
 | K11 | **Reglas de ticket**: contexto y no prescripción, 2-4 criterios de aceptación, dependencias explícitas | — | Plantilla de issue `atta` en `.github/ISSUE_TEMPLATE/`; sin criterios → `NEEDS-INFO` | Prompt + plantilla |
 | K12 | **El revisor siempre decide**; `CHANGES` sin hallazgos es un fallo | — | La espina rechaza `VERDICT: CHANGES` sin al menos un hallazgo estructurado | Script |
 | K13 | **Presupuestos separados** de rondas de fix y de sincronización | Revisión y CI comparten contador | `review_rounds`, `gate_rounds`, `sync_attempts` separados + `max_total_rounds` | Script |
-| K14 | **Preflight de frescura** | Solo aviso | `atta run` falla si el checkout está desfasado de `origin/develop` o sucio en rutas de Atta | Script |
+| K14 | **Preflight de frescura** | Solo aviso | Aviso, no bloqueo: el Filtro escribe `## Frescura` (con `git ls-remote`, sin fetch) si el checkout principal está atrás de `origin/develop`, y `atta doctor` lo marca con ⚠. Lo que sí bloquea es un checkout principal fuera de `develop`: falla de configuración (`KIND: config`) que va a `needs-human` sin gastar ronda | Script |
 | K15 | **Denylist de comandos** | Huecos (`bash -c`, `sed` evade hooks de edición) | Guard con denylist generalizada (sección 7); la defensa real es la postcondición de la espina | Script |
-| K16 | **Plantilla de PR**: Summary / Changes / Test plan con checkboxes | — | `atta/templates/pr-body.md`, llenada por la espina desde `spec.md` y `build.md` | Script |
+| K16 | **Plantilla de PR**: Summary / Changes / Test plan con checkboxes | — | `atta/templates/pr-body.md`, llenada por la espina desde `build.md`; la lista de cambios se contrasta con `git diff` y una diferencia queda como advertencia en el PR | Script |
 | K17 | **Formato de incidente**: síntoma, causa raíz, evidencia, radio de impacto, categoría, fix | — | Plantilla opcional de issue tipo bug; la Exploradora la usa para clasificar riesgo | Plantilla |
 | K18 | **Índice de dominio** | Específico de Kernia | `atta/memory/context.md` (mapa del proyecto) que el instalador genera y leen Guía y Cortadora | Prompt |
 
 **No se trasladan:** las personas y su rotación, la obligación de persona (no agrega garantías), reglas de
 estilo de Rails/Tailwind, Kamal, Linear.
 
-**Pendiente:** revisar la DoD completa en `CLAUDE.md` de Kernia y su carpeta `rules/` de ast-grep antes
-de implementar estos mecanismos.
+**Revisión de la DoD de Kernia: hecha** (`odd/tasks/f3-calidad.md`, L4). Hallazgo principal: el CI de
+Kernia nunca corre ast-grep; de ahí salieron las decisiones de K4 (paso bloqueante, solo `severity:
+error`, JSON y no exit code), los checks por riesgo y el núcleo corto de K2.
+
+### 8.1 Mecanismos de gentle-ai implementados en F3
+
+El backlog completo está en [`docs/PLAN.md`](../PLAN.md) §6.1. En F3 entraron:
+
+| # | Mecanismo | Cómo funciona hoy |
+|---|---|---|
+| G3 | Riesgo por reglas | `risk.py` clasifica el diff en datos, seguridad, contratos, concurrencia, entrega/CI y cambios sin test (`risk_rules`, el proyecto puede reemplazarlas). Cuando el Filtro pasa, el riesgo efectivo es el máximo entre el de la Exploradora, el de las reglas y el previo: nunca baja. Si sube, el router vuelve a planear los reviewers, y la entrega (`auto_merge_up_to`) usa el riesgo efectivo |
+| G4 | Refutador | Un `CHANGES` con hallazgos blocker o major pasa por el Refutador antes de abrir ronda. `REFUTED` → approve; `UPHELD` o `PARTIAL` → build; un archivo mal formado se pide una vez más y después va a `needs-human` |
+| G5 | Corrección acotada | Desde la ronda 2, el Filtro compara los cambios de la ronda con los hallazgos de la anterior (`## Alcance`). Es aviso; con `scope.enforce: true` falla |
+| G6 | Rastreador | Revisor adversarial T3, solo en riesgo alto (tabla `routing` de fábrica). `atta doctor` avisa si un `routing` propio no lo incluye en `high` |
+| G9 | Memoria como tema que evoluciona | La Cultivadora actualiza la lección más parecida (similitud ≥ 0,6) o crea una; la cosecha es idempotente |
+| G10 | Reporte estructurado de la Cortadora | La espina valida `build.md` (`## Summary`, `## Changes`, `## Tests`, `## Acceptance` con ✓/✗, `## Risks`); si falta algo, un reintento en la misma ronda y después `needs-human` |
+| G11 | Criterios citados textualmente | La plantilla de la Guía copia tal cual los criterios del issue y exige `FILES:` |
+| G12 | Presupuesto de contexto | Los prompts de la Guía, la Cortadora y los revisores reciben solo las lecciones relevantes para las rutas del diff (o de `FILES:`), con un tope de 1.500 caracteres |
+
+También de F3: el Filtro separa las fallas de **configuración** (`KIND: config`: sin checks, sin shell,
+sin ast-grep, reglas que no pasan sus tests, checkout fuera de `develop`) de las de **código**. Una de
+configuración va a `needs-human` sin gastar ronda y, cuando una persona la corrige, `atta next` vuelve a
+correr el Filtro en la misma ronda. Los checks con `when: "risk>=medium"` se saltean en riesgo bajo. La
+Vigía tiene tope: la tercera `REVISE` va a `needs-human`.
 
 ---
 
@@ -289,7 +327,8 @@ paralelismo; cadena larga de roles secuenciales; re-revisión tras cada rebase. 
    `atta:needs-human` en vez de seguir iterando.
 7. **Medir.** El dashboard muestra tiempo por etapa y p50/p90 por riesgo. Meta inicial: un issue `low` de
    punta a punta en minutos, no en horas; el umbral exacto sale del benchmark.
-8. **Re-revisar solo si algo cambió** (K7): una sincronización limpia no dispara otra ronda.
+8. **Re-revisar solo si algo cambió** (K7, pendiente de F3.x): una sincronización limpia no dispara
+   otra ronda.
 
 ---
 
@@ -369,7 +408,9 @@ allá del modelo de gentle (allí la entrega es humana): es una decisión explí
   - `job merge` verifica que la base del PR sea `develop` (`gh pr view --json baseRefName`) y usa
     `--match-head-commit` con el SHA que pasó el Filtro.
   - El guard bloquea `git push` a ramas fuera de `atta/*` y cualquier `gh pr merge` de un agente.
-  - Preflight de `atta run`: `develop` existe en `origin` y el checkout está al día.
+  - El Filtro y `atta doctor` fallan si el checkout principal no está en `develop` (de ahí salen
+    `checks.json` y las reglas); `atta doctor` verifica que `develop` exista en `origin` y avisa si el
+    checkout está atrás.
 - El instalador recomienda proteger `main` en GitHub como defensa adicional.
 
 ---
