@@ -34,3 +34,13 @@ Rama: `feat/f3-calidad` (apilada sobre `feat/f2-colonia`, PR #9). Diseño: `docs
 - **L1** (usuario): «ya hice /atta run, continuemos con lo que falta para implementar toda la fabrica»
 - **L2** Corrida 4 cerrada: issue #5 → handoff → merge humano del PR #6 → `/atta run` cerró el issue (CLOSED/COMPLETED, labels quitadas, comentario «El PR #6 quedó mergeado en develop. El issue #5 queda resuelto.», rama borrada). PR de F2: #9 (`feat/f2-colonia → develop`). PR #3 del README ya estaba mergeado.
 - **L3** Orden: T1 y la revisión de la DoD de Kernia (`Kernia/app/CLAUDE.md`, `rules/`) en paralelo; luego T2 → T3 → T4/T5 → T6/T7 → T8.
+- **L4** Revisión de Kernia (`CLAUDE.md` DoD :427-437, `sgconfig.yml`, 10 reglas ast-grep, `architecture_test.rb`). Hallazgo principal: el CI de Kernia nunca corre ast-grep (`config/ci.rb:3-19`); las reglas que de verdad se aplican son copias en `architecture_test.rb`. Decisiones para F3:
+  - T5 ast-grep: sin `sgconfig.yml` o `rules/` vacío → paso `skipped`; con reglas y sin binario → falla (y `atta doctor` lo avisa); validar reglas con `ast-grep test --skip-snapshot-tests` si hay `testConfigs`; `ast-grep scan --json=stream` solo sobre archivos del diff; bloquear solo `severity: error`, warnings informan; parsear JSON, no confiar en el exit code.
+  - T5 tests por riesgo (DoD :434): `checks.json` admite checks marcados `scope: touched|full`; riesgo efectivo low corre los `touched` y medium/high corre todo (S2 velocidad).
+  - T5 «bugfix empieza en rojo» (:410): para issues tipo bug, el Filtro corre los tests nuevos contra la base y espera que fallen (opcional por config).
+  - T5 tamaño del diff (:520): aviso cuando el diff supera N archivos (config), sin bloquear.
+  - T7 revisores con alcance acotado (:433): «correctness y requisitos declarados, sin inventar trabajo»; núcleo corto del checklist con «grep antes de afirmar» y «no trabajar de memoria con APIs de terceros».
+  - T7 plantilla de PR (K16) verificada contra el diff real (`git diff --stat` vs tabla de cambios).
+  - T4 ratchet: una lección termina como regla ast-grep **con su test** (`valid`/`invalid`) o como test de arquitectura cuando un patrón no alcanza; la lección se guarda donde el próximo la ve.
+  - T6 Rastreador: prompt «grep al llamado, no al loop que tocaste»: ante una validación/raise/escritura nueva, revisar todos los callers/writers.
+  - Pendiente, no se adopta ahora: runner genérico de tests de arquitectura (son tests normales del proyecto); ratchet de allowlists «solo encoge» queda como idea para F3.x.
