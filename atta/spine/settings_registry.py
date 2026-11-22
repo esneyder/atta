@@ -60,11 +60,16 @@ SETTINGS = (
     _entry("labels.queue", "str", "Label que pone un issue en la cola de Atta."),
     _entry("labels.needs_info", "str", "Label cuando Atta espera respuesta del autor."),
     _entry("labels.needs_human", "str", "Label cuando un job necesita a un humano."),
+    _entry("labels.needs_review", "str",
+           "Label cuando el PR está listo y te toca revisarlo y mergearlo (awaiting-merge).",
+           default=config.OPTIONAL_LABELS["needs_review"]),
     _entry("protected_paths", "list",
            "Rutas que los agentes no pueden tocar (el Filtro y el guard las vigilan)."),
     _entry("delivery.auto_merge_up_to", "enum",
-           "Riesgo máximo que Atta mergea sola; por encima deja el PR listo para ti "
-           "(none = siempre PR).", choices=config.RISK_LEVELS),
+           "Riesgo máximo que Atta mergea sola en develop; por encima la Reina deja el PR "
+           "listo y tú mergeas. none = nunca mergea (siempre PR; lo que escribe atta init), "
+           "low = solo riesgo bajo, medium = bajo y medio, high = todo (por defecto en el "
+           "código).", choices=config.RISK_LEVELS),
     _entry("guard.deny_commands", "list",
            "Comandos de despliegue que el guard bloquea (reemplaza la lista de fábrica).",
            default=list(DEFAULT_DENY_COMMANDS)),

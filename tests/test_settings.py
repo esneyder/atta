@@ -16,7 +16,8 @@ from atta.spine.settings_registry import Setting
 
 KEYS = ("integration_branch", "forbidden_branches", "branch_prefix", "max_rounds",
         "max_total_rounds", "concurrency", "merge_method", "labels.queue", "labels.needs_info",
-        "labels.needs_human", "protected_paths", "delivery.auto_merge_up_to",
+        "labels.needs_human", "labels.needs_review", "protected_paths",
+        "delivery.auto_merge_up_to",
         "guard.deny_commands", "prices_usd_per_mtok", "routing", "models")
 NOT_KEY = "La clave «foo» no existe; mira las claves con `atta settings`."
 FLAG = Setting("experimental.flag", "bool", False, "Bandera de prueba.")
@@ -60,6 +61,11 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(by["delivery.auto_merge_up_to"].choices,
                          ("none", "low", "medium", "high"))
         self.assertEqual(by["delivery.auto_merge_up_to"].default, "high")
+        # S13: the description explains the table none/low/medium/high.
+        for word in ("none", "low", "medium", "high", "PR"):
+            self.assertIn(word, by["delivery.auto_merge_up_to"].description)
+        self.assertEqual(by["labels.needs_review"].default, "atta:needs-review")
+        self.assertEqual(by["labels.needs_review"].type, "str")
         self.assertEqual(by["guard.deny_commands"].default, list(guard.DEFAULT_DENY_COMMANDS))
         for key in ("prices_usd_per_mtok", "routing", "models"):
             self.assertFalse(by[key].editable, key)
@@ -136,6 +142,24 @@ class SetTest(SettingsBase):
                               "high → low.\n— Atta\n")
         self.assertEqual(self.stored()["delivery"], {"auto_merge_up_to": "low"})
         self.assertEqual(self.ok("settings", "get", "delivery.auto_merge_up_to"), "low\n")
+
+    def test_delivery_threshold_set_get_and_reset(self):
+        for value in ("none", "medium"):
+            self.ok("settings", "set", "delivery.auto_merge_up_to", value)
+            self.assertEqual(self.ok("settings", "get", "delivery.auto_merge_up_to"),
+                             value + "\n")
+        self.ok("settings", "reset", "delivery.auto_merge_up_to")
+        self.assertEqual(self.ok("settings", "get", "delivery.auto_merge_up_to"), "high\n")
+
+    def test_needs_review_label_get_and_set(self):
+        self.assertEqual(self.ok("settings", "get", "labels.needs_review"),
+                         "atta:needs-review\n")
+        out = self.ok("settings", "set", "labels.needs_review", "revisar")
+        self.assertEqual(out, "Atta cambió labels.needs_review en atta/config.json: "
+                              "atta:needs-review → revisar.\n— Atta\n")
+        self.assertEqual(self.stored()["labels"]["needs_review"], "revisar")
+        self.assertEqual(self.stored()["labels"]["queue"], "atta")
+        self.assertEqual(self.ok("settings", "get", "labels.needs_review"), "revisar\n")
 
     def test_set_nested_label_keeps_the_other_labels(self):
         self.ok("settings", "set", "labels.queue", "colonia")

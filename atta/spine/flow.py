@@ -24,6 +24,16 @@ Resumable merge (L22): `atta merge` on a job in `merging` asks GitHub. MERGED at
 in this stage's merge-checks.md → merge.md, merged and the post-merge steps; OPEN → continue
 from the merge step (sync and Filtro again only if HEAD moved); CLOSED or another sha →
 needs-human. On a merged job it is a no-op. `atta next` in `merging` runs it again.
+
+Delivery by risk (S13): above `delivery.auto_merge_up_to` `atta next` runs `atta handoff` instead
+of `atta merge`: the same identity checks, sync with develop, `merge-checks` and push as a merge
+(so the person reviews exactly what lands), then the PR leaves draft, the Reina comments on it,
+the issue gets `labels.needs_review` and the job goes `approve → awaiting-merge`. Any failure →
+needs-human. `atta merge` on `awaiting-merge` asks GitHub: OPEN → keeps waiting (exit 0, no
+change); MERGED into the integration branch → merge.md DONE with the merged head sha (not
+necessarily the Filtro's: the person may push fixes) and the same post-merge steps, also removing
+`labels.needs_review`; CLOSED, another base or another head → needs-human. `awaiting-merge` holds
+no `concurrency` slot; `atta queue` lists it as `resume` so `/atta run` checks it each pass.
 """
 
 from __future__ import annotations
@@ -36,7 +46,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import branches, gate, github, intake, issue, machine, voice
+from . import branches, config, gate, github, intake, issue, machine, voice
 from .board import summary as artifact_summary
 from .github import GhError
 from .ids import InvalidId
@@ -51,7 +61,11 @@ DECISION_FILE = "decision.md"
 MERGE_FILE = "merge.md"
 DEFAULT_MERGE_METHOD = "merge"  # local fallback for config key `merge_method`
 WAITING_HUMAN = frozenset({"needs-info", "needs-human"})
-RUNNING = frozenset(machine.STAGES) - machine.TERMINAL - WAITING_HUMAN
+AWAITING_MERGE = "awaiting-merge"
+# Stages that do not hold a `concurrency` slot: a person has the next move.
+NO_SLOT = WAITING_HUMAN | {AWAITING_MERGE}
+RUNNING = frozenset(machine.STAGES) - machine.TERMINAL - NO_SLOT
+_SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 class FlowError(RuntimeError):
@@ -164,7 +178,8 @@ def plan_queue(issues: list[dict], job_list: list[dict], cfg: dict,
     Jobs in running stages (not terminal, not waiting for a human) hold the `concurrency` slots,
     even when their issue left the queue; each `new` takes one. A needs-info job is `resume`
     (and takes a slot) only when `answered(number)` says the author answered the Exploradora;
-    otherwise it is `wait`. needs-human jobs are `hold`.
+    otherwise it is `wait`. needs-human jobs are `hold`. awaiting-merge jobs are `resume` without
+    taking a slot: `atta merge` checks whether the person merged the PR (S13).
     """
     cap = cfg["concurrency"]
     running = _running(job_list)
@@ -190,6 +205,9 @@ def plan_queue(issues: list[dict], job_list: list[dict], cfg: dict,
                 else:
                     row.update(action="wait", reason=f"el autor respondió, pero sin cupo: "
                                                      f"{running} de {cap} jobs corriendo.")
+            elif stage == AWAITING_MERGE:
+                row.update(action="resume", reason=f"espera que mergees el PR #{job.get('pr')}: "
+                                                   "toca atta merge.")
             elif stage in WAITING_HUMAN:
                 row.update(action="hold", reason=f"espera a una persona ({stage}).")
             else:
@@ -659,18 +677,21 @@ def _delete_remote_after_merge(root, jid: str, branch: str, cfg: dict) -> None:
             raise
 
 
-def _after_merge(args, cfg, job: dict, wt: Path | None, sha: str) -> list[str]:
+def _after_merge(args, cfg, job: dict, wt: Path | None, sha: str, closing: str | None = None,
+                 extra_labels: tuple = ()) -> list[str]:
     """Close the loop on GitHub after a merge (T11). Each step is isolated: a failure is a
-    warning and the next step still runs."""
+    warning and the next step still runs. `closing` replaces the Reina's closing text and
+    `extra_labels` are removed after the queue label (S13: the person's merge)."""
     warnings: list[str] = []
     number, pr, branch = job["issue"], job["pr"], job["branch"]
     integration, queue = cfg["integration_branch"], cfg["labels"]["queue"]
-    closing = github.sign("reina", voice.merged_issue(pr, integration, number))
+    body = github.sign("reina", closing or voice.merged_issue(pr, integration, number))
     _step(warnings, f"No se pudo comentar el cierre en el issue #{number}",
-          lambda: github.comment("issue", number, closing))
+          lambda: github.comment("issue", number, body))
     _step(warnings, f"No se pudo cerrar el issue #{number}", lambda: github.close_issue(number))
-    _step(warnings, f"No se pudo quitar la label {queue} del issue #{number}",
-          lambda: github.edit_label(number, "remove", queue))
+    for name in (queue, *extra_labels):
+        _step(warnings, f"No se pudo quitar la label {name} del issue #{number}",
+              lambda name=name: github.edit_label(number, "remove", name))
     _step(warnings, f"No se pudo borrar la rama remota {branch}",
           lambda: _delete_remote_after_merge(args.root, job["id"], branch, cfg))
     _step(warnings, f"No se pudo limpiar el worktree {wt} y la rama local {branch}",
@@ -679,15 +700,16 @@ def _after_merge(args, cfg, job: dict, wt: Path | None, sha: str) -> list[str]:
 
 
 def _finish_merge(args, cfg, jobs: JobStore, job: dict, wt: Path | None, sha: str,
-                  warnings: list[str] | None = None) -> int:
-    """GitHub merged `sha`: merge.md and `merging → merged` first, then the post-merge steps."""
+                  warnings: list[str] | None = None, *, line: str | None = None,
+                  closing: str | None = None, extra_labels: tuple = ()) -> int:
+    """GitHub merged `sha`: merge.md and `→ merged` first, then the post-merge steps."""
     jid = job["id"]
     warnings = list(warnings or [])
-    line = voice.merged(job["pr"], cfg["integration_branch"])
+    line = line or voice.merged(job["pr"], cfg["integration_branch"])
     _write_merge_md(jobs.job_dir(jid), "DONE", line, sha, warnings)
     job = machine.advance(jobs, jid, "merged")
     print(line)
-    warnings += _after_merge(args, cfg, job, wt, sha)
+    warnings += _after_merge(args, cfg, job, wt, sha, closing, extra_labels)
     if warnings:
         _write_merge_md(jobs.job_dir(jid), "DONE", line, sha, warnings)
         for warning in warnings:
@@ -729,7 +751,7 @@ def _gated_sha(jobs: JobStore, job: dict) -> str | None:
     if len(lines) < 2 or lines[0].strip() != "GATE: PASS" or not lines[1].startswith("COMMIT:"):
         return None
     sha = lines[1][len("COMMIT:"):].strip()
-    return sha if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha) else None
+    return sha if _SHA.fullmatch(sha) else None
 
 
 def _resume_merge(args, cfg, jobs: JobStore, job: dict) -> int:
@@ -787,6 +809,97 @@ def _resume_merge(args, cfg, jobs: JobStore, job: dict) -> int:
     return _finish_merge(args, cfg, jobs, job, wt, sha, warnings)
 
 
+def _escalate_review(jobs: JobStore, job: dict, reason: str, code: int, cfg: dict) -> int:
+    """needs-human from awaiting-merge: like any merge failure, and the review label goes."""
+    result = _escalate(jobs, job, reason, code, cfg)
+    review = config.label(cfg, "needs_review")
+    try:
+        github.edit_label(job["issue"], "remove", review)
+    except GhError as exc:
+        _err(f"Aviso: no se pudo quitar la label {review} del issue #{job['issue']}: {exc}")
+    return result
+
+
+def _await_merge(args, cfg, jobs: JobStore, job: dict) -> int:
+    """S13: the PR waits for a person. OPEN → keep waiting; MERGED into the integration branch →
+    finish like a merge of Atta's own, at the head GitHub merged; anything else → needs-human. A
+    failed read of the PR leaves the job as it was."""
+    jid = job["id"]
+    _check_refs(job, cfg)
+    number, integration = job["pr"], cfg["integration_branch"]
+    state = github.merge_state(number)
+    try:
+        _check_pr_identity(state, job["branch"], cfg)
+    except _MergeFailure as exc:
+        return _escalate_review(jobs, job, exc.reason, exc.code, cfg)
+    status = str(state.get("state") or "").upper()
+    if status == "OPEN":
+        print(voice.waiting_review(number))
+        return OK
+    if status == "MERGED":
+        head = state.get("headRefOid") or ""
+        if not (isinstance(head, str) and _SHA.fullmatch(head)):
+            return _escalate_review(jobs, job, f"El PR #{number} está mergeado en GitHub, pero "
+                                    "no pude leer el commit que se integró; revísalo.",
+                                    NEGATIVE, cfg)
+        print(f"El PR #{number} ya está mergeado en {integration}; la Reina cierra el ciclo de "
+              f"{jid}.")
+        wt = Path(job["worktree"]) if job.get("worktree") else None
+        return _finish_merge(args, cfg, jobs, job, wt, head,
+                             line=voice.human_merged(number, integration),
+                             closing=voice.human_merged_issue(number, integration, job["issue"]),
+                             extra_labels=(config.label(cfg, "needs_review"),))
+    reason = (f"El PR #{number} está cerrado en GitHub sin merge; la Reina no lo reabre."
+              if status == "CLOSED" else
+              f"El PR #{number} está en un estado inesperado en GitHub "
+              f"({status or 'desconocido'}); revísalo.")
+    return _escalate_review(jobs, job, reason, NEGATIVE, cfg)
+
+
+def _check_approved(jobs: JobStore, job: dict, command: str) -> None:
+    """Stage approve and a decision.md = APPROVE written during it (merge and handoff)."""
+    jid = job["id"]
+    if job["stage"] != "approve":
+        raise FlowError(f"El job {jid} está en {job['stage']}; {command} exige la etapa approve.")
+    if not _decision_approved(jobs.job_dir(jid)):
+        raise FlowError(f"La Reina no aprobó {jid}: decision.md debe empezar con APPROVE.")
+    if not _fresh(jobs.job_dir(jid) / DECISION_FILE, job):
+        raise FlowError(f"La decisión de la Reina es vieja: decision.md de {jid} es anterior a "
+                        "la etapa approve; hace falta una nueva.")
+
+
+def cmd_handoff(args, cfg, jobs: JobStore) -> int:
+    """S13: the job's risk is above auto_merge_up_to. Sync, Filtro and push like a merge, then
+    the PR is made ready, the Reina comments, the issue gets the review label and the job waits
+    in awaiting-merge for a person to merge it. Any failure → needs-human."""
+    job = jobs.load(args.job)
+    jid = job["id"]
+    if job["stage"] == AWAITING_MERGE:
+        print(f"El job {jid} ya espera tu merge en el PR #{job.get('pr')}.")
+        return OK
+    _check_approved(jobs, job, "handoff")
+    _check_refs(job, cfg)
+    wt = _worktree(job)
+    number, integration = job["pr"], cfg["integration_branch"]
+    risk = (job.get("intake") or {}).get("risk") or (job.get("agents") or {}).get("risk")
+    review = config.label(cfg, "needs_review")
+    print(voice.reina_approved(number))
+    try:
+        _sync_gate_push(args, cfg, jobs, job, wt)
+        pr = github.view_pr(number)
+        _check_pr(pr, job["branch"], cfg)
+        if pr.get("isDraft"):
+            github.ready_pr(number)
+        github.comment("pr", number, github.sign("reina", voice.handoff_comment(risk,
+                                                                              integration)))
+        github.edit_label(job["issue"], "add", review)
+    except _MERGE_ERRORS as exc:
+        return _escalate(jobs, job, *_failure(exc), cfg)
+    machine.advance(jobs, jid, AWAITING_MERGE)
+    print(voice.handoff_ready(number, risk, integration, job.get("pr_url")))
+    return OK
+
+
 def cmd_merge(args, cfg, jobs: JobStore) -> int:
     job = jobs.load(args.job)
     jid = job["id"]
@@ -795,13 +908,9 @@ def cmd_merge(args, cfg, jobs: JobStore) -> int:
         return OK
     if job["stage"] == "merging":
         return _resume_merge(args, cfg, jobs, job)
-    if job["stage"] != "approve":
-        raise FlowError(f"El job {jid} está en {job['stage']}; merge exige la etapa approve.")
-    if not _decision_approved(jobs.job_dir(jid)):
-        raise FlowError(f"La Reina no aprobó {jid}: decision.md debe empezar con APPROVE.")
-    if not _fresh(jobs.job_dir(jid) / DECISION_FILE, job):
-        raise FlowError(f"La decisión de la Reina es vieja: decision.md de {jid} es anterior a "
-                        "la etapa approve; hace falta una nueva.")
+    if job["stage"] == AWAITING_MERGE:
+        return _await_merge(args, cfg, jobs, job)
+    _check_approved(jobs, job, "merge")
     _check_refs(job, cfg)
     wt = _worktree(job)
     method = _merge_method(cfg)
@@ -838,7 +947,8 @@ def _guarded(func):
 
 
 def register(subparsers) -> None:
-    """Add queue, start, refresh, worktree, publish, comment, label and merge to the parser."""
+    """Add queue, start, refresh, worktree, publish, comment, label, handoff and merge to the
+    parser."""
     q = subparsers.add_parser("queue", help="Cola de issues abiertos con la label de Atta.",
                               description="Lista los issues abiertos con la label de la cola y "
                                           "qué hacer con cada uno (new, resume, wait, hold, "
@@ -901,6 +1011,21 @@ def register(subparsers) -> None:
     lb.add_argument("name", help="nombre de la label (p. ej. atta:needs-human)")
     lb.set_defaults(func=_guarded(cmd_label))
 
+    h = subparsers.add_parser("handoff", help="Deja el PR listo para que una persona lo mergee.",
+                              description="Entrega por riesgo (delivery.auto_merge_up_to): "
+                                          "exige etapa approve y un decision.md = APPROVE "
+                                          "escrito en esa etapa. Verifica el PR (base de "
+                                          "integración, rama atta/<id>), sincroniza con "
+                                          "origin/<integración>, corre el Filtro merge-checks y "
+                                          "empuja, como merge; luego saca el PR de borrador, la "
+                                          "Reina comenta en el PR, pone la label needs_review "
+                                          "(atta:needs-review) en el issue y el job pasa a "
+                                          "awaiting-merge. Nunca mergea. Cualquier fallo deja el "
+                                          "job en needs-human. Sale 0 si queda esperando, 1 si "
+                                          "no pasó, 2 si se rechaza.")
+    h.add_argument("job", help="id del job")
+    h.set_defaults(func=_guarded(cmd_handoff))
+
     m = subparsers.add_parser("merge", help="Sincroniza, pasa el Filtro y mergea a develop.",
                               description="Exige etapa approve y un decision.md = APPROVE "
                                           "escrito en esa etapa. Mergea "
@@ -914,7 +1039,12 @@ def register(subparsers) -> None:
                                           "repetir: en merging consulta el PR en GitHub y "
                                           "termina (MERGED con el sha del Filtro) o retoma "
                                           "(abierto); cerrado sin merge o con otro sha va a "
-                                          "needs-human; en merged no hace nada. Sale 0 si "
-                                          "mergea, 1 si no pasó, 2 si se rechaza.")
+                                          "needs-human; en merged no hace nada. En "
+                                          "awaiting-merge consulta el PR: abierto, sigue "
+                                          "esperando (sale 0 sin cambios); mergeado en la rama "
+                                          "de integración, cierra el ciclo como un merge propio "
+                                          "(también quita atta:needs-review); cerrado sin merge o "
+                                          "con otra base, needs-human. Sale 0 si mergea, 1 si no "
+                                          "pasó, 2 si se rechaza.")
     m.add_argument("job", help="id del job")
     m.set_defaults(func=_guarded(cmd_merge))

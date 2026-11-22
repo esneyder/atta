@@ -23,6 +23,10 @@ spawn ({stage, role, agent, model, tier, at}) or a spawn-group (a list of those,
 so a reviewer retry keeps the ones that already finished). `machine.advance` moves it to the event
 that leaves the stage and clears it.
 
+Delivery by risk (S13): an APPROVE runs `atta merge` when the job's risk is at most
+`delivery.auto_merge_up_to` (unknown risk = high), else `atta handoff`; `awaiting-merge` runs
+`atta merge`, which checks whether a person merged the PR.
+
 An artifact only counts when it was written during the current stage (mtime >= `stage_since`):
 re-entering a stage (spec-review → spec, needs-human → build, needs-info → intake) never reuses
 the previous stage's answer.
@@ -43,7 +47,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import branches, intake, machine
+from . import branches, config, intake, machine
 from . import models as mdl
 from .lock import job_lock
 from .store import _replace
@@ -371,7 +375,9 @@ def _approve(c: _Ctx) -> dict:
             f"job folder and the diff, then write {decision} and nothing else. You never merge."),
             c.tier("reina", escalate=escalate))
     if _first_line(decision) == "APPROVE":
-        return _run("merge", c.jid)
+        # S13: Atta merges by itself up to delivery.auto_merge_up_to; above it the Reina hands
+        # the ready PR to a person (`atta handoff` → awaiting-merge).
+        return _run("merge" if config.auto_merges(c.cfg, _risk(c.job)) else "handoff", c.jid)
     return _run("label", c.jid, "add", c.cfg["labels"]["needs_human"], then=[
         ["atta", "comment", c.jid, "--role", "reina", "--file", str(decision)],
         ["atta", "advance", c.jid, "needs-human"]])
@@ -379,11 +385,13 @@ def _approve(c: _Ctx) -> dict:
 
 def _merging(c: _Ctx) -> dict:
     # L22: a merge cut halfway is finished or resumed by `atta merge` (safe to re-run).
+    # S13: in awaiting-merge, `atta merge` asks GitHub whether the person merged the PR.
     return _run("merge", c.jid)
 
 
 _HANDLERS = {"intake": _intake, "spec": _spec, "spec-review": _spec_review, "build": _build,
-             "gate": _gate, "review": _review, "approve": _approve, "merging": _merging}
+             "gate": _gate, "review": _review, "approve": _approve, "merging": _merging,
+             "awaiting-merge": _merging}
 _WAIT = {
     "needs-info": "Esperando la respuesta del autor del issue (needs-info).",
     "needs-human": "Esperando una decisión humana (needs-human): deja tu feedback con /atta.",

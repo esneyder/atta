@@ -28,6 +28,8 @@ LABEL_ARGS = [
      "--description", "Atta: falta información del autor del issue", "--force"],
     ["label", "create", "atta:needs-human", "--color", "d93f0b",
      "--description", "Atta: necesita una decisión humana", "--force"],
+    ["label", "create", "atta:needs-review", "--color", "1d76db",
+     "--description", "Atta: PR listo para que lo revises y lo mergees", "--force"],
 ]
 
 
@@ -132,8 +134,12 @@ class FreshInitTest(InitBase):
                          (self.tdir / "claude" / "skills" / "atta" / "SKILL.md").read_bytes())
         settings = json.loads((self.root / ".claude" / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(settings, {"hooks": {"PreToolUse": [ATTA_HOOK]}})
-        self.assertEqual((self.root / "atta" / "config.json").read_bytes(),
-                         config.CONFIG_PATH.read_bytes())
+        # S13: new projects start with delivery.auto_merge_up_to = none («pr, más seguro»).
+        written = json.loads((self.root / "atta" / "config.json").read_text(encoding="utf-8"))
+        packaged = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(written, {**packaged, "delivery": {"auto_merge_up_to": "none"}})
+        self.assertEqual(config.load_config(self.root / "atta" / "config.json")["delivery"],
+                         {"auto_merge_up_to": "none"})
         self.assertEqual((self.root / "atta" / "checks.json").read_bytes(),
                          project.CHECKS_TEMPLATE.read_bytes())
         self.assertEqual(json.loads((self.root / "atta" / "checks.json").read_text(
@@ -220,6 +226,18 @@ class ExistingFilesTest(InitBase):
             self.assertEqual(snapshot(p), data, p)
         self.assertIn("reemplacé: .claude/agents/atta-uno.md", out)
         self.assertIn("ya existe, la dejé igual: atta/config.json", out)
+
+    def test_existing_config_keeps_its_delivery_untouched(self):
+        # S13: init only writes delivery=none when it creates config.json.
+        cfg = self.root / "atta" / "config.json"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text('{"concurrency": 2}\n', encoding="utf-8")
+        before = snapshot(cfg)
+        code, out, err = self.run_init()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(snapshot(cfg), before)
+        self.assertIn("ya existe, la dejé igual: atta/config.json", out)
+        self.assertEqual(config.load_config(cfg)["delivery"], {"auto_merge_up_to": "high"})
 
 
 class ProjectModelsTest(InitBase):

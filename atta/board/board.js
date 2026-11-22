@@ -24,7 +24,8 @@
   const STAGE_ROLE = table({
     "intake": "Exploradora", "needs-info": "Exploradora", "spec": "Guía", "spec-review": "Vigía",
     "build": "Cortadora", "gate": "Filtro", "review": "Jardineras", "approve": "Reina",
-    "merging": "Merge", "needs-human": "Humano", "merged": "Mergeado", "rejected": "Rechazado"
+    "merging": "Merge", "awaiting-merge": "Tú", "needs-human": "Humano", "merged": "Mergeado",
+    "rejected": "Rechazado"
   });
   const RISK = table({ low: "bajo", medium: "medio", high: "alto" });
 
@@ -120,6 +121,7 @@
       case "review": return "en revisión";
       case "approve": return "con la Reina";
       case "merging": return "mergeando a " + branch();
+      case "awaiting-merge": return "te toca mergear";
       case "needs-human": return "te necesita";
       case "merged": return "mergeado a " + branch();
       case "rejected": return "rechazado";
@@ -231,12 +233,23 @@
   function renderAlerts() {
     const humans = data.jobs.filter((j) => j.column === "human");
     $("alerts").replaceChildren(...humans.map((j) => h("div", { class: "alert", role: "region", "aria-label": "Necesita humano: #" + (j.issue ?? j.id) },
-      status("human", "te necesita"),
+      status("human", stateLabel(j)),
       h("p", null, h("b", null, "#" + (j.issue ?? "—") + " " + j.title), " — " + humanReason(j)),
+      prLink(j),
       h("button", { class: "btn", type: "button", "data-open": j.id }, "Ver #" + (j.issue ?? j.id)))));
   }
   function humanReason(j) {
+    if (j.stage === "awaiting-merge") {
+      return "La Reina aprobó el PR" + (j.pr ? " #" + j.pr : "") + " (riesgo " + risk(j.risk) +
+        "): te toca revisarlo y mergearlo en " + branch() + ".";
+    }
     return j.human_reason || "La colonia lo deja en tus manos.";
+  }
+  // S13: link to the PR a person has to merge. The spine only sends https URLs; checked again.
+  function prLink(j) {
+    if (j.stage !== "awaiting-merge" || typeof j.pr_url !== "string" || !/^https:\/\/[^\s"'<>]+$/.test(j.pr_url)) return null;
+    return h("a", { class: "btn", href: j.pr_url, target: "_blank", rel: "noopener noreferrer" },
+      "⚑ Abrir el PR" + (j.pr ? " #" + j.pr : ""));
   }
 
   function renderWarnings() {
@@ -273,7 +286,8 @@
         ? Math.max(c.max_total_rounds - c.total_rounds, 0) : null;
       body.appendChild(h("div", { class: "human-box" },
         h("p", null, h("b", null, "⚑ " + humanReason(j))),
-        j.pr ? h("p", null, "Revisa el PR #" + j.pr + " y decide si vuelve a la Cortadora o se cierra.") : null,
+        j.stage === "awaiting-merge" ? h("p", null, prLink(j) || "Abre el PR en GitHub, revísalo y mergealo; /atta run cierra el ciclo cuando lo veas mergeado.")
+          : j.pr ? h("p", null, "Revisa el PR #" + j.pr + " y decide si vuelve a la Cortadora o se cierra.") : null,
         left === null ? null : h("p", { class: "meta" }, "Tu feedback no reinicia el tope: quedan " + left + " de " + c.max_total_rounds + " rondas totales.")));
     }
     body.appendChild(facts([

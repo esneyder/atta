@@ -1,4 +1,9 @@
-"""Job state machine: explicit legal transitions, counters and the global round cap (K13)."""
+"""Job state machine: explicit legal transitions, counters and the global round cap (K13).
+
+`awaiting-merge` (S13): the Reina approved a job whose risk is above
+`delivery.auto_merge_up_to`; the PR is ready and a person merges it. It is not terminal and,
+like the stages that wait for a person, does not hold a `concurrency` slot (flow.NO_SLOT).
+"""
 
 from __future__ import annotations
 
@@ -11,7 +16,7 @@ from .timeutil import seconds_between, to_iso, utcnow
 
 STAGES = (
     "intake", "needs-info", "spec", "spec-review", "build", "gate", "review",
-    "approve", "merging", "needs-human", "merged", "rejected",
+    "approve", "merging", "awaiting-merge", "needs-human", "merged", "rejected",
 )
 
 TRANSITIONS = {
@@ -22,8 +27,9 @@ TRANSITIONS = {
     "build": ("gate", "needs-human"),
     "gate": ("review", "build", "needs-human"),
     "review": ("approve", "build", "needs-human"),
-    "approve": ("merging", "needs-human"),
+    "approve": ("merging", "awaiting-merge", "needs-human"),
     "merging": ("merged", "needs-human"),
+    "awaiting-merge": ("merged", "needs-human"),
     "needs-human": ("build", "rejected"),
     "merged": (),
     "rejected": (),

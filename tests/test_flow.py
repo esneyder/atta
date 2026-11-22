@@ -219,6 +219,21 @@ class QueueTests(FlowBase):
                          [("new", 2), ("wait", 3), ("wait", 4)])
         self.assertEqual(rows[1]["reason"], "sin cupo: 2 de 2 jobs corriendo.")
 
+    def test_awaiting_merge_is_resume_without_a_slot(self):
+        # S13: /atta run checks the human merge each pass; the job does not hold a slot.
+        st = self.state()
+        st["issues"] = {str(n): issue(n, f"Tarea {n}") for n in (2, 3)}
+        self.write_state(st)
+        jid = self.make_job(2, "Tarea 2", "awaiting-merge")
+        self.set_job(jid, pr=7)
+        cfg = config.with_defaults({"concurrency": 1})
+        rows = self.queue(cfg)
+        self.assertEqual([(r["action"], r["issue"], r["stage"]) for r in rows],
+                         [("resume", 2, "awaiting-merge"), ("new", 3, None)])
+        self.assertEqual(rows[0]["reason"], "espera que mergees el PR #7: toca atta merge.")
+        self.assertEqual(rows[1]["reason"], "sin job; hay cupo (0 de 1 corriendo).")
+        self.assertEqual(flow._running([self.job(jid)]), 0)
+
     def test_table_output_in_spanish(self):
         out = self.ok("queue")
         lines = out.splitlines()
@@ -1319,6 +1334,229 @@ class ResumeMergeTests(MergeBase):
         self.assertEqual(self.job()["stage"], "needs-human")
         self.assertTrue(self.merge_md().startswith("MERGE: FAIL\n"))
         self.assertEqual(self.state()["issues"]["12"]["state"], "OPEN")
+
+
+NEEDS_REVIEW = "atta:needs-review"
+HANDOFF_COMMENT = ("<!-- atta -->\nLa Reina aprobó este PR (riesgo medio). Atta no mergea solo "
+                   "con riesgo medio en este proyecto: te toca revisarlo y mergearlo en "
+                   "develop.\n\n— La Reina · Atta\n")
+HUMAN_CLOSING = ("<!-- atta -->\nEl PR #101 quedó mergeado en develop. El issue #12 queda "
+                 "resuelto.\n\n— La Reina · Atta\n")
+
+
+class HandoffBase(MergeBase):
+    def setUp(self):
+        super().setUp()
+        self.set_job(intake={"risk": "medium", "surfaces": [], "decision": "ACCEPT"})
+
+    def handoff(self, cfg=None):
+        return self.run_cmd("handoff", JID, cfg=cfg)
+
+    def labels(self):
+        return [lb["name"] for lb in self.state()["issues"]["12"]["labels"]]
+
+    def pr_comments(self):
+        return [c["body"] for c in self.state().get("comments", []) if c["on"] == "pr"]
+
+
+class HandoffTests(HandoffBase):
+    """S13: above auto_merge_up_to the Reina leaves the PR ready and a person merges it."""
+
+    def test_handoff_syncs_gates_pushes_readies_comments_labels_and_waits(self):
+        self.push_to_develop("src/otro.py", "y = 2\n")
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        sha = self.gated_sha()
+        # The reviewer sees exactly what will land: develop synced in, Filtro passed, pushed.
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), sha)
+        git(self.root, "merge-base", "--is-ancestor", self.origin_sha("develop"), sha)
+        self.assertIn(["push", "origin", f"refs/heads/{BRANCH}:refs/heads/{BRANCH}"],
+                      self.pushes())
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        self.assertEqual(self.gh_by("pr", "ready"), [["pr", "ready", "101"]])
+        self.assertFalse(self.state()["prs"][0]["isDraft"])
+        self.assertEqual(self.pr_comments(), [HANDOFF_COMMENT])
+        self.assertEqual(self.labels(), ["atta", NEEDS_REVIEW])
+        self.assertIn(["issue", "edit", "12", "--add-label", NEEDS_REVIEW], self.gh_calls())
+        self.assertEqual(self.job()["stage"], "awaiting-merge")
+        self.assertEqual(self.stages()[-1], ("approve", "awaiting-merge"))
+        self.assertEqual(out, "La Reina aprobó el PR #101 (APPROVE).\n"
+                              "El PR #101 quedó listo para tu revisión (riesgo medio): revísalo "
+                              "y mergéalo en develop. https://github.com/o/r/pull/101\n")
+        self.assertEqual(self.state()["issues"]["12"]["state"], "OPEN")
+        self.assertTrue(self.wt().is_dir())
+        self.assertFalse((self.store.job_dir(JID) / "merge.md").exists())
+        self.assert_never_forced()
+
+    def test_handoff_label_from_config(self):
+        cfg = config.with_defaults({"labels": {"needs_review": "revisar"}})
+        code, out, err = self.handoff(cfg)
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.labels(), ["atta", "revisar"])
+
+    def test_failed_filtro_goes_to_needs_human_without_readying_the_pr(self):
+        write(self.root / "atta" / "checks.json", json.dumps({"checks": [FAIL_CHECK]}))
+        pushes_before = len(self.pushes())
+        code, out, err = self.handoff()
+        reason = "El Filtro no pasó: falló `tests` (exit 3)."
+        self.assertEqual((code, err), (1, reason + "\n"))
+        self.assert_needs_human(reason)
+        self.assertEqual(self.stages()[-1], ("approve", "needs-human"))
+        self.assertEqual(len(self.pushes()), pushes_before)
+        self.assertEqual(self.gh_by("pr", "ready"), [])
+        self.assertNotIn(NEEDS_REVIEW, self.labels())
+
+    def test_failed_gh_step_goes_to_needs_human(self):
+        st = self.state()
+        st["fail"] = {"pr ready": "boom"}
+        self.write_state(st)
+        code, out, err = self.handoff()
+        reason = "gh pr ready falló: boom"
+        self.assertEqual((code, err), (1, reason + "\n"))
+        self.assert_needs_human(reason)
+        self.assertNotIn(NEEDS_REVIEW, self.labels())
+
+    def test_pr_base_main_is_refused_and_goes_to_needs_human(self):
+        self.set_pr(baseRefName="main")
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (2, BASE_MAIN + "\n"))
+        self.assert_needs_human(BASE_MAIN)
+
+    def test_handoff_is_refused_outside_approve_without_side_effects(self):
+        machine.advance(self.store, JID, "needs-human")
+        before = (self.store.job_dir(JID) / "job.json").read_bytes()
+        calls = len(self.gh_calls())
+        code, out, err = self.handoff()
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(err, f"El job {JID} está en needs-human; handoff exige la etapa "
+                              "approve.\n")
+        self.assertEqual((self.store.job_dir(JID) / "job.json").read_bytes(), before)
+        self.assertEqual(len(self.gh_calls()), calls)
+
+    def test_handoff_needs_a_fresh_approve(self):
+        write(self.store.job_dir(JID) / "decision.md", "ESCALATE\n\n## Summary\n\nNo.\n")
+        code, out, err = self.handoff()
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(err, f"La Reina no aprobó {JID}: decision.md debe empezar con APPROVE.\n")
+        self.assertEqual(self.job()["stage"], "approve")
+        self.assertEqual(self.gh_by("pr", "ready"), [])
+
+    def test_second_handoff_is_a_no_op(self):
+        self.assertEqual(self.handoff()[0], 0)
+        calls = len(self.gh_calls())
+        code, out, err = self.handoff()
+        self.assertEqual((code, out, err),
+                         (0, f"El job {JID} ya espera tu merge en el PR #101.\n", ""))
+        self.assertEqual(len(self.gh_calls()), calls)
+
+    def test_merge_on_approve_still_merges_by_itself(self):
+        # PRESERVE: `atta merge` from approve is today's self-merge, untouched by S13.
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertEqual(len(self.gh_by("pr", "merge")), 1)
+        self.assertNotIn(["issue", "edit", "12", "--remove-label", NEEDS_REVIEW],
+                         self.gh_calls())
+
+
+class AwaitingMergeTests(HandoffBase):
+    """S13: `atta merge` on awaiting-merge detects the human merge and closes the loop."""
+
+    def setUp(self):
+        super().setUp()
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        self.sha = self.gated_sha()
+        self.gh_n, self.git_n = len(self.gh_calls()), len(self.git_calls)
+        self.develop = self.origin_sha("develop")
+        self.main = self.origin_sha("main")
+
+    def new_gh_calls(self):
+        return self.gh_calls()[self.gh_n:]
+
+    def test_open_pr_keeps_waiting_without_changes(self):
+        job_json = (self.store.job_dir(JID) / "job.json").read_bytes()
+        code, out, err = self.merge()
+        self.assertEqual((code, out, err), (0, "El PR #101 sigue esperando tu revisión.\n", ""))
+        self.assertEqual((self.store.job_dir(JID) / "job.json").read_bytes(), job_json)
+        self.assertEqual([c[:2] for c in self.new_gh_calls()], [["pr", "view"]])
+        self.assertEqual(self.git_calls[self.git_n:], [])
+        self.assertFalse((self.store.job_dir(JID) / "merge.md").exists())
+
+    def test_human_merge_into_develop_closes_the_loop_like_a_self_merge(self):
+        self.set_pr(state="MERGED", headRefOid=self.sha)
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out, f"El PR #101 ya está mergeado en develop; la Reina cierra el ciclo "
+                              f"de {JID}.\nEl PR #101 quedó integrado en develop.\n")
+        self.assertEqual(self.merge_md(), f"MERGE: DONE\nCOMMIT: {self.sha}\n\n## Summary\n\n"
+                                          "El PR #101 quedó integrado en develop.\n")
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertEqual(self.stages()[-1], ("awaiting-merge", "merged"))
+        # Atta never merged; it closes the issue, drops both labels and the branches.
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        calls = self.new_gh_calls()
+        comment = ["issue", "comment", "12", "--body-file", "-"]
+        close = ["issue", "close", "12", "--reason", "completed"]
+        self.assertLess(calls.index(comment), calls.index(close))
+        self.assertIn({"on": "issue", "number": "12", "body": HUMAN_CLOSING},
+                      self.state()["comments"])
+        it = self.state()["issues"]["12"]
+        self.assertEqual((it["state"], it["state_reason"]), ("CLOSED", "completed"))
+        self.assertEqual(self.labels(), [])
+        self.assertIn(["issue", "edit", "12", "--remove-label", "atta"], calls)
+        self.assertIn(["issue", "edit", "12", "--remove-label", NEEDS_REVIEW], calls)
+        self.assertIn(["push", "origin", "--delete", f"refs/heads/{BRANCH}"], self.git_calls)
+        refs = git(self.origin, "for-each-ref", "--format=%(refname)", "refs/heads").split()
+        self.assertEqual(sorted(refs), ["refs/heads/develop", "refs/heads/main"])
+        self.assertFalse(self.wt().exists())
+        self.assertEqual(git(self.root, "for-each-ref", "--format=%(refname)",
+                             f"refs/heads/{BRANCH}"), "")
+        self.assertEqual(self.origin_sha("main"), self.main)
+        self.assert_never_forced()
+        # Running it again is a no-op.
+        self.assertEqual(self.merge(), (0, f"El job {JID} ya está mergeado: nada que hacer.\n",
+                                        ""))
+
+    def test_human_merge_with_extra_commits_records_the_merged_sha(self):
+        # The human may push fixes: Atta does not require the Filtro's sha, it records GitHub's.
+        other = "a" * 40
+        self.set_pr(state="MERGED", headRefOid=other)
+        code, out, err = self.merge()
+        warning = f"La rama local {BRANCH} ya no apunta al commit mergeado ({other}); la dejé."
+        self.assertEqual((code, err), (0, f"Aviso: {warning}\n"), out)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertTrue(self.merge_md().startswith(f"MERGE: DONE\nCOMMIT: {other}\n"))
+        self.assertEqual(self.state()["issues"]["12"]["state"], "CLOSED")
+
+    def assert_escalated(self, code, out, err, expected_code, reason):
+        self.assertEqual((code, out, err), (expected_code, "", reason + "\n"))
+        self.assertEqual(self.job()["stage"], "needs-human")
+        self.assertEqual(self.stages()[-1], ("awaiting-merge", "needs-human"))
+        self.assertTrue(self.merge_md().startswith("MERGE: FAIL\n"))
+        self.assertIn(reason, self.merge_md())
+        comments = self.pr_comments()
+        self.assertEqual(len(comments), 2)
+        self.assertIn(f"La Reina lo deja en tus manos: {reason}", comments[1])
+        self.assertIn("atta:needs-human", self.labels())
+        self.assertNotIn(NEEDS_REVIEW, self.labels())
+        self.assertEqual(self.state()["issues"]["12"]["state"], "OPEN")
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        self.assertTrue(self.wt().is_dir())
+        self.assertNotIn(["push", "origin", "--delete", f"refs/heads/{BRANCH}"], self.git_calls)
+        self.assertEqual((self.origin_sha("develop"), self.origin_sha("main")),
+                         (self.develop, self.main))
+        self.assert_never_forced()
+
+    def test_closed_unmerged_pr_goes_to_needs_human(self):
+        self.set_pr(state="CLOSED")
+        reason = "El PR #101 está cerrado en GitHub sin merge; la Reina no lo reabre."
+        self.assert_escalated(*self.merge(), 1, reason)
+
+    def test_merge_into_main_goes_to_needs_human_with_the_branch_policy(self):
+        self.set_pr(state="MERGED", baseRefName="main", headRefOid=self.sha)
+        self.assert_escalated(*self.merge(), 2, BASE_MAIN)
+        self.assertNotIn("main", [a for c in self.git_calls[self.git_n:] for a in c])
 
 
 class RemoteBranchDeletionTests(FlowBase):

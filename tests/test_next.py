@@ -357,6 +357,42 @@ class ApproveTest(NextBase):
         self.write("decision.md", "APPROVE\n\n## Summary\n\nOK.\n")
         self.assertEqual(self.decide(), self.run_action("merge", JID))
 
+    def test_delivery_threshold_matrix_merge_or_handoff(self):
+        # S13: Atta merges by itself only when the job risk is at most auto_merge_up_to.
+        self.write("decision.md", "APPROVE\n\n## Summary\n\nOK.\n")
+        merges = {
+            "none": set(), "low": {"low"}, "medium": {"low", "medium"},
+            "high": {"low", "medium", "high"},
+        }
+        for threshold, merged in merges.items():
+            for risk in ("low", "medium", "high"):
+                with self.subTest(threshold=threshold, risk=risk):
+                    self.cfg = config.with_defaults({"delivery": {"auto_merge_up_to": threshold}})
+                    self.routed(risk=risk)
+                    command = "merge" if risk in merged else "handoff"
+                    self.assertEqual(self.decide(), self.run_action(command, JID))
+
+    def test_code_default_high_keeps_merging_every_risk(self):
+        self.write("decision.md", "APPROVE\n\n## Summary\n\nOK.\n")
+        self.routed(risk="high")
+        self.assertEqual(self.cfg["delivery"]["auto_merge_up_to"], "high")
+        self.assertEqual(self.decide(), self.run_action("merge", JID))
+
+    def test_unknown_risk_counts_as_high(self):
+        self.write("decision.md", "APPROVE\n\n## Summary\n\nOK.\n")
+        self.job.pop("intake", None)
+        self.job.pop("agents", None)
+        self.cfg = config.with_defaults({"delivery": {"auto_merge_up_to": "medium"}})
+        self.assertEqual(self.decide(), self.run_action("handoff", JID))
+        self.cfg = config.with_defaults({"delivery": {"auto_merge_up_to": "high"}})
+        self.assertEqual(self.decide(), self.run_action("merge", JID))
+
+    def test_escalate_with_threshold_none_still_goes_to_needs_human(self):
+        self.cfg = config.with_defaults({"delivery": {"auto_merge_up_to": "none"}})
+        decision = self.write("decision.md", "ESCALATE\n\n## Question\n\n- ¿Seguro?\n")
+        self.assertEqual(self.decide()["argv"], ["atta", "label", JID, "add", "atta:needs-human"])
+        self.assertIn(str(decision), self.decide()["then"][0])
+
     def test_escalate_labels_comments_and_goes_to_needs_human(self):
         decision = self.write("decision.md", "ESCALATE\n\n## Question\n\n- ¿Seguro?\n")
         self.assertEqual(self.decide(), self.run_action(
@@ -376,6 +412,11 @@ class RestingStagesTest(NextBase):
     def test_merging_runs_merge_again_to_recover(self):
         # L22: a merge cut halfway is finished (or resumed) by `atta merge`, never a wait.
         self.job["stage"] = "merging"
+        self.assertEqual(self.decide(), {"action": "run", "argv": ["atta", "merge", JID]})
+
+    def test_awaiting_merge_runs_merge_to_check_the_human_merge(self):
+        # S13: `atta merge` asks GitHub whether the human merged the PR.
+        self.job["stage"] = "awaiting-merge"
         self.assertEqual(self.decide(), {"action": "run", "argv": ["atta", "merge", JID]})
 
     def test_wait_and_done(self):

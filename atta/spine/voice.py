@@ -81,6 +81,37 @@ def merged_issue(pr: int, branch: str, issue: int) -> str:
     return f"La Reina mergeó el PR #{pr} a {branch}. El issue #{issue} queda resuelto."
 
 
+def _risk_or_unknown(risk) -> str:
+    return RISK_ES.get(risk, "sin medir") if isinstance(risk, str) else "sin medir"
+
+
+def handoff_comment(risk, branch: str) -> str:
+    """S13: the Reina's comment on the PR when the job's risk is above auto_merge_up_to."""
+    r = _risk_or_unknown(risk)
+    return (f"La Reina aprobó este PR (riesgo {r}). Atta no mergea solo con riesgo {r} en este "
+            f"proyecto: te toca revisarlo y mergearlo en {branch}.")
+
+
+def handoff_ready(pr: int, risk, branch: str, url: str | None = None) -> str:
+    text = (f"El PR #{pr} quedó listo para tu revisión (riesgo {_risk_or_unknown(risk)}): "
+            f"revísalo y mergéalo en {branch}.")
+    return f"{text} {url}" if url else text
+
+
+def waiting_review(pr: int) -> str:
+    return f"El PR #{pr} sigue esperando tu revisión."
+
+
+def human_merged(pr: int, branch: str) -> str:
+    """merge.md summary when a person merged the PR (S13)."""
+    return f"El PR #{pr} quedó integrado en {branch}."
+
+
+def human_merged_issue(pr: int, branch: str, issue: int) -> str:
+    """The Reina's closing comment on the issue after a person merged the PR (S13)."""
+    return f"El PR #{pr} quedó mergeado en {branch}. El issue #{issue} queda resuelto."
+
+
 def for_transition(job: dict, frm: str, to: str, integration_branch: str = "develop") -> str | None:
     """Message for a key transition, or None when the transition is not announced."""
     if frm == "intake" and to == "spec":
