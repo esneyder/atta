@@ -18,7 +18,7 @@ KEYS = ("integration_branch", "forbidden_branches", "branch_prefix", "max_rounds
         "max_total_rounds", "concurrency", "merge_method", "labels.queue", "labels.needs_info",
         "labels.needs_human", "labels.needs_review", "protected_paths",
         "delivery.auto_merge_up_to",
-        "guard.deny_commands", "prices_usd_per_mtok", "routing", "models")
+        "guard.deny_commands", "prices_usd_per_mtok", "routing", "risk_rules", "models")
 NOT_KEY = "La clave «foo» no existe; mira las claves con `atta settings`."
 FLAG = Setting("experimental.flag", "bool", False, "Bandera de prueba.")
 
@@ -67,7 +67,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(by["labels.needs_review"].default, "atta:needs-review")
         self.assertEqual(by["labels.needs_review"].type, "str")
         self.assertEqual(by["guard.deny_commands"].default, list(guard.DEFAULT_DENY_COMMANDS))
-        for key in ("prices_usd_per_mtok", "routing", "models"):
+        for key in ("prices_usd_per_mtok", "routing", "risk_rules", "models"):
             self.assertFalse(by[key].editable, key)
         for s in reg:
             self.assertTrue(s.description, s.key)
@@ -87,6 +87,8 @@ class TableTest(SettingsBase):
         self.assertRegex(out, r"(?m)^labels\.queue\s+atta\s+atta\s+\S")
         self.assertRegex(out, r"(?m)^forbidden_branches\s+main, master\s+main, master\s+\S")
         self.assertRegex(out, r"(?m)^routing\s+de fábrica\s+de fábrica\s+.*edítalo en "
+                              r"atta/config\.json")
+        self.assertRegex(out, r"(?m)^risk_rules\s+de fábrica\s+de fábrica\s+.*edítalo en "
                               r"atta/config\.json")
         self.assertRegex(out, r"(?m)^models\s+.*usa atta models")
         self.assertNotRegex(out, r" \*( |$)")
@@ -259,7 +261,8 @@ class RefusalTest(SettingsBase):
 
     def test_read_only_keys(self):
         hint = {"prices_usd_per_mtok": "edítalo en atta/config.json",
-                "routing": "edítalo en atta/config.json", "models": "usa atta models"}
+                "routing": "edítalo en atta/config.json",
+                "risk_rules": "edítalo en atta/config.json", "models": "usa atta models"}
         for key, how in hint.items():
             with self.subTest(key=key):
                 msg = f"La clave «{key}» es de solo lectura en atta settings: {how}."

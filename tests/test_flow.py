@@ -1429,6 +1429,18 @@ class HandoffTests(HandoffBase):
                                             f"## Summary\n\n{READY}\n")
         self.assert_never_forced()
 
+    def test_handoff_uses_effective_risk_and_records_the_escalation(self):
+        # S4: the Filtro raised the risk; the handoff says so and uses the effective risk.
+        line = "El Filtro subió el riesgo a alto: migrations/0003.sql (datos)."
+        self.set_job(risk_effective="high", risk_escalation=line)
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertIn(f"{line}\nEl PR #101 quedó listo para tu revisión (riesgo alto)", out)
+        self.assertEqual(len(self.pr_comments()), 1)
+        self.assertIn("(riesgo alto)", self.pr_comments()[0])
+        self.assertIn(line, self.pr_comments()[0])
+        self.assertIn("(riesgo alto)", self.handoff_md())
+
     def test_l31_missing_review_label_is_created_and_the_job_waits(self):
         # L31: the sandbox predates T13, so atta:needs-review did not exist and the handoff
         # escalated to needs-human. Now the label is created and the add retried once.

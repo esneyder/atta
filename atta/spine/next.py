@@ -24,7 +24,10 @@ so a reviewer retry keeps the ones that already finished). `machine.advance` mov
 that leaves the stage and clears it.
 
 Delivery by risk (S13): an APPROVE runs `atta merge` when the job's risk is at most
-`delivery.auto_merge_up_to` (unknown risk = high), else `atta handoff`; `awaiting-merge` runs
+`delivery.auto_merge_up_to` (unknown risk = high), else `atta handoff`. The job's risk is
+`risk_effective` once El Filtro set it (G3: max of the intake and the diff rules, see risk.py),
+else the intake's; the reviewers come from `job.agents`, which the Filtro re-plans when it
+raises the risk; `awaiting-merge` runs
 `atta merge`, which checks whether a person merged the PR.
 
 Handoff recovery (L31): a `needs-human` job runs `atta handoff` again only when
@@ -120,7 +123,9 @@ def _spawn(agent: str, model: str, prompt: str, tier: str) -> dict:
 
 
 def _risk(job: dict) -> str | None:
-    return (job.get("intake") or {}).get("risk") or (job.get("agents") or {}).get("risk")
+    """The job's risk: the Filtro's effective risk (G3, never below the intake) when set."""
+    return (job.get("risk_effective") or (job.get("intake") or {}).get("risk")
+            or (job.get("agents") or {}).get("risk"))
 
 
 def _worktree(job: dict, root: Path) -> Path | None:

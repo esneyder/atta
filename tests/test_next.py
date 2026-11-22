@@ -389,6 +389,19 @@ class ApproveTest(NextBase):
         self.cfg = config.with_defaults({"delivery": {"auto_merge_up_to": "high"}})
         self.assertEqual(self.decide(), self.run_action("merge", JID))
 
+    def test_effective_risk_decides_delivery(self):
+        # S4: the Filtro's effective risk (never lower than the intake) decides delivery.
+        self.write("decision.md", "APPROVE\n\n## Summary\n\nOK.\n")
+        self.cfg = config.with_defaults({"delivery": {"auto_merge_up_to": "low"}})
+        self.routed(risk="low")
+        self.assertEqual(self.decide(), self.run_action("merge", JID))
+        self.job["risk_effective"] = "high"
+        self.assertEqual(self.decide(), self.run_action("handoff", JID))
+
+    def test_effective_high_escalates_the_reina(self):
+        self.job["risk_effective"] = "high"
+        self.assertEqual(self.decide()["model"], "opus")
+
     def test_escalate_with_threshold_none_still_goes_to_needs_human(self):
         self.cfg = config.with_defaults({"delivery": {"auto_merge_up_to": "none"}})
         decision = self.write("decision.md", "ESCALATE\n\n## Question\n\n- ¿Seguro?\n")

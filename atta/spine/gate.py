@@ -34,7 +34,15 @@ The gate FAILS without running checks when:
 - the worktree has uncommitted changes (`git status --porcelain` not empty, or index entries
   hidden with skip-worktree / assume-unchanged).
 
-For misconfiguration (bad checks.json, bad base_ref) it raises GateError and writes no report.
+For misconfiguration (bad checks.json, bad base_ref, bad risk_rules) it raises GateError and
+writes no report.
+
+Riesgo por reglas (G3, see risk.py): when `checks` passes, the diff is classified with the
+config's `risk_rules`; checks.md gets a `## Riesgo` section and, when `<round_dir>/..` is a job
+folder, job.json gets `risk_rules` and `risk_effective` (never lower than before). An effective
+risk above the routed one re-plans the review and is appended to the summary
+(«El Filtro subió el riesgo a alto: migrations/0003.sql (datos).»). `merge-checks` and a FAIL
+never touch the risk.
 
 The report goes to `<round_dir>/<kind>.md` (first line `GATE: PASS|FAIL`, second `COMMIT: <sha>`)
 and the combined output of the checks to `<round_dir>/<kind>.log`.
@@ -53,7 +61,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import ids
+from . import ids, risk as risk_rules
 
 CHECKS_RELPATH = Path("atta") / "checks.json"
 KINDS = ("checks", "merge-checks")
@@ -94,6 +102,7 @@ class GateResult:
     summary: str
     report: Path
     log: Path
+    risk: dict | None = None  # {risk, categories, reasons} when `checks` passed
 
 
 @dataclass
@@ -470,6 +479,12 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
         failed_name = None
     passed = not violations and not dirty and bool(checks) and failed is None
 
+    assessed = None
+    if passed and kind == "checks":
+        assessed = _assess_risk(worktree, base, commit, job, round_dir, config)
+        if assessed["outcome"]["message"]:
+            summary = f"{summary} {assessed['outcome']['message']}"
+
     round_dir.mkdir(parents=True, exist_ok=True)
     log_path = round_dir / f"{kind}.log"
     log = [f"# {kind} · job {job_id} · commit {commit}\n"]
@@ -509,7 +524,40 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
         if failed is not None:
             md += ["", f"Últimas {TAIL_LINES} líneas de `{failed.name}`:", "", "```",
                    _tail(failed.output), "```"]
+    if assessed is not None:
+        md += ["", *risk_rules.report_lines(assessed["job"], assessed["found"],
+                                            assessed["outcome"])]
     (round_dir / f"{kind}.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    if assessed is not None:
+        risk_rules.record(round_dir.parent, job_id, assessed["found"], assessed["outcome"])
 
     return GateResult(passed, commit, failed_name, duration, summary,
-                      round_dir / f"{kind}.md", log_path)
+                      round_dir / f"{kind}.md", log_path,
+                      assessed["found"] if assessed is not None else None)
+
+
+def _assess_risk(worktree: Path, base: str, commit: str, job, round_dir: Path,
+                 config: dict) -> dict:
+    """Classify the diff and evaluate the effective risk (pure: nothing is written here).
+
+    The job is read from `<round_dir>/../job.json` when it exists (the freshest copy), else
+    the `job` dict given (or nothing: an unmeasured intake)."""
+    from .router import RoutingError
+    from .store import JobStore, StoreError
+    rules = risk_rules.rules_of(config)
+    problem = risk_rules.rules_error(rules)
+    if problem:
+        raise GateError(f"config.json: {problem}")
+    current = job if isinstance(job, dict) else {}
+    job_dir = round_dir.parent
+    if (job_dir / "job.json").is_file():
+        try:
+            current = JobStore(job_dir.parent).load(_job_id(job))
+        except StoreError as exc:
+            raise GateError(str(exc)) from None
+    found, hits = risk_rules.assess(risk_rules.changes(worktree, base, commit), rules)
+    try:
+        outcome = risk_rules.evaluate(current, found, hits, config)
+    except RoutingError as exc:
+        raise GateError(str(exc)) from None
+    return {"job": current, "found": found, "outcome": outcome}

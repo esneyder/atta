@@ -916,7 +916,9 @@ def _write_handoff_md(job_dir: Path, verdict: str, summary: str, commit: str | N
 
 
 def _job_risk(job: dict):
-    return (job.get("intake") or {}).get("risk") or (job.get("agents") or {}).get("risk")
+    """The Filtro's effective risk (G3) when set, else the intake's or the routed one."""
+    return (job.get("risk_effective") or (job.get("intake") or {}).get("risk")
+            or (job.get("agents") or {}).get("risk"))
 
 
 def _finish_handoff(cfg, jobs: JobStore, job: dict, sha: str, *,
@@ -929,7 +931,11 @@ def _finish_handoff(cfg, jobs: JobStore, job: dict, sha: str, *,
     review = config.label(cfg, "needs_review")
     machine.advance(jobs, jid, AWAITING_MERGE)
     warnings: list[str] = []
-    body = github.sign("reina", voice.handoff_comment(risk, integration))
+    escalation = job.get("risk_escalation")
+    comment = voice.handoff_comment(risk, integration)
+    if escalation:
+        comment = f"{comment} {escalation}"
+    body = github.sign("reina", comment)
     _step(warnings, f"No se pudo comentar en el PR #{number}",
           lambda: github.comment("pr", number, body))
     _step(warnings, f"No se pudo poner la label {review} en el issue #{issue_n}",
@@ -940,6 +946,8 @@ def _finish_handoff(cfg, jobs: JobStore, job: dict, sha: str, *,
               lambda: github.edit_label(issue_n, "remove", held))
     line = voice.handoff_ready(number, risk, integration, job.get("pr_url"))
     _write_handoff_md(jobs.job_dir(jid), "READY", line, sha, number, warnings)
+    if escalation:
+        print(escalation)
     print(line)
     for warning in warnings:
         _err(f"Aviso: {warning}")

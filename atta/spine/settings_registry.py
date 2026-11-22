@@ -79,6 +79,10 @@ SETTINGS = (
     _entry("routing", "summary",
            f"Reviewers por riesgo y superficie (solo lectura: {EDIT_BY_HAND}).",
            editable=False, how=EDIT_BY_HAND),
+    _entry("risk_rules", "summary",
+           "Reglas que suben el riesgo según el diff: datos, seguridad, contratos, "
+           f"concurrencia, entrega y código sin test (solo lectura: {EDIT_BY_HAND}).",
+           editable=False, how=EDIT_BY_HAND),
     _entry("models", "summary", "Modelo de cada tier y rol (solo lectura: usa atta models).",
            default={}, editable=False, how="usa atta models"),
 )

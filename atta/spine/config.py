@@ -6,6 +6,8 @@ import copy
 import json
 from pathlib import Path
 
+from . import risk
+
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
 
 # Default review routing (risk x surfaces); atta/config.json may override the whole table.
@@ -62,6 +64,9 @@ DEFAULTS = {
     # S13: the highest job risk Atta merges by itself; above it the PR waits for a human.
     # `high` keeps today's behaviour for existing projects; `atta init` writes `none` (T13).
     "delivery": {"auto_merge_up_to": "high"},
+    # G3 (F3 T2): rules that classify the diff into high-risk categories; a project's table
+    # replaces this one whole (see risk.py).
+    "risk_rules": risk.DEFAULT_RULES,
 }
 # Optional key, never defaulted: `models` (per-runtime tier and role overrides, S12; see
 # models.py and `atta models`).
@@ -174,6 +179,10 @@ def validate(cfg: dict) -> dict:
             for k in ("input", "output")
         ):
             raise _err(f"prices_usd_per_mtok[«{model}»] debe tener input y output numéricos.")
+    if "risk_rules" in cfg:
+        problem = risk.rules_error(cfg["risk_rules"])
+        if problem:
+            raise _err(problem)
     if "models" in cfg:
         from . import models  # lazy: models.py reads config lazily too
         problem = models.config_error(cfg["models"])

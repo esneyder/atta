@@ -21,7 +21,7 @@ Rama: `feat/f3-calidad` (apilada sobre `feat/f2-colonia`, PR #9). Diseño: `docs
 | ID | Specs | Route | Estado | Commit |
 |---|---|---|---|---|
 | T1 | S3 | `atta doctor` + `atta init --check` | hecho (765 tests) | ver commit feat(doctor) |
-| T2 | S4, S2 | Riesgo por reglas sobre el diff (categorías de alto riesgo) → riesgo efectivo | pendiente | — |
+| T2 | S4, S2 | Riesgo por reglas sobre el diff (categorías de alto riesgo) → riesgo efectivo | hecho (766 tests) | ver commit feat(risk) |
 | T3 | S5, S2 | Refutador + corrección acotada | pendiente | — |
 | T4 | S6 | Ratchet `PREVENTION:` + Cultivadora + `atta/memory/` | pendiente | — |
 | T5 | S7 | Filtro: ast-grep, alcance `FILES:`, frescura | pendiente | — |
@@ -45,3 +45,4 @@ Rama: `feat/f3-calidad` (apilada sobre `feat/f2-colonia`, PR #9). Diseño: `docs
   - T6 Rastreador: prompt «grep al llamado, no al loop que tocaste»: ante una validación/raise/escritura nueva, revisar todos los callers/writers.
   - Pendiente, no se adopta ahora: runner genérico de tests de arquitectura (son tests normales del proyecto); ratchet de allowlists «solo encoge» queda como idea para F3.x.
 - **L5** T1 hecho: `atta doctor` (19 checks con ✓/⚠/✗, pista por falla, exit 1 solo con ✗, tolera config inválida para poder reportarla) y `atta init --check` (solo lectura, reutilizado por doctor). Corrida real en un proyecto temporal: detectó `checks.json` vacío y la label `atta:needs-review` faltante (el caso de L31 de F2) y el `python` sin pip (L13 de F2). El guard sigue negando `atta init --check` a agentes; `atta doctor` es la entrada segura para ellos.
+- **L6** T2 hecho: `risk.py` clasifica el diff en data/security/contracts/concurrency/delivery/untested con reglas en `risk_rules` (defaults en código, el proyecto las reemplaza); al pasar el Filtro (`checks`) el riesgo efectivo = max(intake, reglas, previo), nunca baja; `## Riesgo` en checks.md, re-ruteo (p. ej. suma Soldado en high), evento `risk`, la entrega y las escaladas a T3 usan el riesgo efectivo. Pendiente para T8: README §2.6/§8.2 y ayuda de `atta gate`. Riesgo aceptado: heurísticas por defecto pueden subir a high más de lo deseado; el proyecto ajusta `risk_rules`.
