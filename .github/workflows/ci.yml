@@ -68,3 +68,51 @@ jobs:
           test "$out" = "No hay jobs."
           cd "$proj"
           test "$(atta status | tr -d '\r')" = "No hay jobs."
+      - name: Run the F3 commands of the installed package
+        shell: bash
+        run: |
+          proj="$RUNNER_TEMP/proyecto"
+          cd "$RUNNER_TEMP"
+          # S11: in a bare project doctor and init --check report problems (exit 1); exit 2 or a
+          # Python traceback is a bug of Atta.
+          run_allowing_1() {
+            set +e
+            out="$("$@" 2>&1)"
+            code=$?
+            set -e
+            echo "$out"
+            echo "exit code: $code"
+            if grep -q "Traceback (most recent call last)" <<<"$out"; then
+              echo "::error::$* imprimió un traceback"; exit 1
+            fi
+            if [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
+              echo "::error::$* salió con $code"; exit 1
+            fi
+          }
+          run_allowing_1 atta --project "$proj" doctor --no-github
+          run_allowing_1 atta --project "$proj" init --check
+          out="$(atta --project "$proj" memory 2>&1 | tr -d '\r')"
+          echo "$out"
+          test "$out" = "Todavía no hay lecciones en atta/memory/lessons.md."
+
+  ast-grep:
+    name: Filtro with real ast-grep (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Configure git identity for test repositories
+        run: |
+          git config --global user.name "atta-ci"
+          git config --global user.email "atta-ci@example.invalid"
+      - name: Install ast-grep
+        run: |
+          python -m pip install ast-grep-cli
+          ast-grep --version
+      - name: Run the real ast-grep test (fails instead of skipping without the binary)
+        env:
+          PYTHONUTF8: "1"
+          ATTA_REQUIRE_AST_GREP: "1"
+        run: python -m unittest discover -s tests -p test_gate_astgrep_real.py -v

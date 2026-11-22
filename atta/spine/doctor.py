@@ -434,8 +434,10 @@ def register(subparsers) -> None:
     p = subparsers.add_parser(
         "doctor", help="Revisa si la máquina y el proyecto están listos para correr Atta.",
         description="Revisa, sin escribir nada: atta y atta-board en el PATH, Python con pip, "
-                    "repo git, atta/config.json, atta/checks.json con checks, origin y "
-                    "origin/develop, que el checkout principal esté al día, gh (instalado, con "
+                    "repo git, atta/config.json (avisa si tu routing propio no tiene al "
+                    "Rastreador en riesgo alto), atta/checks.json con checks, ast-grep si hay "
+                    "sgconfig.yml, origin y origin/develop, que el checkout principal esté en "
+                    "develop (falla si no) y al día, gh (instalado, con "
                     "sesión, con acceso al repo), las labels de Atta, los agentes, el skill, el "
                     "comando /atta, el hook del guard, Claude Code y que los archivos estén al "
                     "día (como atta init --check).",

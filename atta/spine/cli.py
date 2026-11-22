@@ -233,19 +233,40 @@ def build_parser() -> argparse.ArgumentParser:
     c.set_defaults(func=cmd_create)
 
     a = sub.add_parser("advance", help="Mueve un job a otra etapa (transición legal).",
-                       description="Mueve un job a otra etapa; respeta max_rounds y el tope global.")
+                       description="Mueve un job a otra etapa; respeta max_rounds y el tope global. "
+                                   "needs-human → gate solo vale cuando el Filtro se detuvo "
+                                   "por una falla de configuración (no gasta ronda). La "
+                                   "tercera REVISE de la Vigía no vuelve a spec: va a "
+                                   "needs-human.")
     a.add_argument("job", help="id del job")
     a.add_argument("stage", help="etapa destino: " + ", ".join(machine.STAGES))
     a.set_defaults(func=cmd_advance)
 
     r = sub.add_parser("route", help="Lee intake.md y guarda los reviewers del job.",
-                       description="Lee RISK y SURFACES de intake.md y guarda el plan del router.")
+                       description="Lee RISK y SURFACES de intake.md y guarda el plan del router "
+                                   "(en riesgo alto suma al Rastreador). Después, si las reglas "
+                                   "sobre el diff suben el riesgo, el Filtro puede volver a "
+                                   "planear los reviewers con el riesgo efectivo.")
     r.add_argument("job", help="id del job")
     r.set_defaults(func=cmd_route)
 
     g = sub.add_parser("gate", help="Corre el Filtro sobre el worktree del job.",
-                       description="Corre el Filtro (atta/checks.json del checkout principal) "
-                                   "sobre el worktree. Sale 0 si pasa, 1 si no pasa.")
+                       description="Corre el Filtro sobre el worktree con atta/checks.json y "
+                                   "sgconfig.yml del checkout principal (que debe estar en "
+                                   "develop). Primero la configuración: sin checks, sin shell o "
+                                   "sin ast-grep falla con KIND: config (lo corrige una persona, "
+                                   "no gasta ronda). Luego avisa si el checkout está atrás de "
+                                   "origin (frescura), compara el diff con FILES: del spec "
+                                   "(alcance; bloquea con scope.enforce), corre ast-grep sobre "
+                                   "los archivos del diff (solo severity: error bloquea) y los "
+                                   "checks en orden; los checks con when risk>=medium se saltean "
+                                   "en riesgo bajo. Si pasa, sube el riesgo cuando las reglas "
+                                   "sobre el diff lo piden (nunca lo baja) y entonces vuelve a "
+                                   "planear los reviewers. Frescura, alcance y riesgo solo "
+                                   "corren con --kind checks. Sale "
+                                   "0 si pasa, 1 si no pasa (checks.md dice KIND: config o "
+                                   "code), 2 si el Filtro está mal configurado (base, "
+                                   "protected_paths o risk_rules inválidos).")
     g.add_argument("job", help="id del job")
     g.add_argument("--worktree", required=True, help="ruta del worktree del job")
     g.add_argument("--base", required=True, help="ref base del diff (p. ej. origin/develop)")
