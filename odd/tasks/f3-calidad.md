@@ -20,7 +20,7 @@ Rama: `feat/f3-calidad` (apilada sobre `feat/f2-colonia`, PR #9). Diseño: `docs
 
 | ID | Specs | Route | Estado | Commit |
 |---|---|---|---|---|
-| T1 | S3 | `atta doctor` + `atta init --check` | pendiente | — |
+| T1 | S3 | `atta doctor` + `atta init --check` | hecho (765 tests) | ver commit feat(doctor) |
 | T2 | S4, S2 | Riesgo por reglas sobre el diff (categorías de alto riesgo) → riesgo efectivo | pendiente | — |
 | T3 | S5, S2 | Refutador + corrección acotada | pendiente | — |
 | T4 | S6 | Ratchet `PREVENTION:` + Cultivadora + `atta/memory/` | pendiente | — |
@@ -44,3 +44,4 @@ Rama: `feat/f3-calidad` (apilada sobre `feat/f2-colonia`, PR #9). Diseño: `docs
   - T4 ratchet: una lección termina como regla ast-grep **con su test** (`valid`/`invalid`) o como test de arquitectura cuando un patrón no alcanza; la lección se guarda donde el próximo la ve.
   - T6 Rastreador: prompt «grep al llamado, no al loop que tocaste»: ante una validación/raise/escritura nueva, revisar todos los callers/writers.
   - Pendiente, no se adopta ahora: runner genérico de tests de arquitectura (son tests normales del proyecto); ratchet de allowlists «solo encoge» queda como idea para F3.x.
+- **L5** T1 hecho: `atta doctor` (19 checks con ✓/⚠/✗, pista por falla, exit 1 solo con ✗, tolera config inválida para poder reportarla) y `atta init --check` (solo lectura, reutilizado por doctor). Corrida real en un proyecto temporal: detectó `checks.json` vacío y la label `atta:needs-review` faltante (el caso de L31 de F2) y el `python` sin pip (L13 de F2). El guard sigue negando `atta init --check` a agentes; `atta doctor` es la entrada segura para ellos.

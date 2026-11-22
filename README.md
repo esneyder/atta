@@ -344,6 +344,7 @@ existe y es distinto se respeta y se reporta como «ya existe, la dejé igual: �
 | Opción | Efecto |
 |---|---|
 | `--force` | Reemplaza los agentes y el skill existentes («reemplacé: …»). **Nunca** `config.json`, `checks.json` ni `settings.json` |
+| `--check` | No escribe nada ni usa la red: compara lo que `atta init` escribiría (agentes con sus modelos resueltos, skill, comando `/atta`, hook del guard) con los archivos del proyecto. Dice «al día» y sale `0`, o lista cada archivo como `falta:` o `distinto:`, sugiere `atta init --force` y sale `1`. No se combina con `--force` |
 | `--no-github` | No verifica `origin/develop` ni crea labels (sin red) |
 | `--runtime claude-code` | Runtime de los agentes (hoy el único) |
 
@@ -353,6 +354,19 @@ que no es JSON válido: todo se valida antes de escribir, así que no cambia nad
 
 Si falta `develop` en `origin`, el aviso es: «Atta: no encontré la rama develop en origin. Atta integra
 solo en develop (nunca en main): crea develop en origin y vuelve a correr `atta init`.».
+
+Al actualizar Atta, `atta init --check` dice si los agentes, el skill o el comando del proyecto
+quedaron atrás de la versión instalada:
+
+```text
+> atta init --check
+Atta revisó C:\code\mi-app: 1 archivo no coincide con esta versión de Atta:
+  distinto: .claude/agents/atta-guia.md
+Ponlos al día en tu terminal con `atta init --force` (nunca toca config.json, checks.json ni tus entradas de settings.json).
+— Atta
+```
+
+Después de preparar el proyecto, corre `atta doctor` (sección 16) antes de la primera corrida.
 
 ### 4.2 Llenar `atta/checks.json`
 
@@ -580,9 +594,20 @@ un archivo `.py` se corre con el mismo Python): así los tests usan un `gh` fals
 
 ### 7.1 Ciclo de vida
 
-#### `init [--force] [--no-github] [--runtime claude-code]`
+#### `init [--force | --check] [--no-github] [--runtime claude-code]`
 
-Prepara el proyecto. Ver sección 4.
+Prepara el proyecto. Ver sección 4. Con `--check` no escribe nada: dice si los archivos de Claude
+Code del proyecto están al día con esta versión de Atta (`0` al día, `1` hay diferencias, `2`
+rechazado).
+
+#### `doctor [--no-github]`
+
+Revisa, sin escribir nada, si la máquina y el proyecto están listos para correr la colonia. Una línea
+por revisión con `✓` (bien), `⚠` (aviso) o `✗` (falla), y debajo de cada aviso o falla cómo
+arreglarlo. Si la terminal no puede mostrar esos símbolos (o con `ATTA_ASCII=1`) usa `[ok]`, `[!]` y
+`[x]`. Sale `0` si no hay ninguna `✗` (los avisos no fallan) y `1` si hay alguna. `--no-github`
+saltea las revisiones de `gh` (cuenta, repo y labels). La lista completa está en la sección 16.
+A diferencia de `atta init`, el guard no lo bloquea: un agente puede correrlo.
 
 #### `create <issue> --title <título> [--body-file <archivo>]`
 
@@ -1363,13 +1388,50 @@ Para verificar las plantillas de los agentes: `python atta/templates/claude/chec
 
 ## 16. Solución de problemas
 
+### Antes de correr: `atta doctor`
+
+Antes de la primera corrida (y cuando algo falle) corre `atta doctor` en la raíz del proyecto. No
+cambia nada; revisa, en orden:
+
+| Revisión | Si falla |
+|---|---|
+| `atta` y `atta-board` en el `PATH` | `✗`: agrega la carpeta `Scripts` de ese Python al `PATH` o `pipx ensurepath` (sin `atta` el hook del guard no bloquea nada) |
+| Python de Atta con pip | `⚠`: para actualizar usa `pipx` o un Python con pip |
+| Repo git, `atta/config.json` válido, `atta/checks.json` con al menos un check | `✗`: sin checks el Filtro siempre falla (sección 4.2) |
+| Remoto `origin` y `origin/develop` | `✗`: Atta integra solo en `develop`; créala en `origin` |
+| Checkout principal al día con `origin/develop` | `⚠`: `git pull --ff-only origin develop` (el Filtro lee `checks.json` de ahí) |
+| `gh` instalado, con sesión y con acceso al repo (`gh repo view`) | `✗`: `gh auth login`, o `gh auth switch -u <usuario>` a la cuenta con acceso |
+| Labels de Atta en el repo (incluida `atta:needs-review`) | `✗`: corre `atta init` en tu terminal (crea las que faltan) |
+| Los 10 agentes, el skill, `.claude/commands/atta.md` y el hook `atta guard` | `✗`: corre `atta init` en tu terminal |
+| `claude --version` | `⚠`: instala Claude Code |
+| Archivos al día con la versión instalada (como `atta init --check`) | `⚠`: `atta init --force` |
+
+```text
+> atta doctor
+Atta doctor: C:\code\mi-app
+✓ atta está en el PATH (C:\Python311\Scripts\atta.exe)
+…
+✗ faltan labels de Atta en el repo: atta:needs-review
+    → Corre atta init en tu terminal: crea las labels que faltan.
+…
+Resumen: 18 bien, 0 avisos, 1 falla.
+Corrige lo marcado con ✗ antes de correr /atta.
+— Atta
+```
+
+### Síntomas
+
 | Síntoma | Causa y solución |
 |---|---|
+| No sé si el proyecto está listo, o algo falla y no sé qué | `atta doctor`: cada `✗` trae cómo arreglarlo |
+| Claude Code dice «Unknown command: /atta» | Falta `.claude/commands/atta.md` (`atta doctor` lo marca): corre `atta init` |
+| `atta handoff` no pudo poner `atta:needs-review` | La label no existe en el repo (`atta doctor` la marca): corre `atta init` sin `--no-github` |
+| Después de actualizar Atta los agentes se comportan como antes | Los archivos del proyecto quedaron atrás: `atta init --check` los lista y `atta init --force` los pone al día |
 | `No module named pip` al instalar | El `python` del `PATH` no tiene pip (por ejemplo, un venv sin pip). Usa `py -m pip install …` en Windows, otro Python con pip, o `pipx` |
 | «El término 'atta' no se reconoce…» / `atta: command not found` | La carpeta de scripts no está en el `PATH`: con pipx, `pipx ensurepath`; con pip en Windows, agrega la carpeta `Scripts` de ese Python. Abre una terminal nueva |
-| El guard no bloquea nada | Claude Code no encuentra `atta` (mismo arreglo de arriba) o falta el hook: corre `atta init` y revisa `.claude/settings.json` |
+| El guard no bloquea nada | Claude Code no encuentra `atta` (mismo arreglo de arriba) o falta el hook: `atta doctor` dice cuál; corre `atta init` y revisa `.claude/settings.json` |
 | `atta queue` sale vacío justo después de ponerle la label a un issue | El índice de búsqueda de GitHub tarda unos segundos: vuelve a correrlo |
-| `gh` responde «Could not resolve to a Repository» o no ve un repo privado | La cuenta activa de `gh` no tiene acceso: `gh auth status` y `gh auth switch` a la cuenta correcta |
+| `gh` responde «Could not resolve to a Repository» o no ve un repo privado | La cuenta activa de `gh` no tiene acceso (`atta doctor` lo marca): `gh auth status` y `gh auth switch -u <usuario>` a la cuenta correcta |
 | `atta init` sale con `1` | Un aviso de GitHub: falta `develop` en `origin` o no se pudo crear una label. Los archivos sí se crearon; arréglalo y vuelve a correrlo |
 | `atta init` sale con `2` | `.claude/settings.json` no es JSON válido: corrígelo; no se cambió nada |
 | `atta status` dice «No hay jobs.» y sí hay | Estás fuera del proyecto, o `--project` / `ATTA_PROJECT` apuntan a otra carpeta |
@@ -1380,7 +1442,7 @@ Para verificar las plantillas de los agentes: `python atta/templates/claude/chec
 | En un checkout de Atta, PowerShell no reconoce `atta` | Sin el comando global, usa el lanzador con prefijo: `.\atta <comando>` |
 | PowerShell: «Falta una expresión después del operador unario '-'» | Se copió el guion de una lista: el comando empieza en `atta` |
 | `./atta.sh: Permission denied` | `chmod +x atta.sh` |
-| El Filtro falla con «no tiene checks» | `atta/checks.json` está vacío a propósito: agrega los checks del proyecto |
+| El Filtro falla con «no tiene checks» | `atta/checks.json` está vacío a propósito (`atta doctor` lo marca): agrega los checks del proyecto |
 | El Filtro rechaza `--base` | La base no existe, es igual a `HEAD` o no comparte historia: usa `origin/develop` tras un `git fetch` |
 | «el worktree tiene cambios sin commitear» | Commitea o descarta los cambios del worktree antes de correr el Filtro |
 | `atta comment` dice que el archivo no es UTF-8 | Guárdalo en UTF-8 (en PowerShell 5: `Set-Content -Encoding utf8`) |

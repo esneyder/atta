@@ -430,6 +430,98 @@ class GithubTest(InitBase):
         self.assertIn("--no-github", out)
 
 
+class CheckTest(InitBase):
+    """`atta init --check` (F3 S3, G2): compares without writing; 0 al día, 1 otherwise."""
+
+    def run_check(self, templates=None):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = initcmd.check(self.root, templates_dir=templates or self.tdir)
+        return code, out.getvalue(), err.getvalue()
+
+    def outdated_text(self, *entries):
+        n = len(entries)
+        head = (f"Atta revisó {self.root.resolve()}: {n} archivo"
+                f"{' no coincide' if n == 1 else 's no coinciden'} con esta versión de Atta:")
+        return "\n".join([head, *(f"  {e}" for e in entries),
+                          "Ponlos al día en tu terminal con `atta init --force` (nunca toca "
+                          "config.json, checks.json ni tus entradas de settings.json).",
+                          "— Atta"]) + "\n"
+
+    def test_up_to_date_exits_0_and_writes_nothing(self):
+        self.assertEqual(self.run_init()[0], 0)
+        before = tree(self.root)
+        code, out, err = self.run_check()
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, f"Atta revisó {self.root.resolve()}: al día (5 archivos).\n"
+                              "— Atta\n")
+        self.assertEqual(tree(self.root), before)
+
+    def test_edited_agent_exits_1_and_writes_nothing(self):
+        self.assertEqual(self.run_init()[0], 0)
+        (self.root / ".claude" / "agents" / "atta-dos.md").write_text("mío\n", encoding="utf-8")
+        before = tree(self.root)
+        code, out, err = self.run_check()
+        self.assertEqual((code, err), (1, ""))
+        self.assertEqual(out, self.outdated_text("distinto: .claude/agents/atta-dos.md"))
+        self.assertEqual(tree(self.root), before)
+
+    def test_missing_skill_exits_1(self):
+        self.assertEqual(self.run_init()[0], 0)
+        (self.root / ".claude" / "skills" / "atta" / "SKILL.md").unlink()
+        before = tree(self.root)
+        code, out, _ = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertEqual(out, self.outdated_text("falta: .claude/skills/atta/SKILL.md"))
+        self.assertEqual(tree(self.root), before)
+
+    def test_missing_hook_counts_as_outdated(self):
+        self.assertEqual(self.run_init()[0], 0)
+        (self.root / ".claude" / "settings.json").write_text('{"theme": "dark"}',
+                                                             encoding="utf-8")
+        code, out, _ = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertEqual(out, self.outdated_text("distinto: .claude/settings.json"))
+
+    def test_models_are_resolved_with_the_project_config(self):
+        self.assertEqual(self.run_init()[0], 0)
+        (self.root / "atta" / "config.json").write_text(json.dumps(
+            {"models": {"claude-code": {"tiers": {"T2": "haiku"}}}}), encoding="utf-8")
+        code, out, _ = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertEqual(out, self.outdated_text("distinto: .claude/agents/atta-dos.md"))
+
+    def test_empty_project_lists_everything_and_creates_nothing(self):
+        code, out, _ = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertEqual(out, self.outdated_text(
+            "falta: .claude/agents/atta-dos.md", "falta: .claude/agents/atta-tres.md",
+            "falta: .claude/agents/atta-uno.md", "falta: .claude/skills/atta/SKILL.md",
+            "falta: .claude/settings.json"))
+        self.assertEqual(tree(self.root), {})
+
+    def test_invalid_settings_exits_2(self):
+        settings = self.root / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text("{no es json", encoding="utf-8")
+        before = tree(self.root)
+        code, out, err = self.run_check()
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("no es JSON válido", err)
+        self.assertEqual(tree(self.root), before)
+
+    def test_cli_init_check_uses_packaged_templates_without_writing(self):
+        from atta.spine import cli
+        self.assertEqual(self.run_init(templates=project.TEMPLATES_DIR)[0], 0)
+        before = tree(self.root)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = cli.main(["--project", str(self.root), "init", "--check"])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn(": al día (13 archivos).", out.getvalue())
+        self.assertEqual(tree(self.root), before)
+
+
 class RegisterTest(TempDirMixin, unittest.TestCase):
     def parser(self):
         p = argparse.ArgumentParser(prog="atta")
@@ -442,7 +534,14 @@ class RegisterTest(TempDirMixin, unittest.TestCase):
         self.assertIs(args.func, initcmd.cmd_init)
         self.assertFalse(args.force)
         self.assertFalse(args.no_github)
+        self.assertFalse(args.check)
         self.assertEqual(args.runtime, "claude-code")
+
+    def test_check_and_force_are_exclusive(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                self.parser().parse_args(["init", "--check", "--force"])
+        self.assertEqual(ctx.exception.code, 2)
 
     def test_register_flags(self):
         args = self.parser().parse_args(["init", "--force", "--no-github",

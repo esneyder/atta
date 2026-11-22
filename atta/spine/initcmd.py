@@ -21,6 +21,12 @@ Existing files that differ are kept (reported «ya existe, la dejé igual») unl
 replaces only the agents and the skill. Every check runs before the first write: an invalid
 `.claude/settings.json` exits 2 and changes nothing. Exit codes: 0 ok, 1 GitHub warning
 (missing develop, label not created), 2 refused.
+
+`atta init --check` (F3 G2) writes nothing and uses no network: it plans exactly what init would
+write (same `_plan`) and lists the Claude Code files that differ from it or are missing (agents
+with their resolved models, skill, command, the settings hook). Exit 0 «al día», 1 when something
+differs, 2 refused (e.g. invalid settings.json). `outdated()` is the pure comparison that
+`atta doctor` reuses.
 """
 
 from __future__ import annotations
@@ -135,32 +141,48 @@ def _gitignore(path: Path) -> tuple[bytes | None, bool]:
     return (text + nl.join(missing) + nl).encode("utf-8"), False
 
 
+MISSING, DIFFERS = "falta", "distinto"
+
+
 class _Plan:
     def __init__(self, root: Path, force: bool):
         self.root, self.force = root, force
         self.writes: list[tuple[Path, bytes]] = []
         self.lines: list[str] = []
         self.unchanged = 0
+        # `--check`: (rel path, None | MISSING | DIFFERS) of every Claude Code file init owns
+        # (agents, skill, command and the settings hook), in plan order.
+        self.owned: list[tuple[str, str | None]] = []
 
     def file(self, path: Path, data: bytes, *, replaceable: bool) -> None:
         rel = _rel(self.root, path)
         if not path.exists():
+            state = MISSING
             self.writes.append((path, data))
             self.lines.append(f"creé: {rel}")
         elif path.read_bytes() == data:
+            state = None
             self.unchanged += 1
         elif replaceable and self.force:
+            state = DIFFERS
             self.writes.append((path, data))
             self.lines.append(f"reemplacé: {rel}")
         else:
+            state = DIFFERS
             self.lines.append(f"ya existe, la dejé igual: {rel}")
+        if replaceable:
+            self.owned.append((rel, state))
 
-    def update(self, path: Path, data: bytes | None, created: bool) -> None:
+    def update(self, path: Path, data: bytes | None, created: bool, *,
+               owned: bool = False) -> None:
+        rel = _rel(self.root, path)
+        if owned:
+            self.owned.append((rel, None if data is None else MISSING if created else DIFFERS))
         if data is None:
             self.unchanged += 1
             return
         self.writes.append((path, data))
-        self.lines.append(f"{'creé' if created else 'actualicé'}: {_rel(self.root, path)}")
+        self.lines.append(f"{'creé' if created else 'actualicé'}: {rel}")
 
 
 def _plan(root: Path, templates: Path, runtime: str, force: bool,
@@ -191,7 +213,7 @@ def _plan(root: Path, templates: Path, runtime: str, force: bool,
         _hooks_of(template, "La plantilla settings.json")
         dst = root / ".claude" / "settings.json"
         if not dst.exists():
-            plan.update(dst, settings_t.read_bytes(), True)
+            plan.update(dst, settings_t.read_bytes(), True, owned=True)
         else:
             label = ".claude/settings.json"
             user = _read_json(dst, label)
@@ -201,7 +223,7 @@ def _plan(root: Path, templates: Path, runtime: str, force: bool,
             _hooks_of(user, label)
             merged, changed = _merge_settings(user, template)
             data = (json.dumps(merged, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-            plan.update(dst, data if changed else None, False)
+            plan.update(dst, data if changed else None, False, owned=True)
 
     plan.file(project.config_path(root), new_config_bytes(), replaceable=False)
     plan.file(project.checks_path(root), project.CHECKS_TEMPLATE.read_bytes(), replaceable=False)
@@ -325,8 +347,48 @@ def run(root: str | Path, *, force: bool = False, no_github: bool = False,
     return WARNING if warnings else OK
 
 
+def outdated(root: str | Path, *, runtime: str = "claude-code", cfg: dict | None = None,
+             templates_dir: str | Path | None = None) -> tuple[list[tuple[str, str]], int]:
+    """([(rel path, MISSING | DIFFERS)], number of files compared) for the Claude Code files
+    `atta init` owns, against what init would write now. Pure: reads only. Raises InitError
+    (e.g. invalid settings.json, invalid models) or config.ConfigError."""
+    root = Path(root).resolve()
+    templates = Path(templates_dir) if templates_dir is not None else project.TEMPLATES_DIR
+    cfg = cfg if cfg is not None else project.load_config(root)
+    plan = _plan(root, templates, runtime, False, cfg)
+    return [(rel, state) for rel, state in plan.owned if state], len(plan.owned)
+
+
+def check(root: str | Path, *, runtime: str = "claude-code", cfg: dict | None = None,
+          templates_dir: str | Path | None = None) -> int:
+    """`atta init --check`: print «al día» (0) or the files that differ (1); 2 when refused."""
+    root = Path(root).resolve()
+    try:
+        diff, total = outdated(root, runtime=runtime, cfg=cfg, templates_dir=templates_dir)
+    except InitError as exc:
+        print(str(exc), file=sys.stderr)
+        return REFUSED
+    except config.ConfigError as exc:
+        print(f"{exc} No cambié nada.", file=sys.stderr)
+        return REFUSED
+    if not diff:
+        print(f"Atta revisó {root}: al día ({total} archivo{'' if total == 1 else 's'}).\n"
+              "— Atta")
+        return OK
+    n = len(diff)
+    out = [f"Atta revisó {root}: {n} archivo"
+           f"{' no coincide' if n == 1 else 's no coinciden'} con esta versión de Atta:"]
+    out += [f"  {state}: {rel}" for rel, state in diff]
+    out += ["Ponlos al día en tu terminal con `atta init --force` (nunca toca config.json, "
+            "checks.json ni tus entradas de settings.json).", "— Atta"]
+    print("\n".join(out))
+    return WARNING
+
+
 def cmd_init(args, cfg, jobs) -> int:
     """Entry point for cli.py (`atta init`); `jobs` is unused."""
+    if getattr(args, "check", False):
+        return check(args.root, runtime=args.runtime, cfg=cfg)
     return run(args.root, force=args.force, no_github=args.no_github, runtime=args.runtime,
                cfg=cfg)
 
@@ -340,10 +402,15 @@ def register(subparsers) -> None:
                     ".gitignore, y verifica develop en origin y las labels con gh. Nunca "
                     "sobrescribe archivos existentes sin --force.",
         epilog="Códigos de salida: 0 ok, 1 aviso de GitHub (falta develop o una label), "
-               "2 rechazado (p. ej. .claude/settings.json inválido; no cambia nada).")
-    p.add_argument("--force", action="store_true",
-                   help="reemplaza los agentes y el skill existentes (nunca config.json, "
-                        "checks.json ni settings.json)")
+               "2 rechazado (p. ej. .claude/settings.json inválido; no cambia nada). Con "
+               "--check: 0 al día, 1 hay archivos distintos o faltantes, 2 rechazado.")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--force", action="store_true",
+                      help="reemplaza los agentes y el skill existentes (nunca config.json, "
+                           "checks.json ni settings.json)")
+    mode.add_argument("--check", action="store_true",
+                      help="no escribe nada ni usa la red: dice si los agentes, el skill, el "
+                           "comando /atta y el hook están al día con esta versión de Atta")
     p.add_argument("--no-github", action="store_true",
                    help="no verifica origin/develop ni crea labels (sin red)")
     p.add_argument("--runtime", choices=RUNTIMES, default="claude-code",
