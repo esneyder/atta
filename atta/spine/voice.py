@@ -98,6 +98,12 @@ def handoff_ready(pr: int, risk, branch: str, url: str | None = None) -> str:
     return f"{text} {url}" if url else text
 
 
+def handoff_resumed(pr: int) -> str:
+    """L31: `atta handoff` retakes a handoff that escalated to needs-human."""
+    return (f"La Reina retoma el handoff del PR #{pr}: la aprobación sigue vigente y nada "
+            "cambió desde el Filtro.")
+
+
 def waiting_review(pr: int) -> str:
     return f"El PR #{pr} sigue esperando tu revisión."
 

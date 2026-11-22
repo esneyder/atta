@@ -27,9 +27,20 @@ needs-human. On a merged job it is a no-op. `atta next` in `merging` runs it aga
 
 Delivery by risk (S13): above `delivery.auto_merge_up_to` `atta next` runs `atta handoff` instead
 of `atta merge`: the same identity checks, sync with develop, `merge-checks` and push as a merge
-(so the person reviews exactly what lands), then the PR leaves draft, the Reina comments on it,
-the issue gets `labels.needs_review` and the job goes `approve → awaiting-merge`. Any failure →
-needs-human. `atta merge` on `awaiting-merge` asks GitHub: OPEN → keeps waiting (exit 0, no
+(so the person reviews exactly what lands), then the PR leaves draft and the job goes
+`approve → awaiting-merge`; a failure in any of those essential steps → needs-human (handoff.md
+`HANDOFF: FAIL` plus merge.md FAIL, as before). Then, non-essential (L31): the Reina comments on
+the PR and the issue gets `labels.needs_review`; their failures are warnings (stderr and
+`## Avisos` in handoff.md `HANDOFF: READY`), never an escalation. Every Atta label add creates the
+label when the repository lacks it (init's LABEL_STYLE) and retries once.
+
+Handoff recovery (L31): `atta handoff` on a needs-human job retakes it only when
+`next.handoff_recovery` accepts it (a handoff escalated it, the latest archived decision is an
+APPROVE newer than the last entry into approve, HEAD is the commit that passed merge-checks) and
+the PR is open from atta/<id> into the integration branch: then the gated sha is pushed (a no-op
+when origin has it), the PR leaves draft if needed, the job goes `needs-human → awaiting-merge`
+and the non-essential steps run again, removing `labels.needs_human`. Otherwise exit 2 and
+nothing changes. `atta merge` on `awaiting-merge` asks GitHub: OPEN → keeps waiting (exit 0, no
 change); MERGED into the integration branch → merge.md DONE with the merged head sha (not
 necessarily the Filtro's: the person may push fixes) and the same post-merge steps, also removing
 `labels.needs_review`; CLOSED, another base or another head → needs-human. `awaiting-merge` holds
@@ -50,8 +61,9 @@ from . import branches, config, gate, github, intake, issue, machine, voice
 from .board import summary as artifact_summary
 from .github import GhError
 from .ids import InvalidId
+from .initcmd import LABEL_STYLE
 from .lock import LockTimeout, job_lock
-from .next import _fresh
+from .next import _fresh, handoff_recovery
 from .store import JobStore, StoreError, _replace
 
 OK, NEGATIVE, REFUSED = 0, 1, 2
@@ -59,6 +71,7 @@ GIT_TIMEOUT_S = 600
 WORKTREES_DIR = ".worktrees"
 DECISION_FILE = "decision.md"
 MERGE_FILE = "merge.md"
+HANDOFF_FILE = "handoff.md"
 DEFAULT_MERGE_METHOD = "merge"  # local fallback for config key `merge_method`
 WAITING_HUMAN = frozenset({"needs-info", "needs-human"})
 AWAITING_MERGE = "awaiting-merge"
@@ -449,9 +462,28 @@ def _read_comment_file(path: Path) -> str:
     return text
 
 
+def _label_style(cfg: dict, name: str) -> tuple[str, str] | None:
+    """(color, description) of an Atta label by its configured name, as `atta init` creates it;
+    None for any other label."""
+    for key, style in LABEL_STYLE.items():
+        configured = (config.label(cfg, key) if key in config.OPTIONAL_LABELS
+                      else (cfg.get("labels") or {}).get(key))
+        if configured == name:
+            return style
+    return None
+
+
+def _add_label(cfg: dict, number: int, name: str) -> None:
+    """Add a label to the issue; an Atta label the repository lacks is created first (L31)."""
+    github.edit_label(number, "add", name, create=_label_style(cfg, name))
+
+
 def cmd_label(args, cfg, jobs: JobStore) -> int:
     job = jobs.load(args.job)
-    github.edit_label(job["issue"], args.action, args.name)
+    if args.action == "add":
+        _add_label(cfg, job["issue"], args.name)
+    else:
+        github.edit_label(job["issue"], args.action, args.name)
     verb = "agregada al" if args.action == "add" else "quitada del"
     print(f"Label {args.name} {verb} issue #{job['issue']}.")
     return OK
@@ -530,7 +562,7 @@ def _escalate(jobs: JobStore, job: dict, reason: str, code: int, cfg: dict) -> i
     except GhError as exc:
         _err(f"Aviso: no se pudo comentar en el PR #{job['pr']}: {exc}")
     try:
-        github.edit_label(job["issue"], "add", cfg["labels"]["needs_human"])
+        _add_label(cfg, job["issue"], cfg["labels"]["needs_human"])
     except GhError as exc:
         _err(f"Aviso: no se pudo poner la label en el issue #{job['issue']}: {exc}")
     _err(reason)
@@ -868,36 +900,108 @@ def _check_approved(jobs: JobStore, job: dict, command: str) -> None:
                         "la etapa approve; hace falta una nueva.")
 
 
+def _write_handoff_md(job_dir: Path, verdict: str, summary: str, commit: str | None = None,
+                      pr: int | None = None, warnings: list[str] | None = None) -> None:
+    """handoff.md: `HANDOFF: READY` (COMMIT, PR, avisos) or `HANDOFF: FAIL` with the reason."""
+    lines = [f"HANDOFF: {verdict}"]
+    if commit:
+        lines.append(f"COMMIT: {commit}")
+    if pr:
+        lines.append(f"PR: #{pr}")
+    lines += ["", "## Summary", "", summary, ""]
+    if warnings:
+        lines += ["## Avisos", "", *(f"- {w}" for w in warnings), ""]
+    with open(job_dir / HANDOFF_FILE, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(lines))
+
+
+def _job_risk(job: dict):
+    return (job.get("intake") or {}).get("risk") or (job.get("agents") or {}).get("risk")
+
+
+def _finish_handoff(cfg, jobs: JobStore, job: dict, sha: str, *,
+                    clear_needs_human: bool = False) -> int:
+    """The essential steps passed: awaiting-merge first, then the non-essential steps (Reina's
+    PR comment, review label, and on a recovery removing needs_human); each failure is a
+    warning on stderr and under `## Avisos` in handoff.md (L31)."""
+    jid, number, issue_n = job["id"], job["pr"], job["issue"]
+    integration, risk = cfg["integration_branch"], _job_risk(job)
+    review = config.label(cfg, "needs_review")
+    machine.advance(jobs, jid, AWAITING_MERGE)
+    warnings: list[str] = []
+    body = github.sign("reina", voice.handoff_comment(risk, integration))
+    _step(warnings, f"No se pudo comentar en el PR #{number}",
+          lambda: github.comment("pr", number, body))
+    _step(warnings, f"No se pudo poner la label {review} en el issue #{issue_n}",
+          lambda: _add_label(cfg, issue_n, review))
+    if clear_needs_human:
+        held = cfg["labels"]["needs_human"]
+        _step(warnings, f"No se pudo quitar la label {held} del issue #{issue_n}",
+              lambda: github.edit_label(issue_n, "remove", held))
+    line = voice.handoff_ready(number, risk, integration, job.get("pr_url"))
+    _write_handoff_md(jobs.job_dir(jid), "READY", line, sha, number, warnings)
+    print(line)
+    for warning in warnings:
+        _err(f"Aviso: {warning}")
+    return OK
+
+
+def _recover_handoff(args, cfg, jobs: JobStore, job: dict) -> int:
+    """L31 (c): retake a needs-human job that a handoff escalated, when the approval still holds
+    and nothing changed since the Filtro; otherwise refuse (exit 2) without changes."""
+    jid = job["id"]
+    _check_refs(job, cfg)
+    sha, reason = handoff_recovery(job, jobs.job_dir(jid), job.get("worktree"))
+    if reason:
+        raise FlowError(reason)
+    wt = _worktree(job)
+    number = job["pr"]
+    pr = github.view_pr(number)
+    try:
+        _check_pr_identity(pr, job["branch"], cfg)
+    except _MergeFailure as exc:
+        raise FlowError(exc.reason) from None
+    if str(pr.get("state") or "").upper() != "OPEN":
+        raise FlowError(f"El PR #{number} no está abierto ({pr.get('state')}); no se retoma "
+                        "el handoff.")
+    try:
+        _push_gated(job, wt, sha, cfg)
+        if pr.get("isDraft"):
+            github.ready_pr(number)
+    except _MERGE_ERRORS as exc:
+        raise FlowError(_failure(exc)[0]) from None
+    print(voice.handoff_resumed(number))
+    return _finish_handoff(cfg, jobs, job, sha, clear_needs_human=True)
+
+
 def cmd_handoff(args, cfg, jobs: JobStore) -> int:
-    """S13: the job's risk is above auto_merge_up_to. Sync, Filtro and push like a merge, then
-    the PR is made ready, the Reina comments, the issue gets the review label and the job waits
-    in awaiting-merge for a person to merge it. Any failure → needs-human."""
+    """S13: the job's risk is above auto_merge_up_to. Sync, Filtro and push like a merge, the PR
+    is made ready and the job waits in awaiting-merge for a person to merge it; an essential
+    failure → needs-human. The Reina's comment and the review label only warn (L31). On a
+    needs-human job that a handoff escalated, retakes it when nothing changed."""
     job = jobs.load(args.job)
     jid = job["id"]
     if job["stage"] == AWAITING_MERGE:
         print(f"El job {jid} ya espera tu merge en el PR #{job.get('pr')}.")
         return OK
+    if job["stage"] == "needs-human":
+        return _recover_handoff(args, cfg, jobs, job)
     _check_approved(jobs, job, "handoff")
     _check_refs(job, cfg)
     wt = _worktree(job)
-    number, integration = job["pr"], cfg["integration_branch"]
-    risk = (job.get("intake") or {}).get("risk") or (job.get("agents") or {}).get("risk")
-    review = config.label(cfg, "needs_review")
+    number = job["pr"]
     print(voice.reina_approved(number))
     try:
-        _sync_gate_push(args, cfg, jobs, job, wt)
+        sha = _sync_gate_push(args, cfg, jobs, job, wt)
         pr = github.view_pr(number)
         _check_pr(pr, job["branch"], cfg)
         if pr.get("isDraft"):
             github.ready_pr(number)
-        github.comment("pr", number, github.sign("reina", voice.handoff_comment(risk,
-                                                                              integration)))
-        github.edit_label(job["issue"], "add", review)
     except _MERGE_ERRORS as exc:
-        return _escalate(jobs, job, *_failure(exc), cfg)
-    machine.advance(jobs, jid, AWAITING_MERGE)
-    print(voice.handoff_ready(number, risk, integration, job.get("pr_url")))
-    return OK
+        reason, code = _failure(exc)
+        _write_handoff_md(jobs.job_dir(jid), "FAIL", reason)
+        return _escalate(jobs, job, reason, code, cfg)
+    return _finish_handoff(cfg, jobs, job, sha)
 
 
 def cmd_merge(args, cfg, jobs: JobStore) -> int:
@@ -1017,12 +1121,18 @@ def register(subparsers) -> None:
                                           "escrito en esa etapa. Verifica el PR (base de "
                                           "integración, rama atta/<id>), sincroniza con "
                                           "origin/<integración>, corre el Filtro merge-checks y "
-                                          "empuja, como merge; luego saca el PR de borrador, la "
-                                          "Reina comenta en el PR, pone la label needs_review "
-                                          "(atta:needs-review) en el issue y el job pasa a "
-                                          "awaiting-merge. Nunca mergea. Cualquier fallo deja el "
-                                          "job en needs-human. Sale 0 si queda esperando, 1 si "
-                                          "no pasó, 2 si se rechaza.")
+                                          "empuja, como merge; luego saca el PR de borrador y "
+                                          "el job pasa a awaiting-merge. Un fallo en esos pasos "
+                                          "deja el job en needs-human. Después la Reina comenta "
+                                          "en el PR y pone la label needs_review "
+                                          "(atta:needs-review) en el issue (la crea si falta): "
+                                          "si fallan, solo avisan (handoff.md, ## Avisos). En "
+                                          "needs-human retoma un handoff escalado si la última "
+                                          "decisión archivada es APPROVE vigente, el PR sigue "
+                                          "abierto contra la rama de integración y HEAD es el "
+                                          "commit que pasó el Filtro; si no, se rechaza sin "
+                                          "cambios. Nunca mergea. Sale 0 si queda esperando, 1 "
+                                          "si no pasó, 2 si se rechaza.")
     h.add_argument("job", help="id del job")
     h.set_defaults(func=_guarded(cmd_handoff))
 

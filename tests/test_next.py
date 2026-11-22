@@ -5,14 +5,16 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import unittest
 from pathlib import Path
 
 import support  # noqa: F401
 from support import TempDirMixin
 
-from atta.spine import config, store
+from atta.spine import config, events, store
 from atta.spine import next as nxt
+from atta.spine.timeutil import from_iso
 
 JID = "12-agregar-exportacion-a-csv"
 PAST = "2020-01-01T00:00:00Z"
@@ -431,6 +433,76 @@ class RestingStagesTest(NextBase):
             with self.subTest(stage=stage):
                 self.job["stage"] = stage
                 self.assertEqual(self.decide(), {"action": "done", "stage": stage})
+
+
+def _git(cwd, *args):
+    out = subprocess.run(["git", "-C", str(cwd), "-c", "user.name=Atta Test",
+                          "-c", "user.email=atta@example.invalid", "-c", "commit.gpgsign=false",
+                          *args], capture_output=True, text=True, encoding="utf-8")
+    if out.returncode != 0:
+        raise AssertionError(f"git {args} falló: {out.stderr}")
+    return out.stdout.strip()
+
+
+class HandoffRecoveryTest(NextBase):
+    """L31 (c): a needs-human job that a handoff escalated, with the approval still valid and
+    HEAD at the Filtro's sha, runs `atta handoff` again; anything else keeps waiting."""
+
+    WAIT = {"action": "wait",
+            "reason": "Esperando una decisión humana (needs-human): deja tu feedback con /atta."}
+
+    def setUp(self):
+        super().setUp()
+        self.with_worktree()
+        _git(self.wt, "init", "-q")
+        _git(self.wt, "checkout", "-q", "-b", f"atta/{JID}")
+        _git(self.wt, "commit", "-q", "--allow-empty", "-m", "feature")
+        self.sha = _git(self.wt, "rev-parse", "HEAD")
+        self.set(stage="needs-human", branch=f"atta/{JID}", pr=101)
+        self.event("review", "approve", PAST)
+        self.event("approve", "needs-human", "2020-01-01T00:05:00Z")
+        self.write("decision-1.md", "APPROVE\n\n## Summary\n\nOk.\n")
+        self.write("round-1/merge-checks.md", f"GATE: PASS\nCOMMIT: {self.sha}\n")
+        self.write("handoff.md", "HANDOFF: FAIL\n\n## Summary\n\ngh pr ready falló: boom\n")
+
+    def event(self, frm, to, ts):
+        events.append_event(self.dir, events.make_event(JID, frm, to, 1, from_iso(ts)))
+
+    def test_recoverable_handoff_escalation_runs_handoff(self):
+        self.assertEqual(self.decide(), {"action": "run", "argv": ["atta", "handoff", JID]})
+
+    def test_l31_state_without_handoff_md_runs_handoff(self):
+        # Before handoff.md: a PASS merge-checks since approve and no merging means a handoff.
+        (self.dir / "handoff.md").unlink()
+        self.assertEqual(self.decide(), {"action": "run", "argv": ["atta", "handoff", JID]})
+
+    def test_waits_when_head_moved(self):
+        _git(self.wt, "commit", "-q", "--allow-empty", "-m", "otro")
+        self.assertEqual(self.decide(), self.WAIT)
+
+    def test_waits_when_the_decision_is_not_approve(self):
+        self.write("decision-1.md", "ESCALATE\n\n## Summary\n\nNo.\n")
+        self.assertEqual(self.decide(), self.WAIT)
+
+    def test_waits_when_the_escalation_did_not_come_from_a_handoff(self):
+        cases = {
+            "merge": lambda: self.event("needs-human", "build", "2020-01-01T00:06:00Z")
+            or self.event("build", "needs-human", "2020-01-01T00:07:00Z"),
+            "no evidence": lambda: [(self.dir / "handoff.md").unlink(),
+                                    (self.dir / "round-1" / "merge-checks.md").unlink()],
+        }
+        for name, change in cases.items():
+            with self.subTest(name):
+                change()
+                self.assertEqual(self.decide(), self.WAIT)
+
+    def test_waits_after_a_merge_escalation(self):
+        (self.dir / "handoff.md").unlink()
+        (self.dir / "events.jsonl").unlink()
+        self.event("review", "approve", PAST)
+        self.event("approve", "merging", "2020-01-01T00:01:00Z")
+        self.event("merging", "needs-human", "2020-01-01T00:05:00Z")
+        self.assertEqual(self.decide(), self.WAIT)
 
 
 class ProjectModelsTest(NextBase):

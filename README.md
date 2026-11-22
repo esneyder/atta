@@ -171,6 +171,7 @@ review ──CHANGES──► build       (nueva ronda)
 approve ──► merging ──► merged  (gh pr merge contra develop)
    ├──► awaiting-merge ──► merged  (riesgo sobre delivery.auto_merge_up_to: tú mergeas; sección 8.2)
    └──► needs-human ──► build (con feedback) | rejected
+                    └──► awaiting-merge  (atta handoff retoma un handoff escalado; sección 8.2)
 ```
 
 ### 2.4 Etapas y transiciones legales
@@ -187,7 +188,7 @@ approve ──► merging ──► merged  (gh pr merge contra develop)
 | `approve` | `merging`, `awaiting-merge`, `needs-human` |
 | `merging` | `merged`, `needs-human` |
 | `awaiting-merge` | `merged`, `needs-human` |
-| `needs-human` | `build`, `rejected` |
+| `needs-human` | `build`, `rejected`, `awaiting-merge` (solo con `atta handoff`, sección 8.2) |
 | `merged`, `rejected` | — (terminales) |
 
 Cualquier otra transición se rechaza con código de salida `2` y **no modifica** ni `job.json` ni
@@ -417,7 +418,7 @@ Qué pide la espina en cada etapa:
 | `approve` | Reina → `APPROVE`: si el riesgo del job es como mucho `delivery.auto_merge_up_to`, `atta merge` (al terminar cierra el issue, quita la label `atta` y borra la rama; sección 8); si lo supera, `atta handoff` (PR listo para ti, comentario de la Reina, label `atta:needs-review`, etapa `awaiting-merge`; sección 8.2); si no es `APPROVE`: label `atta:needs-human` + comentario de la Reina + `advance needs-human` |
 | `merging` | `atta merge` otra vez: termina o retoma un merge que quedó a medias (sección 8.1) |
 | `awaiting-merge` | `atta merge`: si el PR sigue abierto, «El PR #M sigue esperando tu revisión.» (sale `0`, sin cambios; `/atta` pasa al siguiente job); si lo mergeaste en `develop`, cierra el ciclo (sección 8.2) |
-| `needs-info`, `needs-human` | `wait` |
+| `needs-info`, `needs-human` | `wait`; en `needs-human`, si lo escaló un `atta handoff` que se puede retomar, `atta handoff` (sección 8.2) |
 
 Reglas que aplica la espina:
 
@@ -728,8 +729,10 @@ Entrega por riesgo: lo pide `atta next` cuando la Reina aprueba un job cuyo ries
 `delivery.auto_merge_up_to`. Hace los mismos chequeos y la misma sincronización que `merge` (base
 `develop`, rama `atta/<id>`, `origin/develop` mergeado, Filtro `merge-checks`, push), saca el PR de
 borrador, comenta en el PR firmado por la Reina, pone `atta:needs-review` (`labels.needs_review`) en
-el issue y pasa el job a `awaiting-merge`. **Nunca mergea.** Cualquier fallo escala a
-`needs-human`, igual que `merge`. Ver sección 8.2.
+el issue y pasa el job a `awaiting-merge`. **Nunca mergea.** Un fallo en la sincronización, el
+Filtro, el push o `gh pr ready` escala a `needs-human`, igual que `merge`; el comentario y la label
+solo avisan (`handoff.md`). Sobre un job en `needs-human` que escaló un handoff, lo retoma si nada
+cambió. Ver sección 8.2.
 
 #### `merge <job>`
 
@@ -944,8 +947,26 @@ Cuando te toca a ti, `atta next` pide `atta handoff <job>` en lugar de `atta mer
 4. Pone la label `atta:needs-review` en el issue y el job pasa a `awaiting-merge`. El job no ocupa
    cupo de `concurrency`.
 
-Si algo falla, escala a `needs-human` como un merge (lista de arriba). Después, cada `/atta run`
-ve el job como `resume` en `atta queue` y corre `atta merge <job>`, que consulta el PR:
+Los pasos 1 y 2 son esenciales: si algo falla, escala a `needs-human` como un merge (lista de
+arriba) y además escribe `handoff.md` con `HANDOFF: FAIL` y el motivo. El comentario (3) y la label
+(4) no lo son: el job pasa igual a `awaiting-merge` y cada fallo queda como aviso en stderr
+(«Aviso: …») y en `## Avisos` de `handoff.md` (`HANDOFF: READY`, `COMMIT: <sha>`, `PR: #M`). Si
+la label no existe en el repositorio (un proyecto preparado antes de que existiera), Atta la crea
+con `gh label create … --force` (mismo color y descripción que `atta init`) y reintenta una vez;
+lo mismo vale para `atta:needs-info` y `atta:needs-human`.
+
+**Retomar un handoff escalado.** Si un handoff terminó en `needs-human` (por ejemplo, la corrida
+anterior a este arreglo, que escalaba por la label faltante), `atta handoff <job>` lo retoma solo si
+se cumple todo: el escalamiento vino del handoff, la última decisión archivada (`decision-<k>.md`, el
+`k` más alto) empieza con `APPROVE` y es posterior a la última entrada en `approve`, el PR sigue
+abierto con base `develop` y rama `atta/<id>`, y el `HEAD` del worktree es el `COMMIT` del
+`merge-checks.md` con `PASS` de esa ronda. Entonces empuja ese commit (no hace nada si ya está),
+saca el PR de borrador si hace falta, pasa el job de `needs-human` a `awaiting-merge`, vuelve a
+comentar y poner `atta:needs-review` y quita `atta:needs-human`. Si algo no se cumple, sale `2` con
+el motivo y no cambia nada. `atta next` pide `atta handoff <job>` en ese caso y `wait` en los demás.
+
+Después, cada `/atta run` ve el job como `resume` en `atta queue` y corre `atta merge <job>`, que
+consulta el PR:
 
 | Estado del PR en GitHub | Qué hace |
 |---|---|

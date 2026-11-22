@@ -56,7 +56,7 @@ class TableTests(unittest.TestCase):
             "approve": ("merging", "awaiting-merge", "needs-human"),
             "merging": ("merged", "needs-human"),
             "awaiting-merge": ("merged", "needs-human"),
-            "needs-human": ("build", "rejected"),
+            "needs-human": ("build", "rejected", "awaiting-merge"),
             "merged": (),
             "rejected": (),
         })
@@ -177,6 +177,24 @@ class AdvanceTests(MachineTestBase):
         job = self.walk("spec", "build", "gate", "review", "approve", "awaiting-merge",
                         "needs-human")
         self.assertEqual(job["stage"], "needs-human")
+
+    def test_needs_human_can_go_back_to_awaiting_merge(self):
+        # L31 (c): `atta handoff` retakes a handoff escalation when the approval still holds.
+        job = self.walk("spec", "build", "gate", "review", "approve", "needs-human",
+                        "awaiting-merge")
+        self.assertEqual((job["stage"], job["total_rounds"], job["sync_attempts"]),
+                         ("awaiting-merge", 0, 0))
+        self.assertIsNone(job.get("ended"))
+        self.assertEqual([(e["from"], e["to"]) for e in events.read_events(self.dir)][-1],
+                         ("needs-human", "awaiting-merge"))
+
+    def test_needs_human_still_refuses_merging_and_merged(self):
+        self.walk("spec", "build", "needs-human")
+        for to in ("merging", "merged"):
+            self.assertRefused(
+                to,
+                f"Transición ilegal en 12-exportar-csv: needs-human → {to}. "
+                "Desde needs-human solo se puede ir a: build, rejected, awaiting-merge.")
 
     def test_sync_attempts_counter_on_merging_retry(self):
         job = self.walk("spec", "build", "gate", "review", "approve", "merging")
