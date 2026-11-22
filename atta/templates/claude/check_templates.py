@@ -11,7 +11,7 @@ Checks every `agents/atta-*.md`:
 - `name` equals the file name without `.md`;
 - `model` is exactly `{{model:Tn}}` with Tn a tier of models.json `claude-code`;
 - `tools` is exactly the role's tool set (Exploradora without Bash/Write/Edit; Guía, Vigía,
-  Jardineras, Soldado and Reina without Edit);
+  Jardineras, Soldado, Refutador and Reina without Edit);
 - the prompt contains its contract tokens, `## Summary`, `issue.md` and the one-line reply rule;
 - no URLs and no references to other factories or projects.
 
@@ -82,6 +82,13 @@ AGENTS = {
         "tiers": ("T2", "T3"),
         "tokens": REVIEW_TOKENS + ("review-security.md",),
     },
+    "atta-refutador": {
+        "tools": READ | {"Bash", "Write"},
+        "tiers": ("T0", "T1"),
+        "tokens": ("REFUTE: UPHELD|REFUTED|PARTIAL", "- UPHELD|REFUTED <reviewer> <path:line>",
+                   "[blocker|major|minor] path:line", "refute.md", "Never invent findings",
+                   "never block"),
+    },
     "atta-reina": {
         "tools": READ | {"Bash", "Write"},
         "tiers": ("T2", "T3"),
@@ -96,6 +103,7 @@ FORBIDDEN_TOOLS = {
     "atta-vigia": ("Edit",),
     "atta-reina": ("Edit",),
     "atta-soldado": ("Edit",),
+    "atta-refutador": ("Edit",),
 }
 for _name in AGENTS:
     if _name.startswith("atta-jardinera-"):
