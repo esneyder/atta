@@ -161,11 +161,11 @@ desatendida) ni la ceremonia de admisión de writers (Atta ya tiene su máquina 
 | D4 | Ejemplos **propios**: fixtures propios en F2 y ejemplos reales en F6 |
 | D5 | Repo git con remoto en GitHub (privado) |
 | D6 | **Reescritura propia**: Atta se escribe desde cero, sin código ni textos de terceros |
+| D7 | En riesgo bajo la Reina decide por **regla determinista, sin LLM**; ante cualquier señal faltante o ambigua deriva a la Reina LLM, escribe el mismo `decision.md`, deja un evento y conserva los frenos (migraciones, CI) |
+| D8 | Fallbacks de modelos **solo entre modelos Claude** hasta F5; otros proveedores llegan con Pi |
+| D9 | La DoD de Kernia y sus reglas ast-grep se revisaron en F3 (`odd/tasks/f3-calidad.md` L4) |
 
 **Abiertas**
 
 1. Licencia: por elegir (hoy no hay archivo `LICENSE`).
-2. Proveedores permitidos por repo y si Claude queda como tier T3 de escalamiento (antes de F4/F5).
-3. En riesgo bajo, ¿la Reina mergea por regla determinista sin juicio LLM, o siempre con un LLM barato?
-   (antes de F4)
-4. Revisar `CLAUDE.md` de Kernia (DoD completa) y su carpeta `rules/` (ast-grep) antes de F3.
+2. Proveedores permitidos por repo para F5 y si Claude queda como tier T3 de escalamiento.
