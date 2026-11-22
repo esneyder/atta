@@ -894,6 +894,164 @@ class OutputTests(GuardBase):
         self.assertDenyJson(out.getvalue())
 
 
+class ConfigCommandTests(GuardBase):
+    """L29: `atta settings set|reset`, `atta models set|unset|reset` and `atta init` change
+    atta/config.json and .claude/ through the CLI; agents may only run the read-only forms."""
+
+    MESSAGE = ("Atta no deja que un agente cambie su propia configuración ({}). Corre ese "
+               "comando tú en tu terminal.")
+
+    def assertConfigDenied(self, reason, command):
+        self.assertEqual(reason, self.MESSAGE.format(command))
+
+    def test_hook_output_is_signed_deny(self):
+        out = io.StringIO()
+        code = guard.run(json.dumps(self.hook("Bash", command="atta settings set max_rounds 9")),
+                         out, root=self.root)
+        self.assertEqual(code, 0)
+        data = json.loads(out.getvalue())["hookSpecificOutput"]
+        self.assertEqual(data["permissionDecision"], "deny")
+        self.assertEqual(data["permissionDecisionReason"],
+                         self.MESSAGE.format("atta settings set") + " — «Atta»")
+
+    def test_mutating_subcommands_denied(self):
+        cases = [
+            ("atta settings set delivery.auto_merge_up_to high", "atta settings set"),
+            ("atta settings reset merge_method", "atta settings reset"),
+            ("atta models set T2 haiku", "atta models set"),
+            ("atta models set --role soldado opus", "atta models set"),
+            ("atta models unset --role soldado", "atta models unset"),
+            ("atta models reset", "atta models reset"),
+            ("atta models --runtime claude-code set T1 opus", "atta models set"),
+            ("atta models --runtime=claude-code reset", "atta models reset"),
+            ("atta models set --runtime claude-code T3 sonnet", "atta models set"),
+            ("atta init", "atta init"),
+            ("atta init --force", "atta init"),
+            ("atta init --force --no-github --runtime claude-code", "atta init"),
+        ]
+        for command, shown in cases:
+            with self.subTest(command=command):
+                self.assertConfigDenied(self.bash_reason(command), shown)
+
+    def test_every_invocation_form_denied(self):
+        cases = [
+            "atta.exe settings set max_rounds 9",
+            "atta.cmd models reset",
+            "ATTA.EXE init",
+            "./atta.sh init",
+            "/opt/bin/atta init --force",
+            "C:/Tools/atta.exe models set T2 haiku",
+            "python -m atta.spine.cli settings set max_rounds 9",
+            "python3 -m atta.spine.cli models reset",
+            "python3.11 -m atta.spine.cli init",
+            "python -X utf8 -m atta.spine.cli init",
+            "python -matta.spine.cli init",
+            "py -3.11 -m atta.spine.cli settings reset merge_method",
+            "python atta/bin/atta.py init --force",
+            "python3 /repo/atta/bin/atta.py models unset --role reina",
+            "py -3.11 atta/bin/atta.py settings set max_rounds 2",
+            "sh atta.sh init",
+            "bash ./atta.sh models reset",
+        ]
+        for command in cases:
+            with self.subTest(command=command):
+                self.assertDenied(self.bash_reason(command), "su propia configuración",
+                                  "Corre ese comando tú en tu terminal")
+
+    def test_global_options_before_subcommand_denied(self):
+        cases = [
+            ("atta --project /x settings set max_rounds 9", "atta settings set"),
+            ("atta --jobs-dir y models reset", "atta models reset"),
+            ("atta --project=/x --jobs-dir=y init", "atta init"),
+            ("atta --project /x --jobs-dir y models --runtime claude-code unset --role guia",
+             "atta models unset"),
+            ("atta --proj /x init", "atta init"),
+            ("python -m atta.spine.cli --project /x settings reset max_rounds",
+             "atta settings reset"),
+            ("py -3.11 -m atta.spine.cli --jobs-dir y init", "atta init"),
+        ]
+        for command, shown in cases:
+            with self.subTest(command=command):
+                self.assertConfigDenied(self.bash_reason(command), shown)
+
+    def test_wrappers_chaining_and_nesting_denied(self):
+        cases = [
+            "cd sub && atta init",
+            "echo ok; atta models reset",
+            "true || atta settings set max_rounds 9",
+            "atta queue | atta init",
+            "sudo atta init",
+            "env FOO=1 atta init",
+            "FOO=1 atta settings set max_rounds 9",
+            "nohup atta models reset",
+            "timeout 5 atta init",
+            "command atta init",
+            "if true; then atta init; fi",
+            "! atta init",
+            "bash -c 'atta settings set max_rounds 9'",
+            "echo $(atta init)",
+            "echo `atta models reset`",
+            "eval atta init",
+            "cmd /c atta init",
+            "atta \\\n  init",
+            "bash <<'EOF'\natta models reset\nEOF",
+            "cat <<EOF\n$(atta init)\nEOF",
+        ]
+        for command in cases:
+            with self.subTest(command=command):
+                self.assertDenied(self.bash_reason(command), "su propia configuración")
+
+    def test_powershell_forms_denied(self):
+        cases = [
+            "& atta.exe settings set max_rounds 9",
+            "atta models reset; Write-Output ok",
+            "py -3.11 -m atta.spine.cli init",
+            "& 'C:\\Tools\\atta.cmd' init --force",
+            "pwsh -Command \"atta models reset\"",
+        ]
+        for command in cases:
+            with self.subTest(command=command):
+                self.assertDenied(self.bash_reason(command, tool="PowerShell"),
+                                  "su propia configuración")
+
+    def test_read_only_forms_allowed(self):
+        for command in ("atta settings", "atta settings get delivery.auto_merge_up_to",
+                        "atta settings get set", "atta settings --help", "atta models",
+                        "atta models --runtime claude-code", "atta models --runtime=claude-code",
+                        "atta models -h", "atta --project /x models",
+                        "atta --project /x --jobs-dir y settings get max_rounds",
+                        "atta.exe models", "./atta.sh settings",
+                        "python -m atta.spine.cli settings get max_rounds",
+                        "py -3.11 -m atta.spine.cli models --runtime claude-code",
+                        "python atta/bin/atta.py settings"):
+            with self.subTest(command=command):
+                self.assertAllowed(self.bash_reason(command))
+
+    def test_other_atta_subcommands_allowed(self):
+        for command in (f"atta next {JID}", "atta queue", "atta start 3", f"atta refresh {JID}",
+                        f"atta worktree {JID}", f"atta publish {JID}",
+                        f"atta comment {JID} --role reina --file /tmp/c.md",
+                        f"atta label {JID} add atta:needs-info", f"atta merge {JID}",
+                        f"atta handoff {JID}", f"atta gate {JID} --worktree x",
+                        f"atta advance {JID} spec", f"atta route {JID}", f"atta status {JID}",
+                        "atta summary", f"atta save-artifact {JID} intake --from-reply r.md",
+                        "atta check-push atta/7", "atta guard",
+                        f"atta --project /x next {JID}",
+                        f"python -m atta.spine.cli next {JID}",
+                        f"py -3.11 -m atta.spine.cli --jobs-dir y status {JID}"):
+            with self.subTest(command=command):
+                self.assertAllowed(self.bash_reason(command))
+
+    def test_mentions_and_unrelated_programs_allowed(self):
+        for command in ('echo "atta init"', 'grep -n "atta settings set" README.md',
+                        'git commit -m "docs: atta models reset"',
+                        "python -m pytest init",
+                        f"atta save-artifact {JID} intake --from-reply - <<'E'\natta init\nE",
+                        "python -m atta.spine.board init"):
+            with self.subTest(command=command):
+                self.assertAllowed(self.bash_reason(command))
+
+
 class SettingsTemplateTests(unittest.TestCase):
     def test_settings_wires_pretooluse_hook(self):
         data = json.loads(SETTINGS.read_text(encoding="utf-8"))

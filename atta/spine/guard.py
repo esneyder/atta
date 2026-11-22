@@ -81,6 +81,14 @@ Denied:
   (`api.github.com`, or `/api/v3/`, `/api/graphql` of a GitHub Enterprise host) with a write
   method (`-X/--request/--method/-Method PUT|POST|PATCH|DELETE`, or `-d/--data*/--json/-F/-T/
   --post-data` implying one);
+- Atta's configuration-mutating subcommands (L29), which change atta/config.json and .claude/
+  through the CLI where the write rules cannot see them: `atta settings set|reset`,
+  `atta models set|unset|reset` and `atta init` (any flags). Detected as `atta`, `atta.exe`,
+  `atta.cmd`, `atta.bat`, `./atta.sh` (also `sh atta.sh`), `python|python3|python3.N|py [-3.N]
+  -m atta.spine.cli` and `python .../atta.py`, with global options (`--project X`,
+  `--jobs-dir Y`, `=` forms and argparse prefixes) and `models --runtime X` before the action.
+  Read-only forms (`atta settings`, `atta settings get <k>`, `atta models [--runtime X]`) and
+  every other subcommand stay allowed;
 - deploy commands: `guard.deny_commands` in config.json (a list of command prefixes; it REPLACES
   `DEFAULT_DENY_COMMANDS`). A rule matches when the command name is equal and the remaining words
   appear in order among the arguments (`kubectl apply` matches `kubectl -n prod apply -f x`);
@@ -111,6 +119,8 @@ Known limits (best effort, not detected):
   in an earlier call); `bash 3<<EOF` is seen as a script named `3` (its body is still inspected,
   since a shell is present).
 - programs that read commands from a pipe instead of a heredoc (`echo x | ssh host`).
+- Atta's configuration commands run through launchers not modelled (`uv run atta`,
+  `pipx run atta`, `python -c "...cli.main(...)"`, a copy of the CLI under another name).
 The Filtro (gate) still rejects any diff that touches protected paths, and branch protection on
 GitHub remains the last line. Text that merely mentions a denied command (quoted args, heredocs
 that stay inspected per the exceptions above) may be denied.
@@ -233,6 +243,17 @@ _GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-
                "--super-prefix", "--exec-path"}
 _GIT_CONFIG_KEYS = ("alias.", "remote.", "url.", "include.", "includeif.", "core.hookspath")
 _GIT_CONFIG_VALUED = {"-f", "--file", "--blob", "--type", "--default", "--comment"}
+
+# Atta CLI (L29): names it runs under, global options that take a value, and the subcommand
+# actions that change atta/config.json or .claude/ (None = the subcommand itself, any form).
+ATTA_NAMES = {"atta", "atta.sh"}
+ATTA_SCRIPT = "atta.py"
+ATTA_MODULES = {"atta.spine.cli"}
+_ATTA_GLOBAL_VALUED = ("--project", "--jobs-dir")
+_ATTA_MUTATING = {"init": None, "settings": {"set", "reset"},
+                  "models": {"set", "unset", "reset"}}
+_ATTA_SUB_VALUED = {"models": ("--runtime",)}
+_PY_VALUED = {"-X", "-W"}
 
 
 class Deny(Exception):
@@ -1001,7 +1022,7 @@ def _check_words(words: list[str], ctx: _Ctx, powershell: bool, depth: int) -> N
     if name in ("npm", "pnpm", "yarn") and args and args[0] in ("exec", "dlx", "x"):
         return _check_words(_skip_flags(args[1:]), ctx, powershell, depth)
     if name in POSIX_SHELLS:
-        return _check_posix_shell_args(name, args, sub)
+        return _check_posix_shell_args(name, args, sub, on_script=_check_atta_script)
     if name in PS_SHELLS:
         return _check_powershell_args(name, args, sub)
     if name == "cmd":
@@ -1036,7 +1057,95 @@ def _check_words(words: list[str], ctx: _Ctx, powershell: bool, depth: int) -> N
         _check_ps_writer(args, ctx)
     elif name in HTTP_CLIENTS:
         _check_http(name, args)
+    elif name in ATTA_NAMES:
+        _check_atta(args)
+    elif _is_interpreter(name):
+        atta_args = _atta_via_interpreter(args)
+        if atta_args is not None:
+            _check_atta(atta_args)
     _check_deny_rules(name, args, ctx)
+
+
+def _option_takes_value(arg: str, valued) -> bool:
+    """True for `--name` (or an argparse prefix of it, no `=`) of an option in `valued`."""
+    return arg.startswith("--") and len(arg) > 2 and "=" not in arg and any(
+        full.startswith(arg) for full in valued)
+
+
+def _first_positional(args: list[str], valued=()) -> tuple[str | None, list[str]]:
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if _option_takes_value(a, valued):
+            i += 2
+        elif a.startswith("-") and a != "-":
+            i += 1
+        else:
+            return a, args[i + 1:]
+    return None, []
+
+
+def _check_atta(args: list[str]) -> None:
+    """Deny Atta's configuration-mutating subcommands (see module docstring)."""
+    subcmd, rest = _first_positional(args, _ATTA_GLOBAL_VALUED)
+    subcmd = (subcmd or "").lower()
+    if subcmd not in _ATTA_MUTATING:
+        return
+    actions = _ATTA_MUTATING[subcmd]
+    shown = f"atta {subcmd}"
+    if actions is not None:
+        action, _ = _first_positional(rest, _ATTA_SUB_VALUED.get(subcmd, ()))
+        action = (action or "").lower()
+        if action not in actions:
+            return
+        shown += f" {action}"
+    raise Deny(f"Atta no deja que un agente cambie su propia configuración ({shown}). Corre ese "
+               "comando tú en tu terminal.")
+
+
+def _check_atta_script(args: list[str]) -> None:
+    """`sh atta.sh ...`: `args[0]` is the script a shell runs."""
+    if args and _cmd_name(args[0]) == "atta.sh":
+        _check_atta(args[1:])
+
+
+def _atta_via_interpreter(args: list[str]) -> list[str] | None:
+    """Atta CLI arguments when a Python interpreter runs Atta (`-m atta.spine.cli`, `atta.py`)."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if a.startswith("--"):
+            i += 1
+            continue
+        if a.startswith("-") and a != "-":
+            if a in _PY_VALUED:
+                i += 2
+                continue
+            cluster = a[1:]
+            if cluster[:1] in ("X", "W"):
+                i += 1
+                continue
+            pos = [k for k in (cluster.find("m"), cluster.find("c")) if k != -1]
+            if not pos:
+                i += 1
+                continue
+            k = min(pos)
+            if cluster[k] == "c":
+                return None
+            module = cluster[k + 1:]
+            if module:
+                rest = args[i + 1:]
+            else:
+                module = args[i + 1] if i + 1 < len(args) else ""
+                rest = args[i + 2:]
+            return rest if module in ATTA_MODULES else None
+        break
+    if i < len(args) and _cmd_name(args[i]) == ATTA_SCRIPT:
+        return args[i + 1:]
+    return None
 
 
 def _stdin_shell(name: str) -> Deny:
@@ -1044,8 +1153,9 @@ def _stdin_shell(name: str) -> Deny:
                 "no puede verificarlos; pasa el comando con -c (o -Command, /c).")
 
 
-def _check_posix_shell_args(name: str, args: list[str], sub) -> None:
+def _check_posix_shell_args(name: str, args: list[str], sub, on_script=None) -> None:
     j = 0
+    script = on_script or (lambda _rest: None)
     while j < len(args):
         a = args[j]
         if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", a) or a == "--command":
@@ -1060,14 +1170,14 @@ def _check_posix_shell_args(name: str, args: list[str], sub) -> None:
             continue
         if a in ("-", "--"):
             if a == "--" and j + 1 < len(args) and args[j + 1] != "-":
-                return  # script file (known limit)
+                return script(args[j + 1:])  # script file (known limit)
             raise _stdin_shell(name)
         if re.fullmatch(r"[-+][A-Za-z]*s[A-Za-z]*", a):
             raise _stdin_shell(name)
         if a.startswith(("-", "+")):
             j += 1
             continue
-        return  # script file (known limit: its content is not inspected)
+        return script(args[j:])  # script file (known limit: its content is not inspected)
     raise _stdin_shell(name)
 
 
