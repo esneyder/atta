@@ -278,6 +278,51 @@ class ProjectModelsTest(InitBase):
         self.assertEqual(self.model_of("exploradora"), ["haiku"])
         self.assertEqual(cfg.read_bytes(), before)
 
+    def driver_models(self):
+        """`model:` lines in the frontmatter of the /atta command and skill (F4 S5)."""
+        out = {}
+        for rel in (".claude/commands/atta.md", ".claude/skills/atta/SKILL.md"):
+            text = (self.root / rel).read_text(encoding="utf-8")
+            front = text.split("---\n", 2)[1]
+            self.assertNotIn("{{", text, rel)
+            out[rel] = [ln.split(":", 1)[1].strip() for ln in front.splitlines()
+                        if ln.startswith("model:")]
+        return out
+
+    def test_atta_command_and_skill_run_on_t0_haiku(self):
+        # F4 S5 (G8): the /atta driver runs on the cheap tier T0, haiku by default.
+        code, _, err = self.run_init(templates=project.TEMPLATES_DIR)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.driver_models(), {".claude/commands/atta.md": ["haiku"],
+                                                ".claude/skills/atta/SKILL.md": ["haiku"]})
+
+    def test_atta_command_follows_the_project_t0(self):
+        cfg = self.root / "atta" / "config.json"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text(json.dumps({"models": {"claude-code": {"tiers": {"T0": "sonnet"}}}}),
+                       encoding="utf-8")
+        code, _, err = self.run_init(templates=project.TEMPLATES_DIR)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.driver_models(), {".claude/commands/atta.md": ["sonnet"],
+                                                ".claude/skills/atta/SKILL.md": ["sonnet"]})
+
+    def test_project_t0_leaves_the_agents_as_before(self):
+        # PRESERVE: no agent defaults to T0, so moving T0 does not touch any agent file.
+        self.assertEqual(self.run_init(templates=project.TEMPLATES_DIR)[0], 0)
+        agents = {p.name: p.read_bytes()
+                  for p in (self.root / ".claude" / "agents").glob("atta-*.md")}
+        cfg = self.root / "atta" / "config.json"
+        cfg.write_text(json.dumps({"models": {"claude-code": {"tiers": {"T0": "opus"}}}}),
+                       encoding="utf-8")
+        code, out, err = self.run_init(templates=project.TEMPLATES_DIR, force=True)
+        self.assertEqual(code, 0, err)
+        self.assertEqual({p.name: p.read_bytes()
+                          for p in (self.root / ".claude" / "agents").glob("atta-*.md")},
+                         agents)
+        self.assertNotIn("agents/", out)
+        self.assertIn("reemplacé: .claude/commands/atta.md", out)
+        self.assertIn("reemplacé: .claude/skills/atta/SKILL.md", out)
+
     def test_invalid_models_config_exits_2_and_writes_nothing(self):
         cfg = self.root / "atta" / "config.json"
         cfg.parent.mkdir(parents=True)
@@ -517,6 +562,29 @@ class CheckTest(InitBase):
         self.assertEqual((code, out), (2, ""))
         self.assertIn("no es JSON válido", err)
         self.assertEqual(tree(self.root), before)
+
+    def test_driver_model_drift_is_reported(self):
+        # F4 S5: a project T0 that the /atta command and skill do not follow is drift.
+        packaged = project.TEMPLATES_DIR
+        self.assertEqual(self.run_init(templates=packaged)[0], 0)
+        (self.root / "atta" / "config.json").write_text(json.dumps(
+            {"models": {"claude-code": {"tiers": {"T0": "sonnet"}}}}), encoding="utf-8")
+        before = tree(self.root)
+        code, out, err = self.run_check(templates=packaged)
+        self.assertEqual((code, err), (1, ""))
+        self.assertEqual(out, self.outdated_text("distinto: .claude/skills/atta/SKILL.md",
+                                                 "distinto: .claude/commands/atta.md"))
+        self.assertEqual(tree(self.root), before)
+
+    def test_hand_edited_driver_model_is_reported(self):
+        packaged = project.TEMPLATES_DIR
+        self.assertEqual(self.run_init(templates=packaged)[0], 0)
+        command = self.root / ".claude" / "commands" / "atta.md"
+        command.write_text(command.read_text(encoding="utf-8").replace(
+            "model: haiku", "model: opus"), encoding="utf-8")
+        code, out, _ = self.run_check(templates=packaged)
+        self.assertEqual(code, 1)
+        self.assertEqual(out, self.outdated_text("distinto: .claude/commands/atta.md"))
 
     def test_cli_init_check_uses_packaged_templates_without_writing(self):
         from atta.spine import cli

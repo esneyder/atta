@@ -24,6 +24,10 @@ Checks every `agents/atta-*.md`:
   reader, bypasses, concurrency, partial failure, data loss, and never edits code;
 - no URLs and no references to other factories or projects.
 
+And the `/atta` orchestrator (`commands/atta.md`, `skills/atta/SKILL.md`, when present): its
+frontmatter `model` is exactly `{{model:T0}}`, the cheap tier (F4 S5, G8: `atta next` decides
+the pipeline, the driver only runs what it prints).
+
 Exits 0 and prints «OK» when everything passes; otherwise prints one line per problem and exits 1.
 """
 
@@ -147,6 +151,8 @@ URL = re.compile(r"\b(?:https?|ftp)://|\bwww\.", re.IGNORECASE)
 FOREIGN = re.compile(r"\b(?:kernia|gentle(?:-ai)?|engram|opencode|openspec|kamal|"
                      r"atta-sandbox|esneyder)\b", re.IGNORECASE)
 MODEL = re.compile(r"\{\{model:(T[0-9])\}\}\Z")
+DRIVER_FILES = ("skills/atta/SKILL.md", "commands/atta.md")
+DRIVER_MODEL = "{{model:T0}}"
 FRONT_LINE = re.compile(r"([a-z]+): (\S.*)\Z")
 
 
@@ -283,9 +289,29 @@ def check_agent(path: Path, tiers: tuple[str, ...], problems: list[str]) -> None
             problems.append(f"{label}: línea {lineno}: referencia ajena «{hit.group(0)}».")
 
 
+def check_driver(path: Path, label: str, problems: list[str]) -> None:
+    """The /atta command or skill runs on the cheap tier: `model: {{model:T0}}`."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        problems.append(f"{label}: no se pudo leer: {exc}")
+        return
+    if not lines or lines[0] != "---" or "---" not in lines[1:]:
+        problems.append(f"{label}: falta el frontmatter entre líneas «---».")
+        return
+    front = lines[1:lines.index("---", 1)]
+    models = [ln.split(":", 1)[1].strip() for ln in front if ln.startswith("model:")]
+    if models != [DRIVER_MODEL]:
+        problems.append(f"{label}: model debe ser {DRIVER_MODEL} (el orquestador /atta corre "
+                        f"en el tier barato); es {', '.join(models) or 'nada'}.")
+
+
 def check(root: Path) -> list[str]:
     problems: list[str] = []
     tiers = _tiers(root / "models.json", problems)
+    for rel in DRIVER_FILES:
+        if (root / rel).is_file():
+            check_driver(root / rel, rel, problems)
     agents_dir = root / "agents"
     if not agents_dir.is_dir():
         return problems + [f"No existe la carpeta {agents_dir}."]

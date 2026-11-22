@@ -12,8 +12,10 @@ when another tier allows it, and the Refutador (G4) never shares the model of a 
 
 `atta models [--runtime R]` prints the table; `set <Tn> <modelo>`, `set --role <rol> <modelo>`,
 `unset --role <rol>` and `reset` change `atta/config.json` (atomically, keeping every other key
-and its order) and then the `model:` line of each `.claude/agents/atta-<rol>.md`. Anything
-invalid exits 2 and writes nothing.
+and its order) and then the `model:` line of each `.claude/agents/atta-<rol>.md` and of the
+`/atta` driver (`.claude/commands/atta.md` and `.claude/skills/atta/SKILL.md`, which run on
+the cheap tier DRIVER_TIER, F4 S5/G8: `atta next` decides the pipeline). Anything invalid
+exits 2 and writes nothing.
 """
 
 from __future__ import annotations
@@ -42,6 +44,10 @@ AVOID_ORDER = ("T2", "T1", "T3", "T0")
 SHORT_NAMES = {"claude-code": ("haiku", "sonnet", "opus")}
 FULL_ID = {"claude-code": re.compile(r"claude-[a-z0-9.-]+")}
 FULL_ID_EXAMPLE = {"claude-code": "claude-sonnet-4-5"}
+# The /atta orchestrator (command and skill, `{{model:T0}}` in their templates) only executes
+# what `atta next` prints, so it runs on the cheap tier (F4 S5, G8).
+DRIVER_TIER = "T0"
+DRIVER_FILES = (".claude/skills/atta/SKILL.md", ".claude/commands/atta.md")
 PLACEHOLDER = re.compile(r"\{\{model:([A-Za-z0-9]+)\}\}")
 _MODEL_LINE = re.compile(r"^model:[^\r\n]*", re.M)
 SIGN = "— Atta"
@@ -293,6 +299,29 @@ def sync_agents(root: Path, tab: Table) -> list[str]:
             lines.append(f"actualicé: {rel} → {model}")
     if unchanged:
         lines.append(f"sin cambios: {unchanged} agente{'s' if unchanged != 1 else ''}")
+    return lines + _sync_driver(root, tab)
+
+
+def _sync_driver(root: Path, tab: Table) -> list[str]:
+    """Rewrite the `model:` line of the /atta command and skill to the DRIVER_TIER model;
+    report only what changed or could not change."""
+    lines = []
+    model = tab.tier_model(DRIVER_TIER)
+    for rel in DRIVER_FILES:
+        path = root / rel
+        try:
+            with open(path, encoding="utf-8", newline="") as fh:
+                text = fh.read()
+        except FileNotFoundError:
+            lines.append(f"falta: {rel}; corre `atta init` para crearlo.")
+            continue
+        new = set_model_line(text, model)
+        if new is None:
+            lines.append(f"sin línea model: en {rel}; la dejé igual (ponlo al día con "
+                         "`atta init --force`).")
+        elif new != text:
+            _write_atomic(path, new.encode("utf-8"))
+            lines.append(f"actualicé: {rel} → {model}")
     return lines
 
 
@@ -341,6 +370,8 @@ def render(root: Path, tab: Table) -> str:
         "Las Jardineras, el Soldado y el Rastreador corren en el tier que les asigna el "
         "router; "
         "un modelo por rol lo reemplaza.",
+        f"El orquestador /atta (comando y skill) corre en {DRIVER_TIER} "
+        f"({tab.tiers.get(DRIVER_TIER, '-')}).",
         "Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o "
         "`atta models set --role <rol> <modelo>`.",
         SIGN,
@@ -454,7 +485,8 @@ def register(subparsers) -> None:
         "models", help="Muestra o cambia qué modelo corre cada rol en este proyecto.",
         description="Sin acción, imprime la tabla ROL / TIER / MODELO / ORIGEN. set, unset y "
                     "reset cambian «models» en atta/config.json y la línea model: de "
-                    ".claude/agents/atta-*.md. Un modelo, rol o tier inválido sale 2 sin "
+                    ".claude/agents/atta-*.md y del comando y skill /atta (que corren en "
+                    "T0). Un modelo, rol o tier inválido sale 2 sin "
                     "escribir nada.",
         epilog="Modelos válidos en claude-code: haiku, sonnet, opus o un id completo "
                "claude-[a-z0-9.-]+. Roles: " + ", ".join(ROLES) + ".")

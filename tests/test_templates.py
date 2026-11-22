@@ -208,6 +208,44 @@ class StructuredContractTests(TempDirMixin, unittest.TestCase):
                       "«do not read the whole repo».", out)
 
 
+class DriverModelTests(TempDirMixin, unittest.TestCase):
+    """F4 S5 (G8): the /atta command and skill run on the cheap tier, `{{model:T0}}`."""
+
+    FILES = ("commands/atta.md", "skills/atta/SKILL.md")
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.tmp / "claude"
+        shutil.copytree(TEMPLATES, self.root)
+
+    def test_packaged_driver_runs_on_t0(self):
+        for rel in self.FILES:
+            front = (TEMPLATES / rel).read_text(encoding="utf-8").split("---\n", 2)[1]
+            self.assertIn("\nmodel: {{model:T0}}\n", "\n" + front, rel)
+
+    def test_driver_on_another_tier_is_reported(self):
+        for rel in self.FILES:
+            with self.subTest(rel=rel):
+                path = self.root / rel
+                original = path.read_text(encoding="utf-8")
+                path.write_text(original.replace("{{model:T0}}", "{{model:T2}}"),
+                                encoding="utf-8")
+                done = run_checker(str(self.root))
+                path.write_text(original, encoding="utf-8")
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn(f"{rel}: model debe ser {{{{model:T0}}}} (el orquestador /atta "
+                              "corre en el tier barato); es {{model:T2}}.", done.stdout)
+
+    def test_driver_without_model_is_reported(self):
+        path = self.root / "commands" / "atta.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("model: {{model:T0}}\n", ""),
+                        encoding="utf-8")
+        done = run_checker(str(self.root))
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("commands/atta.md: model debe ser {{model:T0}} (el orquestador /atta "
+                      "corre en el tier barato); es nada.", done.stdout)
+
+
 class PrBodyTemplateTests(unittest.TestCase):
     """atta/templates/pr-body.md (K16) has the fixed sections and documents its placeholders."""
 

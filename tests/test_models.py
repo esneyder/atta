@@ -31,9 +31,11 @@ refutador             T1    haiku   tier
 reina                 T2    sonnet  tier · escala a T3 (opus)
 Tiers: T0 haiku · T1 haiku · T2 sonnet · T3 opus
 Las Jardineras, el Soldado y el Rastreador corren en el tier que les asigna el router; un modelo por rol lo reemplaza.
+El orquestador /atta (comando y skill) corre en T0 (haiku).
 Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o `atta models set --role <rol> <modelo>`.
 — Atta
 """
+DRIVER = (".claude/commands/atta.md", ".claude/skills/atta/SKILL.md")
 BAD_MODEL = ("«gpt-4» no es un modelo válido para claude-code: usa haiku, sonnet u opus, o un id "
              "completo que cumpla claude-[a-z0-9.-]+ (p. ej. claude-sonnet-4-5). No cambié nada.\n")
 
@@ -178,6 +180,56 @@ class SetTest(ModelsBase):
         self.atta("models", "set", "T2", "haiku")
         self.assertEqual(path.read_bytes(), before.replace(b"model: sonnet\r\n",
                                                            b"model: haiku\r\n"))
+
+    def driver_model(self, rel):
+        text = (self.root / rel).read_text(encoding="utf-8")
+        front = text.split("---\n", 2)[1]
+        return [ln.split(":", 1)[1].strip() for ln in front.splitlines()
+                if ln.startswith("model:")]
+
+    def test_set_t0_moves_the_atta_driver_and_no_agent(self):
+        # F4 S5 (G8): /atta runs on T0; `models set T0` keeps command and skill in sync.
+        agents = {k: v for k, v in self.files().items() if k != "config"}
+        code, out, err = self.atta("models", "set", "T0", "sonnet")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, "Atta: T0 ahora es sonnet en atta/config.json (claude-code).\n"
+                              "  sin cambios: 12 agentes\n"
+                              "  actualicé: .claude/skills/atta/SKILL.md → sonnet\n"
+                              "  actualicé: .claude/commands/atta.md → sonnet\n"
+                              "Revisa la tabla con `atta models`.\n— Atta\n")
+        for rel in DRIVER:
+            self.assertEqual(self.driver_model(rel), ["sonnet"], rel)
+        self.assertEqual({k: v for k, v in self.files().items() if k != "config"}, agents)
+        self.assertIn("El orquestador /atta (comando y skill) corre en T0 (sonnet).\n",
+                      self.atta("models")[1])
+        # what `models set` writes is exactly what `atta init` would write: no drift
+        code, out, _ = self.atta("init", "--check")
+        self.assertEqual(code, 0, out)
+        code, out, err = self.atta("models", "reset")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("  actualicé: .claude/commands/atta.md → haiku\n", out)
+        for rel in DRIVER:
+            self.assertEqual(self.driver_model(rel), ["haiku"], rel)
+
+    def test_driver_without_model_line_is_reported_and_kept(self):
+        # a command from before F4 has no `model:` line: left as is, init --force fixes it
+        command = self.root / ".claude" / "commands" / "atta.md"
+        old = b"---\ndescription: viejo\n---\n\nCuerpo.\n"
+        command.write_bytes(old)
+        code, out, err = self.atta("models", "set", "T0", "sonnet")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("  sin línea model: en .claude/commands/atta.md; la dejé igual (ponlo al "
+                      "día con `atta init --force`).\n", out)
+        self.assertEqual(command.read_bytes(), old)
+        self.assertEqual(self.driver_model(DRIVER[1]), ["sonnet"])
+
+    def test_missing_driver_file_is_reported(self):
+        (self.root / ".claude" / "skills" / "atta" / "SKILL.md").unlink()
+        code, out, err = self.atta("models", "set", "T0", "sonnet")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("  falta: .claude/skills/atta/SKILL.md; corre `atta init` para crearlo.\n",
+                      out)
+        self.assertFalse((self.root / ".claude" / "skills" / "atta" / "SKILL.md").exists())
 
     def test_missing_agent_file_is_reported(self):
         (self.root / ".claude" / "agents" / "atta-reina.md").unlink()

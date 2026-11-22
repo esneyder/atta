@@ -2,6 +2,7 @@
 name: atta
 description: Run Atta's colony on this repository. `/atta run [n]` works the queue of GitHub issues labelled atta through the spine (`atta next`) until each job waits or ends; `/atta settings` and `/atta models` show the configuration (changes are for the human's terminal); `/atta <text>` answers questions about jobs or records human feedback for a job.
 argument-hint: run [n] | <question or feedback>
+model: {{model:T0}}
 ---
 
 # /atta
