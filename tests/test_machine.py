@@ -42,7 +42,7 @@ class TableTests(unittest.TestCase):
     def test_stages(self):
         self.assertEqual(machine.STAGES, (
             "intake", "needs-info", "spec", "spec-review", "build", "gate", "review",
-            "approve", "merging", "needs-human", "merged", "rejected"))
+            "approve", "merging", "awaiting-merge", "needs-human", "merged", "rejected"))
 
     def test_transitions_table(self):
         self.assertEqual(machine.TRANSITIONS, {
@@ -53,8 +53,9 @@ class TableTests(unittest.TestCase):
             "build": ("gate", "needs-human"),
             "gate": ("review", "build", "needs-human"),
             "review": ("approve", "build", "needs-human"),
-            "approve": ("merging", "needs-human"),
+            "approve": ("merging", "awaiting-merge", "needs-human"),
             "merging": ("merged", "needs-human"),
+            "awaiting-merge": ("merged", "needs-human"),
             "needs-human": ("build", "rejected"),
             "merged": (),
             "rejected": (),
@@ -157,6 +158,26 @@ class AdvanceTests(MachineTestBase):
     def test_cap_is_frozen_in_job_from_config(self):
         self.assertEqual(self.store.load(self.jid)["max_total_rounds"], 2)
 
+    def test_awaiting_merge_waits_for_the_human_merge(self):
+        # S13: approve → awaiting-merge (the PR waits for a person) → merged or needs-human.
+        self.assertNotIn("awaiting-merge", machine.TERMINAL)
+        job = self.walk("spec", "build", "gate", "review", "approve", "awaiting-merge")
+        self.assertEqual((job["stage"], job["sync_attempts"]), ("awaiting-merge", 0))
+        self.assertIsNone(job.get("ended"))
+        self.assertRefused(
+            "merging",
+            "Transición ilegal en 12-exportar-csv: awaiting-merge → merging. "
+            "Desde awaiting-merge solo se puede ir a: merged, needs-human.")
+        job = self.go("merged")
+        self.assertEqual(job["stage"], "merged")
+        self.assertEqual([(e["from"], e["to"]) for e in events.read_events(self.dir)][-2:],
+                         [("approve", "awaiting-merge"), ("awaiting-merge", "merged")])
+
+    def test_awaiting_merge_can_go_to_needs_human(self):
+        job = self.walk("spec", "build", "gate", "review", "approve", "awaiting-merge",
+                        "needs-human")
+        self.assertEqual(job["stage"], "needs-human")
+
     def test_sync_attempts_counter_on_merging_retry(self):
         job = self.walk("spec", "build", "gate", "review", "approve", "merging")
         self.assertEqual(job["sync_attempts"], 1)
@@ -167,6 +188,70 @@ class StoredEventsJsonTests(MachineTestBase):
         self.walk("spec", "build")
         lines = (self.dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertEqual([json.loads(l)["job"] for l in lines], [self.jid, self.jid])
+
+
+
+class PendingAgentTests(MachineTestBase):
+    """T12: the model `atta next` decided for a stage lands on the event that leaves it."""
+
+    def set_pending(self, pending):
+        job = self.store.load(self.jid)
+        job["pending_agent"] = pending
+        self.store.save(job)
+
+    def test_event_gets_model_tier_and_agent_then_pending_is_cleared(self):
+        self.set_pending({"stage": "intake", "role": "exploradora", "agent": "atta-exploradora",
+                          "model": "haiku", "tier": "T1", "at": "2025-01-01T12:00:01Z"})
+        job = self.go("spec")
+        ev = events.read_events(self.dir)[-1]
+        self.assertEqual(ev, {"ts": "2025-01-01T12:00:10Z", "job": self.jid, "from": "intake",
+                              "to": "spec", "duration_s": 10, "model": "haiku", "tier": "T1",
+                              "agent": "atta-exploradora", "cost_usd": None})
+        self.assertNotIn("pending_agent", job)
+        self.assertNotIn("pending_agent", self.store.load(self.jid))
+        self.assertIsNone(job["cost_usd"])
+        # The next transition has no agent: no model fields.
+        self.go("build")
+        self.assertEqual(set(events.read_events(self.dir)[-1]),
+                         {"ts", "job", "from", "to", "duration_s"})
+
+    def test_group_attaches_models_list(self):
+        self.walk("spec", "build", "gate", "review")
+        self.set_pending([
+            {"stage": "review", "role": "jardinera-code", "agent": "atta-jardinera-code",
+             "model": "sonnet", "tier": "T2", "at": "x"},
+            {"stage": "review", "role": "soldado", "agent": "atta-soldado", "model": "opus",
+             "tier": "T3", "at": "x"}])
+        job = self.go("approve")
+        ev = events.read_events(self.dir)[-1]
+        self.assertEqual(ev["models"], [
+            {"agent": "atta-jardinera-code", "model": "sonnet", "tier": "T2"},
+            {"agent": "atta-soldado", "model": "opus", "tier": "T3"}])
+        self.assertIsNone(ev["cost_usd"])
+        self.assertNotIn("model", ev)
+        self.assertNotIn("pending_agent", job)
+
+    def test_pending_from_another_stage_is_dropped_without_attaching(self):
+        self.go("spec")
+        self.set_pending({"stage": "intake", "role": "exploradora", "agent": "atta-exploradora",
+                          "model": "haiku", "tier": "T1", "at": "x"})
+        job = self.go("build")
+        self.assertNotIn("model", events.read_events(self.dir)[-1])
+        self.assertNotIn("pending_agent", job)
+
+    def test_explicit_model_wins_over_pending(self):
+        self.set_pending({"stage": "intake", "role": "exploradora", "agent": "atta-exploradora",
+                          "model": "haiku", "tier": "T1", "at": "x"})
+        self.go("spec", model="m", tier="T9")
+        ev = events.read_events(self.dir)[-1]
+        self.assertEqual((ev["model"], ev["tier"]), ("m", "T9"))
+
+    def test_refused_transition_keeps_pending(self):
+        self.set_pending({"stage": "intake", "role": "exploradora", "agent": "atta-exploradora",
+                          "model": "haiku", "tier": "T1", "at": "x"})
+        self.assertRefused("build", "Transición ilegal en 12-exportar-csv: intake → build. "
+                                    "Desde intake solo se puede ir a: spec, needs-info, rejected.")
+        self.assertEqual(self.store.load(self.jid)["pending_agent"]["model"], "haiku")
 
 
 if __name__ == "__main__":

@@ -618,6 +618,39 @@ class LoopbackTests(unittest.TestCase):
             thread.join(5)
 
 
+class AwaitingMergeBoardTests(TempDirMixin, unittest.TestCase):
+    """S13: a PR waiting for your merge is shown like needs-human: «te toca mergear»."""
+
+    def build(self, **raw):
+        job_dir = self.tmp / "40-x"
+        job_dir.mkdir(exist_ok=True)
+        base = {"id": "40-x", "issue": 40, "title": "X", "stage": "awaiting-merge", "pr": 41,
+                "started": "2025-06-06T10:00:00Z", "stage_since": "2025-06-06T11:00:00Z"}
+        return board.build_job("40-x", job_dir, {**base, **raw}, NOW)
+
+    def test_awaiting_merge_is_a_human_card_with_the_pr_link(self):
+        j = self.build(pr_url="https://github.com/o/r/pull/41")
+        self.assertEqual((j["stage"], j["column"], j["state"]),
+                         ("awaiting-merge", "human", "human"))
+        self.assertEqual(j["pr_url"], "https://github.com/o/r/pull/41")
+
+    def test_only_https_pr_urls_reach_the_board(self):
+        for bad in ("javascript:alert(1)", "http://github.com/o/r/pull/41", 41, None):
+            with self.subTest(url=bad):
+                self.assertIsNone(self.build(pr_url=bad)["pr_url"])
+
+    def test_stats_count_awaiting_merge_as_needing_you(self):
+        waiting = self.build()
+        running = dict(waiting, stage="review", id="41-y")
+        stats = board.stats([waiting, running])
+        self.assertEqual((stats["needs_human"], stats["active"]), (1, 1))
+
+    def test_board_js_labels_awaiting_merge(self):
+        js = (BOARD_DIR / "board.js").read_text(encoding="utf-8")
+        self.assertIn('case "awaiting-merge": return "te toca mergear";', js)
+        self.assertIn('"awaiting-merge"', js)
+
+
 class BoardAssetsTests(unittest.TestCase):
     def test_tokens_are_a_copy_of_the_brand(self):
         self.assertEqual((BOARD_DIR / "tokens.css").read_bytes(),

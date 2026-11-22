@@ -346,6 +346,55 @@ class StatusTest(CliBase):
         self.assertEqual(lines[3], "Total: 2 jobs · 1 en curso · 0 merged · 1 rejected · costo -")
 
 
+    def test_status_default_output_has_no_models_column(self):
+        # T12: the default table is unchanged; MODELOS only appears with --models.
+        self.create()
+        out = self.ok("status")
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "JOB                           ISSUE  ETAPA   RONDAS  COSTO  TIEMPO")
+        self.assertEqual(ROW.match(lines[1]).groups()[:5],
+                         (JID, "#12", "intake", "0/6", "-"))
+        self.assertNotIn("MODELOS", out)
+
+    def write_events(self, jid, *evs):
+        with open(self.job_dir(jid) / "events.jsonl", "a", encoding="utf-8") as fh:
+            for ev in evs:
+                fh.write(json.dumps(ev) + "\n")
+
+    def test_status_models_column_lists_models_used(self):
+        self.create()
+        self.create("7", "Arreglar login")
+        self.write_events(JID,
+            {"from": "intake", "to": "spec", "model": "haiku", "tier": "T1"},
+            {"from": "spec", "to": "build", "model": "sonnet", "tier": "T2"},
+            {"from": "gate", "to": "review"},
+            {"from": "review", "to": "approve", "models": [
+                {"agent": "atta-jardinera-code", "model": "sonnet", "tier": "T2"},
+                {"agent": "atta-soldado", "model": "opus", "tier": "T3"}]})
+        lines = self.ok("status", "--models").splitlines()
+        self.assertEqual(lines[0].split(),
+                         ["JOB", "ISSUE", "ETAPA", "RONDAS", "COSTO", "TIEMPO", "MODELOS"])
+        self.assertTrue(lines[1].startswith(JID), lines)
+        self.assertTrue(lines[1].endswith("  haiku, sonnet, opus"), lines[1])
+        self.assertTrue(lines[2].startswith("7-arreglar-login"), lines)
+        self.assertTrue(lines[2].endswith("  -"), lines[2])
+        one = self.ok("status", JID, "--models").splitlines()
+        self.assertEqual(len(one), 2)
+        self.assertTrue(one[1].endswith("haiku, sonnet, opus"))
+
+    def test_advance_through_the_cli_attaches_the_pending_agent(self):
+        self.create()
+        job = self.job()
+        job["pending_agent"] = {"stage": "intake", "role": "exploradora",
+                                "agent": "atta-exploradora", "model": "haiku", "tier": "T1",
+                                "at": "2025-01-01T12:00:00Z"}
+        (self.job_dir() / "job.json").write_text(json.dumps(job), encoding="utf-8")
+        self.ok("advance", JID, "rejected")
+        ev = json.loads((self.job_dir() / "events.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual((ev["model"], ev["tier"], ev["agent"], ev["cost_usd"]),
+                         ("haiku", "T1", "atta-exploradora", None))
+        self.assertNotIn("pending_agent", self.job())
+
 class GateCommandTest(CliBase):
     def setUp(self):
         super().setUp()

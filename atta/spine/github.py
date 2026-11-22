@@ -25,6 +25,8 @@ MERGE_METHODS = ("merge", "squash", "rebase")
 ISSUE_FIELDS = "number,title,body,url,state,author,labels,comments"
 QUEUE_FIELDS = "number,title,url,labels"
 PR_FIELDS = "number,url,state,baseRefName,headRefName,isDraft,isCrossRepository"
+# What a resumed merge needs to know: did GitHub merge it, and at which head (L22).
+MERGE_STATE_FIELDS = "number,state,baseRefName,headRefName,headRefOid,isCrossRepository"
 
 # Role key -> signature, in brand voice (arquitectura §3).
 ROLES = {
@@ -120,6 +122,15 @@ def view_pr(ref) -> dict:
     return data
 
 
+def merge_state(ref) -> dict:
+    """The PR's state and head sha as GitHub sees them now (`headRefOid` stays the merged head
+    once the PR is MERGED)."""
+    data = run_json(["pr", "view", str(ref), "--json", MERGE_STATE_FIELDS])
+    if not isinstance(data, dict):
+        raise GhError("gh pr view no devolvió un objeto.")
+    return data
+
+
 def login_of(author) -> str | None:
     if isinstance(author, dict):
         return author.get("login") or None
@@ -162,6 +173,13 @@ def comment(kind: str, number: int, body: str) -> None:
     if kind not in ("issue", "pr"):
         raise GhError(f"Destino de comentario desconocido: {kind}.")
     run([kind, "comment", str(int(number)), "--body-file", "-"], input=body)
+
+
+def close_issue(number: int) -> None:
+    """Close the issue as completed. GitHub only closes issues through «Closes #n» when the PR
+    lands on the default branch; Atta integrates into develop, so it closes them. The closing
+    comment goes first through `comment` (stdin), never as a multi-line `--comment` argument."""
+    run(["issue", "close", str(int(number)), "--reason", "completed"])
 
 
 def edit_label(number: int, action: str, name: str) -> None:

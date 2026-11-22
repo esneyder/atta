@@ -1,7 +1,8 @@
 """Fake `gh` for tests: state and call log in the JSON file named by $FAKEGH_STATE.
 
-State keys: "user" (login), "issues" ({number: issue}), "prs" ([pr]), "fail" ({"<cmd> <sub>":
-"stderr text"} makes that command exit 1), "calls" (appended: {"argv": [...], "stdin": text|null}).
+State keys: "user" (login), "issues" ({number: issue}), "prs" ([pr]; `pr merge` sets "state"
+MERGED and "headRefOid" from --match-head-commit), "fail" ({"<cmd> <sub>": "stderr text"} makes
+that command exit 1), "calls" (appended: {"argv": [...], "stdin": text|null}).
 Only the subcommands Atta uses are implemented; anything else exits 1.
 """
 
@@ -84,6 +85,18 @@ def main(argv):
         state["comments"] = state.get("comments", [])
         state["comments"].append({"on": argv[0], "number": argv[2], "body": stdin})
         sys.stdout.write(f"https://github.com/o/r/issues/{argv[2]}#issuecomment-1\n")
+    elif key == "issue close":
+        issue = state["issues"].get(str(argv[2]))
+        if issue is None:
+            sys.stderr.write(f"Could not resolve to an issue with the number of {argv[2]}.\n")
+            return 1
+        issue["state"] = "CLOSED"
+        issue["state_reason"] = _opt(argv, "--reason")
+        text = _opt(argv, "--comment")
+        if text is not None:
+            state["comments"] = state.get("comments", [])
+            state["comments"].append({"on": "issue", "number": argv[2], "body": text,
+                                      "via": "close"})
     elif key in ("issue edit", "pr edit"):
         target = state["issues"].setdefault(str(argv[2]), {"number": int(argv[2]), "labels": []})
         labels = target.setdefault("labels", [])
@@ -111,7 +124,10 @@ def main(argv):
     elif key == "pr ready":
         _pr(state, argv[2])["isDraft"] = False
     elif key == "pr merge":
-        _pr(state, argv[2])["state"] = "MERGED"
+        pr = _pr(state, argv[2])
+        pr["state"] = "MERGED"
+        # GitHub keeps the head the PR had when merged (headRefOid).
+        pr["headRefOid"] = _opt(argv, "--match-head-commit", pr.get("headRefOid"))
     else:
         sys.stderr.write(f"fakegh: comando no soportado: {' '.join(argv)}\n")
         return 1
