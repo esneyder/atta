@@ -111,7 +111,7 @@ class DoctorBase(TempDirMixin, unittest.TestCase):
             "✓ gh tiene una sesión iniciada",
             "✓ la cuenta operador de gh ve el repo proj",
             "✓ labels de Atta en el repo: " + ", ".join(LABELS),
-            "✓ .claude/agents: los 10 agentes de Atta",
+            "✓ .claude/agents: los 11 agentes de Atta",
             "✓ .claude/skills/atta/SKILL.md existe",
             "✓ /atta registrado (.claude/commands/atta.md)",
             "✓ hook del guard instalado (.claude/settings.json)",
@@ -289,6 +289,23 @@ class FailureTest(DoctorBase):
         self.assert_line(out, "✗ atta/config.json no es válido: config.json: concurrency debe "
                               "ser un entero mayor que 0.",
                          "Corrígelo a mano en tu terminal (atta settings muestra cada clave).")
+
+    def test_sgconfig_without_ast_grep_is_a_warning(self):
+        (self.root / "sgconfig.yml").write_text("ruleDirs:\n  - rules\n", encoding="utf-8")
+        code, out = self.run_doctor(no_github=True)
+        self.assertEqual(code, 0, out)
+        self.assert_line(out, "⚠ hay sgconfig.yml y no encontré ast-grep (ni sg) en el PATH: el "
+                              "Filtro va a fallar",
+                         "Instala ast-grep (npm i -g @ast-grep/cli, pip install ast-grep-cli o "
+                         "cargo install ast-grep) o quita sgconfig.yml del checkout principal.")
+
+    def test_sgconfig_with_ast_grep_is_ok(self):
+        (self.root / "sgconfig.yml").write_text("ruleDirs:\n  - rules\n", encoding="utf-8")
+        self.which["ast-grep"] = str(self.bin / "ast-grep")
+        code, out = self.run_doctor(no_github=True)
+        self.assertEqual(code, 0, out)
+        exe = self.bin / "ast-grep"
+        self.assert_line(out, f"✓ ast-grep para las reglas de sgconfig.yml ({exe})")
 
     def test_outdated_agent_is_a_warning(self):
         agent = self.root / ".claude" / "agents" / "atta-guia.md"

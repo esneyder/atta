@@ -21,6 +21,10 @@
 - `timeout_s`: per-check limit in seconds (global value, overridable per check). Default 900.
   It holds even if a background child keeps the output open: output goes to a temp file, the
   whole process tree is killed on timeout.
+- `when` (S2, tiered checks): `always` (default) or `risk>=medium`. In a `checks` round whose
+  effective risk (risk.evaluate: max of intake, rules on the diff and previous) is low, the
+  `risk>=medium` checks are skipped and checks.md says so; when that would leave no check, all
+  run. `merge-checks` always runs every check.
 
 Before the checks the gate validates `base_ref`: it must not be empty nor start with `-`, it must
 resolve to a commit different from HEAD, share history with HEAD (a merge-base exists) and not
@@ -36,6 +40,23 @@ The gate FAILS without running checks when:
 
 For misconfiguration (bad checks.json, bad base_ref, bad risk_rules) it raises GateError and
 writes no report.
+
+Then, in this order (checks.md gets one section each):
+- `## Frescura` (K14, `checks` only): `git ls-remote` (never a fetch) tells whether the main
+  checkout's integration branch is behind origin: a warning, never a failure.
+- `## Alcance` (K8, G5, `checks` only; see scope.py): the diff against the spec's `FILES:`, the
+  diff size against `scope.max_files`, and from round 2 on the round's own changes against the
+  previous round's findings. Warnings; `scope.enforce: true` makes the first and third FAIL
+  (no checks run).
+- `## ast-grep` (K4, both kinds): without a sgconfig.yml (or with empty ruleDirs) in the MAIN
+  checkout the step is skipped. With rules and no `ast-grep`/`sg` binary it FAILS. With
+  `testConfigs`, `ast-grep test --skip-snapshot-tests` runs first and its failure FAILS. Then
+  `ast-grep scan --config <main>/sgconfig.yml --json=stream -- <files>` over the diff's
+  added/modified files only (rules always from the main checkout: a branch cannot weaken
+  them); only `severity: error` matches block, warnings are listed; a non-JSON output or a
+  non-zero exit without error matches also FAILS (the exit code alone is never trusted).
+  A FAIL here runs no checks; `failed_check` is `ast-grep`.
+Warnings of a passing gate are appended to the summary («Avisos en checks.md: alcance.»).
 
 Riesgo por reglas (G3, see risk.py): when `checks` passes, the diff is classified with the
 config's `risk_rules`; checks.md gets a `## Riesgo` section and, when `<round_dir>/..` is a job
@@ -61,7 +82,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import ids, risk as risk_rules
+from . import ids, risk as risk_rules, scope as scope_rules
 
 CHECKS_RELPATH = Path("atta") / "checks.json"
 KINDS = ("checks", "merge-checks")
@@ -87,6 +108,24 @@ SHELLS = {
 }
 
 PLACEHOLDER_HINT = "Agrega los checks reales del proyecto en atta/checks.json."
+
+# Tiered checks (S2, L4): `when` of a check; `risk>=medium` is skipped on an effective low risk.
+WHEN_ALWAYS, WHEN_MEDIUM = "always", "risk>=medium"
+WHENS = (WHEN_ALWAYS, WHEN_MEDIUM)
+
+# ast-grep (K4): rules come only from the MAIN checkout's sgconfig.yml.
+SGCONFIG_NAMES = ("sgconfig.yml", "sgconfig.yaml")
+AST_GREP_BINARIES = ("ast-grep", "sg")
+AST_GREP_STEP = "ast-grep"
+AST_GREP_HINT = ("Instala ast-grep (npm i -g @ast-grep/cli, pip install ast-grep-cli o cargo "
+                 "install ast-grep) o quita sgconfig.yml del checkout principal.")
+AST_GREP_BATCH = 100
+# cmd.exe re-parses the arguments of a .cmd/.bat launcher: these characters could run commands.
+_CMD_UNSAFE = frozenset('&|<>^%!"\r\n')
+_which = shutil.which  # patched in tests
+
+# Freshness preflight (K14): `git ls-remote` never waits longer than this.
+FRESHNESS_TIMEOUT_S = 15
 
 
 class GateError(RuntimeError):
@@ -209,11 +248,16 @@ def load_checks(main_checkout: Path) -> dict:
             raise GateError(f"checks.json: checks[{i}].name debe ser un texto no vacío.")
         if not isinstance(run, str) or not run.strip():
             raise GateError(f"checks.json: checks[{i}].run debe ser un texto no vacío.")
+        when = item.get("when", WHEN_ALWAYS)
+        if when not in WHENS:
+            raise GateError(f"checks.json: checks[{i}].when debe ser «{WHEN_ALWAYS}» o "
+                            f"«{WHEN_MEDIUM}».")
         checks.append({
             "name": name,
             "run": run,
             "shell": select_shell(item.get("shell")),
             "timeout_s": _timeout(item.get("timeout_s", default_timeout), f"checks[{i}].timeout_s"),
+            "when": when,
         })
     return {"checks": checks, "timeout_s": default_timeout}
 
@@ -323,18 +367,16 @@ def protected_violations(worktree: Path, base: str, globs,
     Any status counts (A, M, D, R, C, T, U, ...); renames and copies are checked on BOTH paths.
     `base` and `head` should be resolved shas (see resolve_base).
     """
-    raw = _git(worktree, "diff", "--no-ext-diff", "--ignore-submodules=none", "--name-status",
-               "-z", "-M", "--end-of-options", f"{base}...{head}", "--")
-    fields = raw.decode("utf-8", "surrogateescape").split("\0")
-    out, i = [], 0
-    while i < len(fields) and fields[i]:
-        letter = fields[i][0]
-        npaths = 2 if letter in "RC" else 1
-        paths = tuple(fields[i + 1:i + 1 + npaths])
-        i += 1 + npaths
-        if any(matches_protected(p, globs) for p in paths):
-            out.append((letter, paths))
-    return out
+    return [(letter, paths) for letter, paths in changed_entries(worktree, f"{base}...{head}")
+            if any(matches_protected(p, globs) for p in paths)]
+
+
+def changed_entries(worktree: Path, span: str) -> list[tuple[str, tuple[str, ...]]]:
+    """(status letter, paths) of every entry of `git diff --name-status -M <span>`; renames and
+    copies carry (old, new). `span` is `<a>...<b>` or `<a>..<b>` of resolved shas."""
+    raw = _git(Path(worktree), "diff", "--no-ext-diff", "--ignore-submodules=none",
+               "--name-status", "-z", "-M", "--end-of-options", span, "--")
+    return risk_rules._parse_name_status(raw)
 
 
 def dirty_entries(worktree: Path) -> list[str]:
@@ -424,6 +466,249 @@ def _job_id(job) -> str:
     return ids.sanitize_id(value)
 
 
+# ---------------------------------------------------------------- ast-grep (K4)
+
+def _unquote(text: str) -> str:
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        return text[1:-1]
+    return text
+
+
+def _sgconfig_keys(text: str) -> dict[str, list[str]]:
+    """Top-level keys of a sgconfig.yml with their list items (the small YAML subset ast-grep
+    configs use: `key:` + `- item` lines, or an inline `[a, b]`)."""
+    out: dict[str, list[str]] = {}
+    key = None
+    for raw in text.splitlines():
+        line = re.sub(r"(^|\s)#.*$", "", raw).rstrip()
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            m = re.match(r"([A-Za-z_][\w-]*)\s*:\s*(.*)$", line)
+            key = m.group(1) if m else None
+            if key is None:
+                continue
+            value = m.group(2).strip()
+            if value.startswith("[") and value.endswith("]"):
+                out[key] = [_unquote(v) for v in value[1:-1].split(",") if v.strip()]
+            else:
+                out[key] = [_unquote(value)] if value else []
+            continue
+        if key is None:
+            continue
+        m = re.match(r"\s*-\s*(.*)$", line)
+        out[key].append(_unquote(m.group(1)) if m else line.strip())
+    return out
+
+
+def ast_grep_rules(main_checkout: Path) -> dict:
+    """{config, rule_dirs, has_rules, has_tests, reason} of the main checkout's sgconfig.yml."""
+    main_checkout = Path(main_checkout)
+    path = next((main_checkout / n for n in SGCONFIG_NAMES if (main_checkout / n).is_file()),
+                None)
+    if path is None:
+        return {"config": None, "has_rules": False, "has_tests": False,
+                "reason": "Salteado: no hay sgconfig.yml en el checkout principal."}
+    try:
+        keys = _sgconfig_keys(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as exc:
+        raise GateError(f"No se pudo leer {path}: {exc}.") from exc
+    dirs = [d for d in keys.get("ruleDirs", []) if d]
+    has_rules = any(f.is_file() and f.suffix.lower() in (".yml", ".yaml")
+                    for d in dirs if (main_checkout / d).is_dir()
+                    for f in (main_checkout / d).rglob("*"))
+    has_tests = any("testDir" in item for item in keys.get("testConfigs", []))
+    reason = None if has_rules else "Salteado: sgconfig.yml no tiene reglas (ruleDirs vacío)."
+    return {"config": path, "has_rules": has_rules, "has_tests": has_tests, "reason": reason}
+
+
+def ast_grep_binary() -> str | None:
+    """`ast-grep` from the PATH, else `sg` when it really is ast-grep (on Linux `sg` is often
+    the setgid tool of shadow-utils)."""
+    exe = _which(AST_GREP_BINARIES[0])
+    if exe:
+        return exe
+    exe = _which(AST_GREP_BINARIES[1])
+    if not exe:
+        return None
+    try:
+        proc = subprocess.run([exe, "--version"], capture_output=True, stdin=subprocess.DEVNULL,
+                              timeout=FRESHNESS_TIMEOUT_S)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return exe if b"ast-grep" in (proc.stdout + proc.stderr).lower() else None
+
+
+def _tool(argv: list[str], cwd: Path, timeout: float) -> tuple[int | None, str, str]:
+    """(exit code or None on timeout/launch failure, stdout, stderr) of a tool run (no shell)."""
+    try:
+        proc = subprocess.run(argv, cwd=str(cwd), capture_output=True, stdin=subprocess.DEVNULL,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, "", f"superó el tiempo límite ({_secs(timeout)} s)"
+    except OSError as exc:
+        return None, "", f"no se pudo lanzar: {exc}"
+    return (proc.returncode, proc.stdout.decode("utf-8", "replace"),
+            proc.stderr.decode("utf-8", "replace"))
+
+
+def _plural_error(n: int) -> str:
+    return f"{n} error" if n == 1 else f"{n} errores"
+
+
+def run_ast_grep(main_checkout: Path, worktree: Path, files: list[str], timeout: float) -> dict:
+    """The ast-grep step: {status: skipped|pass|fail, summary, lines, output}.
+
+    Rules come from the main checkout's sgconfig.yml (`--config`), so a branch can never weaken
+    them; only `files` (the diff's added/modified files, relative to `worktree`) are scanned.
+    Only `severity: error` blocks; the JSON stream decides, never the exit code alone."""
+    rules = ast_grep_rules(main_checkout)
+    if not rules["has_rules"]:
+        return {"status": "skipped", "summary": None, "lines": [rules["reason"]], "output": ""}
+    exe = ast_grep_binary()
+    if exe is None:
+        summary = ("El Filtro no pasó: hay reglas de ast-grep (sgconfig.yml) y no encontré el "
+                   "binario ast-grep (ni sg) en el PATH.")
+        return {"status": "fail", "summary": summary, "lines": [summary, AST_GREP_HINT],
+                "output": ""}
+    config_path = str(rules["config"].resolve())
+    output = []
+    if rules["has_tests"]:
+        code, out, err = _tool([exe, "test", "--config", config_path, "--skip-snapshot-tests"],
+                               Path(main_checkout), timeout)
+        output.append(f"$ ast-grep test (exit {code})\n{out}{err}")
+        if code != 0:
+            summary = "El Filtro no pasó: las reglas de ast-grep no pasan sus propios tests."
+            return {"status": "fail", "summary": summary,
+                    "lines": ["Las reglas no pasan sus propios tests (ast-grep test):", "",
+                              "```", _tail(out + err), "```"], "output": "\n".join(output)}
+    if not files:
+        return {"status": "pass", "summary": None, "output": "\n".join(output),
+                "lines": ["El diff no agrega ni modifica archivos: nada que revisar."]}
+    if exe.lower().endswith((".cmd", ".bat")):
+        unsafe = [f for f in files if _CMD_UNSAFE & set(f)]
+        if unsafe:
+            summary = (f"El Filtro no pasó: ast-grep es un lanzador .cmd y estas rutas tienen "
+                       f"caracteres que cmd interpreta: {', '.join(f'`{f}`' for f in unsafe)}.")
+            return {"status": "fail", "summary": summary, "lines": [summary], "output": ""}
+    errors, warnings, bad, failures = [], [], [], []
+    for i in range(0, len(files), AST_GREP_BATCH):
+        batch = files[i:i + AST_GREP_BATCH]
+        code, out, err = _tool([exe, "scan", "--config", config_path, "--json=stream", "--",
+                                *batch], Path(worktree), timeout)
+        output.append(f"$ ast-grep scan (exit {code})\n{out}{err}")
+        found_error = False
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            try:
+                match = json.loads(line)
+            except json.JSONDecodeError:
+                bad.append(line)
+                continue
+            if not isinstance(match, dict):
+                bad.append(line)
+                continue
+            if match.get("severity") == "error":
+                errors.append(match)
+                found_error = True
+            else:
+                warnings.append(match)
+        if code is None or (code != 0 and not found_error):
+            failures.append((code, err))
+    lines = []
+    for mark, matches in (("✗", errors), ("⚠", warnings)):
+        lines += [f"- {mark} {_sg_where(m)} {m.get('ruleId', '?')} ({m.get('severity', '?')}): "
+                  f"{_sg_message(m)}" for m in matches]
+    if bad:
+        summary = "El Filtro no pasó: ast-grep devolvió una salida que no es JSON."
+        lines = [summary, "", "```", _tail("\n".join(bad)), "```"] + lines
+    elif errors:
+        first = errors[0]
+        summary = (f"El Filtro no pasó: ast-grep encontró {_plural_error(len(errors))} "
+                   f"({first.get('ruleId', '?')} en {_sg_where(first).strip('`')}).")
+    elif failures:
+        code, err = failures[0]
+        summary = (f"El Filtro no pasó: ast-grep terminó con exit {code} sin reportar errores."
+                   if code is not None else f"El Filtro no pasó: ast-grep {err}.")
+        lines = [summary, "", "```", _tail(err), "```"] + lines
+    else:
+        summary = None
+        if not lines:
+            noun = "archivo" if len(files) == 1 else "archivos"
+            lines = [f"Sin hallazgos en {len(files)} {noun} del diff."]
+    return {"status": "fail" if summary else "pass", "summary": summary, "lines": lines,
+            "output": "\n".join(output)}
+
+
+def _sg_where(match: dict) -> str:
+    path = str(match.get("file") or "?").replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    start = ((match.get("range") or {}).get("start") or {}).get("line")
+    line = start + 1 if isinstance(start, int) and not isinstance(start, bool) else "?"
+    return f"`{path}:{line}`"
+
+
+def _sg_message(match: dict) -> str:
+    return " ".join(str(match.get("message") or "").split()) or "(sin mensaje)"
+
+
+def _scan_files(entries) -> list[str]:
+    """Added/modified (also renamed/copied) files of the diff, in diff order."""
+    return [paths[-1] for letter, paths in entries if letter in "AMRC"]
+
+
+# ---------------------------------------------------------------- freshness (K14)
+
+def _git_quick(cwd: Path, *args: str) -> subprocess.CompletedProcess | None:
+    env = dict(_git_env(), GIT_TERMINAL_PROMPT="0")
+    try:
+        return subprocess.run(["git", "--no-replace-objects", "-C", str(cwd), *args],
+                              capture_output=True, stdin=subprocess.DEVNULL, env=env,
+                              timeout=FRESHNESS_TIMEOUT_S)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def freshness(main_checkout: Path, branch: str) -> tuple[list[str], bool]:
+    """(lines of `## Frescura`, warned): is the main checkout's `branch` behind origin?
+
+    Read-only and never blocking: `git ls-remote` (no fetch) against the local ref."""
+    lines = ["## Frescura", ""]
+    remote = f"origin/{branch}"
+    proc = _git_quick(main_checkout, "remote", "get-url", "origin")
+    if proc is None or proc.returncode != 0:
+        return lines + ["No hay remoto origin: no se revisó la frescura."], False
+    proc = _git_quick(main_checkout, "ls-remote", "--heads", "origin", branch)
+    if proc is None or proc.returncode != 0:
+        return lines + [f"No pude consultar {remote}: no se revisó la frescura."], False
+    ref = f"refs/heads/{branch}"
+    sha = next((ln.split()[0] for ln in proc.stdout.decode("utf-8", "replace").splitlines()
+                if ln.split()[-1:] == [ref]), None)
+    if sha is None:
+        return lines + [f"No existe {remote}: no se revisó la frescura."], False
+    local = _git_quick(main_checkout, "rev-parse", "--verify", "-q", ref)
+    local_sha = _sha(local.stdout) if local is not None and local.returncode == 0 else ""
+    if not local_sha:
+        return lines + [f"El checkout principal no tiene la rama {branch}: no se revisó la "
+                        "frescura."], False
+    if local_sha != sha:
+        ahead = _git_quick(main_checkout, "merge-base", "--is-ancestor", sha, local_sha)
+        if ahead is None or ahead.returncode != 0:
+            return lines + [f"⚠ El checkout principal ({branch}) está atrás de {remote}: el "
+                            "Filtro usa su atta/checks.json y sus reglas. Ponlo al día con "
+                            f"git pull --ff-only origin {branch}."], True
+    return lines + [f"El checkout principal ({branch}) está al día con {remote}."], False
+
+
+# ---------------------------------------------------------------- the gate
+
+def _effective_risk(assessed: dict | None) -> str | None:
+    return assessed["outcome"]["effective"] if assessed is not None else None
+
+
 def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_ref: str,
              config: dict, kind: str = "checks") -> GateResult:
     """Run El Filtro on `worktree` and write `<round_dir>/<kind>.md` and `.log`.
@@ -442,30 +727,60 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
     base = resolve_base(worktree, base_ref, commit)
     violations = protected_violations(worktree, base, globs, commit)
     dirty = dirty_entries(worktree)
+    checks = spec["checks"]
+    build = kind == "checks"
+    blocked = bool(violations or dirty or not checks)
+
+    # Everything below reads the diff; nothing is written before the report.
+    entries = changed_entries(worktree, f"{base}...{commit}") if not blocked else []
+    assessed = None
+    fresh_lines, fresh_warn = [], False
+    scope = None
+    if not blocked and build:
+        assessed = _assess_risk(worktree, base, commit, job, round_dir, config)
+        fresh_lines, fresh_warn = freshness(main_checkout, config.get("integration_branch")
+                                            or "develop")
+        scope = scope_rules.assess(worktree, commit, round_dir, config, entries,
+                                   risk_rules.rules_of(config).get("tests") or [])
+
+    # Tiered checks (S2): an effective low risk skips `risk>=medium` (never in merge-checks,
+    # never all of them: a gate that runs nothing never passes).
+    to_run, skipped = list(checks), []
+    if build and _effective_risk(assessed) == "low":
+        quick = [c for c in checks if c["when"] != WHEN_MEDIUM]
+        if quick:
+            to_run, skipped = quick, [c for c in checks if c["when"] == WHEN_MEDIUM]
 
     start = time.monotonic()
     runs: list[_CheckRun] = []
     failed: _CheckRun | None = None
-    if not violations and not dirty:
-        for check in spec["checks"]:
-            run = _run_check(check, worktree)
-            runs.append(run)
-            if not run.ok:
-                failed = run
-                break
+    sg = None
+    scope_fail = scope["fail"] if scope is not None else None
+    if not blocked and not scope_fail:
+        sg = run_ast_grep(main_checkout, worktree, _scan_files(entries), spec["timeout_s"])
+        if sg["status"] != "fail":
+            for check in to_run:
+                run = _run_check(check, worktree)
+                runs.append(run)
+                if not run.ok:
+                    failed = run
+                    break
     duration = round(time.monotonic() - start, 3)
+    sg_fail = sg["summary"] if sg is not None and sg["status"] == "fail" else None
 
-    checks = spec["checks"]
+    failed_name = None
     if violations:
         listed = ", ".join(_entry_text(paths) for _, paths in violations)
         summary = f"El Filtro no pasó: el diff toca rutas protegidas ({listed})."
-        failed_name = None
     elif dirty:
         summary = DIRTY_SUMMARY
-        failed_name = None
     elif not checks:
         summary = f"El Filtro no pasó: atta/checks.json no tiene checks. {PLACEHOLDER_HINT}"
-        failed_name = None
+    elif scope_fail:
+        summary = scope_fail
+    elif sg_fail:
+        summary = sg_fail
+        failed_name = AST_GREP_STEP
     elif failed is not None and failed.timed_out:
         limit = next(c["timeout_s"] for c in checks if c["name"] == failed.name)
         summary = f"El Filtro no pasó: `{failed.name}` superó el tiempo límite ({_secs(limit)} s)."
@@ -474,20 +789,28 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
         summary = f"El Filtro no pasó: falló `{failed.name}` (exit {failed.exit_code})."
         failed_name = failed.name
     else:
-        noun = "check" if len(checks) == 1 else "checks"
-        summary = f"El Filtro pasó: {len(checks)} {noun} en {_secs(duration)} s."
-        failed_name = None
-    passed = not violations and not dirty and bool(checks) and failed is None
+        noun = "check" if len(to_run) == 1 else "checks"
+        summary = f"El Filtro pasó: {len(to_run)} {noun} en {_secs(duration)} s"
+        if skipped:
+            plural = "" if len(skipped) == 1 else "s"
+            summary += f" ({len(skipped)} salteado{plural} por riesgo bajo)"
+        summary += "."
+    passed = not blocked and not scope_fail and not sg_fail and failed is None
 
-    assessed = None
-    if passed and kind == "checks":
-        assessed = _assess_risk(worktree, base, commit, job, round_dir, config)
-        if assessed["outcome"]["message"]:
-            summary = f"{summary} {assessed['outcome']['message']}"
+    warned = (scope["warnings"] if scope is not None else []) + (["frescura"] if fresh_warn
+                                                                  else [])
+    if passed and warned:
+        summary = f"{summary} Avisos en checks.md: {', '.join(warned)}."
+    if not passed:
+        assessed = None
+    elif assessed is not None and assessed["outcome"]["message"]:
+        summary = f"{summary} {assessed['outcome']['message']}"
 
     round_dir.mkdir(parents=True, exist_ok=True)
     log_path = round_dir / f"{kind}.log"
     log = [f"# {kind} · job {job_id} · commit {commit}\n"]
+    if sg is not None and sg["output"]:
+        log.append(f"\n== {AST_GREP_STEP} ==\n{sg['output']}")
     for run in runs:
         status = "timeout" if run.timed_out else f"exit {run.exit_code}"
         log.append(f"\n== {run.name} ({status}, {_secs(run.duration_s)} s) ==\n{run.output}")
@@ -505,6 +828,12 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
         md += [f"- `{line}`" for line in dirty[:TAIL_LINES]]
     else:
         md.append("Limpio.")
+    if fresh_lines:
+        md += ["", *fresh_lines]
+    if scope is not None:
+        md += ["", *scope["lines"]]
+    if sg is not None:
+        md += ["", f"## {AST_GREP_STEP}", "", *sg["lines"]]
     md += ["", "## Checks", ""]
     if violations:
         md.append("No se corrieron: el diff toca rutas protegidas.")
@@ -512,9 +841,19 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
         md.append("No se corrieron: el worktree tiene cambios sin commitear.")
     elif not checks:
         md.append(f"No hay checks configurados. {PLACEHOLDER_HINT}")
+    elif scope_fail:
+        md.append("No se corrieron: el diff sale del alcance.")
+    elif sg_fail:
+        md.append("No se corrieron: ast-grep no pasó.")
     else:
+        if skipped:
+            md += ["Riesgo efectivo bajo: corren solo los checks sin «when: risk>=medium».", ""]
         ran = {r.name: r for r in runs}
         for check in checks:
+            if check in skipped:
+                md.append(f"- `{check['name']}`: salteado (riesgo bajo: corre con riesgo medio "
+                          "o alto).")
+                continue
             run = ran.get(check["name"])
             if run is None:
                 md.append(f"- `{check['name']}`: no se corrió (fail-fast).")

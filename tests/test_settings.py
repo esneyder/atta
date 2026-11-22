@@ -17,7 +17,7 @@ from atta.spine.settings_registry import Setting
 KEYS = ("integration_branch", "forbidden_branches", "branch_prefix", "max_rounds",
         "max_total_rounds", "concurrency", "merge_method", "labels.queue", "labels.needs_info",
         "labels.needs_human", "labels.needs_review", "protected_paths",
-        "delivery.auto_merge_up_to",
+        "delivery.auto_merge_up_to", "scope.enforce", "scope.max_files",
         "guard.deny_commands", "prices_usd_per_mtok", "routing", "risk_rules", "models")
 NOT_KEY = "La clave «foo» no existe; mira las claves con `atta settings`."
 FLAG = Setting("experimental.flag", "bool", False, "Bandera de prueba.")
@@ -67,6 +67,9 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(by["labels.needs_review"].default, "atta:needs-review")
         self.assertEqual(by["labels.needs_review"].type, "str")
         self.assertEqual(by["guard.deny_commands"].default, list(guard.DEFAULT_DENY_COMMANDS))
+        self.assertEqual((by["scope.enforce"].type, by["scope.enforce"].default), ("bool", False))
+        self.assertEqual((by["scope.max_files"].type, by["scope.max_files"].default), ("int", 12))
+        self.assertIn("FILES:", by["scope.enforce"].description)
         for key in ("prices_usd_per_mtok", "routing", "risk_rules", "models"):
             self.assertFalse(by[key].editable, key)
         for s in reg:
@@ -193,6 +196,14 @@ class SetTest(SettingsBase):
                                           f"{shown}.\n— Atta\n")
                     self.assertEqual(self.stored()["experimental"], {"flag": value})
             self.assertEqual(self.ok("settings", "get", "experimental.flag"), "false\n")
+
+    def test_set_scope_keys(self):
+        out = self.ok("settings", "set", "scope.enforce", "sí")
+        self.assertEqual(out, "Atta cambió scope.enforce en atta/config.json: no → sí.\n— Atta\n")
+        self.ok("settings", "set", "scope.max_files", "20")
+        self.assertEqual(self.stored()["scope"], {"enforce": True, "max_files": 20})
+        self.assertEqual(self.ok("settings", "get", "scope.max_files"), "20\n")
+        self.assertRegex(self.ok("settings"), r"(?m)^scope\.enforce\s+sí \*\s+no\s+\S")
 
     def test_set_keeps_unknown_keys_and_models(self):
         data = self.stored()

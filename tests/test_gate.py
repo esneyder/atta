@@ -1,11 +1,13 @@
 """Filtro (S7, S1): checks from the main checkout, fail-fast, timeout, protected paths, report."""
 
 import json
+import os
 import shutil
 import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
 import support  # noqa: F401
 from support import ATTA_DIR, TempDirMixin
@@ -46,7 +48,7 @@ def check(name, run):
     return {"name": name, "run": run, "shell": SHELL}
 
 
-class GateTests(TempDirMixin, unittest.TestCase):
+class GateFixture(TempDirMixin):
     def setUp(self):
         super().setUp()
         self.main = self.tmp / "main"
@@ -89,6 +91,14 @@ class GateTests(TempDirMixin, unittest.TestCase):
     def report(self, kind="checks"):
         return (self.round / f"{kind}.md").read_text(encoding="utf-8")
 
+    def section(self, title, kind="checks"):
+        text = self.report(kind)
+        start = text.index(f"## {title}\n")
+        end = text.find("\n## ", start + 1)
+        return text[start:] if end < 0 else text[start:end]
+
+
+class GateTests(GateFixture, unittest.TestCase):
     # S7: pass
     def test_pass_writes_report_and_log(self):
         self.set_checks([check("lint", OK), check("tests", OK), check("build", OK)])
@@ -261,6 +271,360 @@ class GateTests(TempDirMixin, unittest.TestCase):
     def test_bad_base_ref_raises(self):
         with self.assertRaises(gate.GateError):
             self.run_gate(base_ref="no-existe-esta-ref")
+
+
+# A fake ast-grep: reads its behaviour from $FAKE_SG_STATE and records every call there.
+FAKE_SG = r'''
+import json, os, sys
+path = os.environ["FAKE_SG_STATE"]
+with open(path, encoding="utf-8") as fh:
+    state = json.load(fh)
+state.setdefault("calls", []).append({"argv": sys.argv[1:], "cwd": os.getcwd()})
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(state, fh)
+cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+if cmd == "--version":
+    print("ast-grep 0.39.0")
+    sys.exit(0)
+if cmd == "test":
+    print(state.get("test_out", "todas las reglas pasan"))
+    sys.exit(state.get("test_exit", 0))
+if cmd == "scan":
+    for m in state.get("matches", []):
+        print(json.dumps(m))
+    sys.stdout.write(state.get("raw", ""))
+    sys.stderr.write(state.get("stderr", ""))
+    sys.exit(state.get("scan_exit", 0))
+sys.exit(2)
+'''
+
+RULE = "id: no-print\nlanguage: python\nseverity: error\nrule:\n  pattern: print($A)\n"
+
+
+def sg_match(path, line, rule="no-print", severity="error", message="no uses print"):
+    return {"text": "print(x)", "file": path, "ruleId": rule, "severity": severity,
+            "message": message, "range": {"start": {"line": line - 1, "column": 0},
+                                          "end": {"line": line - 1, "column": 8}}}
+
+
+class AstGrepFixture(GateFixture):
+    def setUp(self):
+        super().setUp()
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        script = self.tmp / "fake_sg.py"
+        script.write_text(FAKE_SG, encoding="utf-8")
+        if os.name == "nt":
+            (self.bin / "ast-grep.cmd").write_text(
+                f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+        else:
+            exe = self.bin / "ast-grep"
+            exe.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n',
+                           encoding="utf-8")
+            exe.chmod(0o755)
+        self.state = self.tmp / "sg-state.json"
+        self.set_sg({})
+        env = {"FAKE_SG_STATE": str(self.state),
+               "PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", "")}
+        patcher = mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def set_sg(self, state):
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+
+    def sg_calls(self):
+        return json.loads(self.state.read_text(encoding="utf-8")).get("calls", [])
+
+    def add_rules(self, root=None, tests=False):
+        root = root or self.main
+        text = "ruleDirs:\n  - rules\n"
+        if tests:
+            text += "testConfigs:\n  - testDir: rule-tests\n"
+        write(root / "sgconfig.yml", text)
+        write(root / "rules" / "no-print.yml", RULE)
+
+
+class AstGrepTests(AstGrepFixture, unittest.TestCase):
+    """S7 (K4): ast-grep in the Filtro, rules only from the main checkout."""
+
+    def test_without_sgconfig_the_step_is_skipped(self):
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIn("Salteado: no hay sgconfig.yml en el checkout principal.",
+                      self.section("ast-grep"))
+        self.assertEqual(self.sg_calls(), [])
+
+    def test_sgconfig_with_empty_rule_dirs_is_skipped(self):
+        write(self.main / "sgconfig.yml", "ruleDirs:\n  - rules\n")
+        (self.main / "rules").mkdir()
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIn("Salteado: sgconfig.yml no tiene reglas", self.section("ast-grep"))
+        self.assertEqual(self.sg_calls(), [])
+
+    def test_rules_without_binary_fail_with_a_hint(self):
+        self.add_rules()
+        self.set_checks([check("marca", py("open('marca.txt', 'w').write('x')"))])
+        with mock.patch.object(gate, "_which", return_value=None):
+            result = self.run_gate()
+        self.assertFalse(result.passed)
+        self.assertEqual(result.failed_check, "ast-grep")
+        self.assertEqual(result.summary,
+                         "El Filtro no pasó: hay reglas de ast-grep (sgconfig.yml) y no "
+                         "encontré el binario ast-grep (ni sg) en el PATH.")
+        self.assertIn("Instala ast-grep", self.section("ast-grep"))
+        self.assertIn("No se corrieron: ast-grep no pasó.", self.section("Checks"))
+        self.assertFalse((self.wt / "marca.txt").exists())
+        self.assertTrue(self.report().startswith("GATE: FAIL\n"))
+
+    def test_rule_tests_run_first_and_their_failure_blocks(self):
+        self.add_rules(tests=True)
+        self.set_sg({"test_exit": 1, "test_out": "no-print: invalid case 2 no coincide"})
+        result = self.run_gate()
+        self.assertFalse(result.passed)
+        self.assertEqual(result.summary, "El Filtro no pasó: las reglas de ast-grep no pasan "
+                                         "sus propios tests.")
+        self.assertIn("no-print: invalid case 2 no coincide", self.section("ast-grep"))
+        calls = self.sg_calls()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["argv"][0], "test")
+        self.assertIn("--skip-snapshot-tests", calls[0]["argv"])
+        self.assertTrue(os.path.samefile(calls[0]["cwd"], self.main))
+
+    def test_rule_tests_pass_then_scan_runs(self):
+        self.add_rules(tests=True)
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertEqual([c["argv"][0] for c in self.sg_calls()], ["test", "scan"])
+
+    def test_no_test_configs_skips_rule_tests(self):
+        self.add_rules()
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertEqual([c["argv"][0] for c in self.sg_calls()], ["scan"])
+
+    def test_scan_only_diff_files_with_main_config_and_json_stream(self):
+        self.add_rules()
+        write(self.wt / "src" / "otro.py", "y = 2\n")
+        (self.wt / "src" / "app.py").unlink()
+        write(self.wt / "README.md", "hola\n")
+        self.commit_wt()
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        (call,) = self.sg_calls()
+        argv = call["argv"]
+        self.assertEqual(argv[0], "scan")
+        self.assertIn("--json=stream", argv)
+        config_arg = argv[argv.index("--config") + 1]
+        self.assertTrue(os.path.samefile(config_arg, self.main / "sgconfig.yml"))
+        files = argv[argv.index("--") + 1:]
+        self.assertEqual(sorted(files), ["README.md", "src/feature.py", "src/otro.py"])
+        self.assertTrue(os.path.samefile(call["cwd"], self.wt))
+        self.assertIn("Sin hallazgos en 3 archivos del diff.", self.section("ast-grep"))
+
+    def test_error_match_blocks_and_is_listed(self):
+        self.add_rules()
+        self.set_checks([check("marca", py("open('marca.txt', 'w').write('x')"))])
+        self.set_sg({"matches": [sg_match("src/feature.py", 1)], "scan_exit": 1})
+        result = self.run_gate()
+        self.assertFalse(result.passed)
+        self.assertEqual(result.failed_check, "ast-grep")
+        self.assertEqual(result.summary, "El Filtro no pasó: ast-grep encontró 1 error "
+                                         "(no-print en src/feature.py:1).")
+        self.assertIn("- ✗ `src/feature.py:1` no-print (error): no uses print",
+                      self.section("ast-grep"))
+        self.assertFalse((self.wt / "marca.txt").exists())
+
+    def test_warnings_inform_and_never_block(self):
+        self.add_rules()
+        self.set_sg({"matches": [sg_match("src/feature.py", 1, rule="prefer-x",
+                                          severity="warning", message="mejor x")]})
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIn("- ⚠ `src/feature.py:1` prefer-x (warning): mejor x",
+                      self.section("ast-grep"))
+
+    def test_exit_zero_with_an_error_match_still_blocks(self):
+        self.add_rules()
+        self.set_sg({"matches": [sg_match("src/feature.py", 1)], "scan_exit": 0})
+        result = self.run_gate()
+        self.assertFalse(result.passed)
+        self.assertIn("ast-grep encontró 1 error", result.summary)
+
+    def test_nonzero_exit_without_errors_fails(self):
+        self.add_rules()
+        self.set_sg({"scan_exit": 2, "stderr": "Error: no pude leer la regla\n"})
+        result = self.run_gate()
+        self.assertFalse(result.passed)
+        self.assertEqual(result.summary, "El Filtro no pasó: ast-grep terminó con exit 2 sin "
+                                         "reportar errores.")
+        self.assertIn("Error: no pude leer la regla", self.section("ast-grep"))
+
+    def test_output_that_is_not_json_fails(self):
+        self.add_rules()
+        self.set_sg({"raw": "esto no es json\n"})
+        result = self.run_gate()
+        self.assertFalse(result.passed)
+        self.assertEqual(result.summary, "El Filtro no pasó: ast-grep devolvió una salida que "
+                                         "no es JSON.")
+
+    def test_branch_rules_are_ignored(self):
+        # The branch brings its own sgconfig.yml and rules: the main checkout has none.
+        self.add_rules(root=self.wt)
+        self.commit_wt("reglas propias")
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIn("Salteado: no hay sgconfig.yml en el checkout principal.",
+                      self.section("ast-grep"))
+        self.assertEqual(self.sg_calls(), [])
+
+    def test_branch_cannot_weaken_main_rules(self):
+        self.add_rules()
+        write(self.wt / "sgconfig.yml", "ruleDirs: []\n")
+        self.commit_wt("sin reglas")
+        self.set_sg({"matches": [sg_match("src/feature.py", 1)], "scan_exit": 1})
+        result = self.run_gate()
+        self.assertFalse(result.passed)
+        argv = self.sg_calls()[0]["argv"]
+        self.assertTrue(os.path.samefile(argv[argv.index("--config") + 1],
+                                         self.main / "sgconfig.yml"))
+
+    def test_merge_checks_also_run_ast_grep(self):
+        self.add_rules()
+        self.set_sg({"matches": [sg_match("src/feature.py", 1)], "scan_exit": 1})
+        result = self.run_gate(kind="merge-checks")
+        self.assertFalse(result.passed)
+        self.assertIn("ast-grep encontró 1 error", self.report("merge-checks"))
+
+
+class TieredChecksTests(GateFixture, unittest.TestCase):
+    """S2 (L4): `when: risk>=medium` checks are skipped when the effective risk is low."""
+
+    def setUp(self):
+        super().setUp()
+        # A quiet diff: the source change comes with its test (no high-risk category).
+        write(self.wt / "tests" / "test_feature.py", "def test_x():\n    assert True\n")
+        self.commit_wt("test")
+        self.set_checks([
+            check("rapido", py("open('rapido.txt', 'w').write('x')")),
+            {**check("lento", py("open('lento.txt', 'w').write('x')")), "when": "risk>=medium"},
+        ])
+
+    def job(self, risk):
+        return {"id": "12-job", "intake": {"risk": risk, "surfaces": [], "decision": "ACCEPT"}}
+
+    def gate(self, risk, kind="checks"):
+        return gate.run_gate(self.main, self.wt, self.job(risk), self.round,
+                             base_ref=self.base, config=self.cfg, kind=kind)
+
+    def test_low_risk_skips_medium_checks_and_says_so(self):
+        result = self.gate("low")
+        self.assertTrue(result.passed, result.summary)
+        self.assertTrue((self.wt / "rapido.txt").exists())
+        self.assertFalse((self.wt / "lento.txt").exists())
+        self.assertRegex(result.summary,
+                         r"El Filtro pasó: 1 check en [0-9.]+ s \(1 salteado por riesgo bajo\)\.")
+        checks = self.section("Checks")
+        self.assertIn("- `lento`: salteado (riesgo bajo: corre con riesgo medio o alto).", checks)
+        self.assertIn("Riesgo efectivo bajo", checks)
+
+    def test_medium_risk_runs_everything(self):
+        result = self.gate("medium")
+        self.assertTrue(result.passed, result.summary)
+        self.assertTrue((self.wt / "lento.txt").exists())
+        self.assertRegex(result.summary, r"El Filtro pasó: 2 checks en [0-9.]+ s\.")
+        self.assertNotIn("salteado", self.section("Checks"))
+
+    def test_rules_risk_above_a_low_intake_runs_everything(self):
+        write(self.wt / "migrations" / "0001.sql", "ALTER TABLE t ADD c int;\n")
+        self.commit_wt("migracion")
+        result = self.gate("low")
+        self.assertTrue(result.passed, result.summary)
+        self.assertTrue((self.wt / "lento.txt").exists())
+
+    def test_merge_checks_always_run_everything(self):
+        result = self.gate("low", kind="merge-checks")
+        self.assertTrue(result.passed, result.summary)
+        self.assertTrue((self.wt / "lento.txt").exists())
+        self.assertRegex(result.summary, r"El Filtro pasó: 2 checks en [0-9.]+ s\.")
+
+    def test_low_risk_with_only_medium_checks_runs_them_all(self):
+        self.set_checks([{**check("lento", py("open('lento.txt', 'w').write('x')")),
+                          "when": "risk>=medium"}])
+        result = self.gate("low")
+        self.assertTrue(result.passed, result.summary)
+        self.assertTrue((self.wt / "lento.txt").exists())
+
+    def test_invalid_when_is_a_config_error(self):
+        self.set_checks([{**check("x", OK), "when": "risk>=alto"}])
+        with self.assertRaises(gate.GateError) as ctx:
+            self.gate("low")
+        self.assertIn("checks[0].when debe ser «always» o «risk>=medium»", str(ctx.exception))
+        self.assertFalse((self.round / "checks.md").exists())
+
+
+class FreshnessTests(GateFixture, unittest.TestCase):
+    """S7 (K14): the main checkout's integration branch vs origin; a warning, never a block."""
+
+    def setUp(self):
+        super().setUp()
+        self.origin = self.tmp / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(self.origin)], check=True,
+                       capture_output=True)
+        git(self.main, "remote", "add", "origin", str(self.origin))
+        git(self.main, "branch", "develop", self.base)
+        git(self.main, "push", "-q", "origin", "develop")
+
+    def test_up_to_date_is_noted(self):
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIn("El checkout principal (develop) está al día con origin/develop.",
+                      self.section("Frescura"))
+
+    def test_behind_origin_warns_and_still_passes(self):
+        head = git(self.wt, "rev-parse", "HEAD")
+        git(self.main, "push", "-q", "origin", f"{head}:refs/heads/develop")
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIn("⚠ El checkout principal (develop) está atrás de origin/develop",
+                      self.section("Frescura"))
+        self.assertIn("Avisos en checks.md: frescura.", result.summary)
+
+    def test_unknown_remote_commit_counts_as_behind(self):
+        other = self.tmp / "other"
+        subprocess.run(["git", "clone", "-q", "-b", "develop", str(self.origin), str(other)],
+                       check=True, capture_output=True)
+        write(other / "nuevo.txt", "x\n")
+        git(other, "add", "-A")
+        git(other, "commit", "-q", "-m", "otro")
+        git(other, "push", "-q", "origin", "HEAD:develop")
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIn("⚠ El checkout principal (develop) está atrás de origin/develop",
+                      self.section("Frescura"))
+
+    def test_local_ahead_is_up_to_date(self):
+        head = git(self.wt, "rev-parse", "HEAD")
+        git(self.main, "branch", "-f", "develop", head)
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIn("está al día con origin/develop", self.section("Frescura"))
+
+    def test_no_origin_is_only_noted(self):
+        git(self.main, "remote", "remove", "origin")
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIn("No hay remoto origin: no se revisó la frescura.", self.section("Frescura"))
+        self.assertNotIn("Avisos", result.summary)
+
+    def test_merge_checks_skip_freshness(self):
+        head = git(self.wt, "rev-parse", "HEAD")
+        git(self.main, "push", "-q", "origin", f"{head}:refs/heads/develop")
+        result = self.run_gate(kind="merge-checks")
+        self.assertTrue(result.passed, result.summary)
+        self.assertNotIn("## Frescura", self.report("merge-checks"))
+        self.assertNotIn("Avisos", result.summary)
 
 
 class ShellCommandTests(unittest.TestCase):

@@ -158,6 +158,25 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
                          "config.json: labels debe tener queue, needs_info y needs_human como "
                          "textos.")
 
+    def test_scope_defaults_and_partial_section(self):
+        self.assertEqual(config.load_config(self.write({}))["scope"],
+                         {"enforce": False, "max_files": 12})
+        cfg = config.load_config(self.write({"scope": {"enforce": True}}))
+        self.assertEqual(cfg["scope"], {"enforce": True, "max_files": 12})
+
+    def test_rejects_invalid_scope(self):
+        cases = [
+            ({"scope": []}, "scope debe ser un objeto."),
+            ({"scope": {"enforce": "sí"}}, "scope.enforce debe ser true o false."),
+            ({"scope": {"max_files": 0}}, "scope.max_files debe ser un entero mayor que 0."),
+            ({"scope": {"max_files": True}}, "scope.max_files debe ser un entero mayor que 0."),
+        ]
+        for data, msg in cases:
+            with self.subTest(data=data):
+                with self.assertRaises(config.ConfigError) as ctx:
+                    config.load_config(self.write(data))
+                self.assertEqual(str(ctx.exception), f"config.json: {msg}")
+
     def test_models_is_optional_and_accepts_tiers_and_roles(self):
         self.assertNotIn("models", config.load_config(self.write({})))
         models = {"claude-code": {"tiers": {"T2": "haiku", "T3": "claude-opus-4-1"},
@@ -177,7 +196,7 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
             ({"claude-code": {"roles": {"obrera": "haiku"}}},
              "models.claude-code.roles.obrera: El rol «obrera» no existe: usa exploradora, guia, "
              "vigia, cortadora, jardinera-code, jardinera-resilience, jardinera-ux, "
-             "jardinera-ui, soldado o reina."),
+             "jardinera-ui, soldado, refutador o reina."),
             ({"claude-code": {"roles": {"soldado": "gpt-4"}}},
              "models.claude-code.roles.soldado: «gpt-4» no es un modelo válido para "
              "claude-code: usa haiku, sonnet u opus, o un id completo que cumpla "

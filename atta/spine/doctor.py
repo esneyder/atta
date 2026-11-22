@@ -10,12 +10,13 @@ Checks, in order (each one catches a stumble of the real runs, odd/tasks/f2-colo
   without `atta` the guard hook blocks nothing) and the Python of Atta has pip (⚠, to update);
 - the project root is a git repo, `atta/config.json` loads and validates (missing: ⚠, defaults),
   `atta/checks.json` has at least one check (without checks the Filtro always fails);
+- with a `sgconfig.yml`, the `ast-grep` (or `sg`) binary on the PATH (⚠: the Filtro fails);
 - remote `origin`, `origin/<integration_branch>` (`git ls-remote --heads`), and the main checkout
   is not behind it (⚠; L31: the Filtro reads checks.json from this checkout);
 - gh (`github.command()`, so $ATTA_GH works): installed, logged in, the active account sees the
   repository (`gh repo view --json name`), and every Atta label of the config exists
   (`gh label list`; L31: a missing `atta:needs-review`). `--no-github` skips them (⚠);
-- Claude Code: the 10 agents, the skill, `.claude/commands/atta.md` (L16: «Unknown command:
+- Claude Code: the 11 agents, the skill, `.claude/commands/atta.md` (L16: «Unknown command:
   /atta»), the `atta guard` PreToolUse hook, `claude --version` (⚠ when missing), and the
   project files up to date with this Atta (the comparison of `atta init --check`, ⚠).
 
@@ -197,7 +198,20 @@ def _project(r: Report, root: Path) -> tuple[bool, dict]:
         else:
             r.fail("atta/checks.json no tiene checks: el Filtro siempre falla",
                    "Agrega los checks reales del proyecto (README, sección 4.2).")
+    _ast_grep(r, root)
     return is_repo, cfg
+
+
+def _ast_grep(r: Report, root: Path) -> None:
+    """With a sgconfig.yml the Filtro runs ast-grep and fails without the binary (K4)."""
+    if not any((root / name).is_file() for name in gate.SGCONFIG_NAMES):
+        return
+    exe = next((p for p in (_which(n) for n in gate.AST_GREP_BINARIES) if p), None)
+    if exe:
+        r.ok(f"ast-grep para las reglas de sgconfig.yml ({exe})")
+    else:
+        r.warn("hay sgconfig.yml y no encontré ast-grep (ni sg) en el PATH: el Filtro va a "
+               "fallar", gate.AST_GREP_HINT)
 
 
 def _git(r: Report, root: Path, is_repo: bool, branch: str) -> None:

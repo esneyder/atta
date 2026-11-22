@@ -67,6 +67,9 @@ DEFAULTS = {
     # G3 (F3 T2): rules that classify the diff into high-risk categories; a project's table
     # replaces this one whole (see risk.py).
     "risk_rules": risk.DEFAULT_RULES,
+    # K8/G5 (F3 T5): the Filtro compares the diff with the spec's FILES: and the findings of
+    # the previous round; `enforce` turns those warnings into failures (see scope.py).
+    "scope": {"enforce": False, "max_files": 12},
 }
 # Optional key, never defaulted: `models` (per-runtime tier and role overrides, S12; see
 # models.py and `atta models`).
@@ -92,7 +95,7 @@ def auto_merges(cfg: dict, risk: str | None) -> bool:
     rank = RISK_LEVELS.index(risk) if risk in RISK_LEVELS[1:] else len(RISK_LEVELS) - 1
     return threshold in RISK_LEVELS and rank <= RISK_LEVELS.index(threshold)
 # Object sections whose missing sub-keys take the defaults (a partial `labels` is completed).
-_SECTIONS = ("labels", "delivery")
+_SECTIONS = ("labels", "delivery", "scope")
 
 
 class ConfigError(ValueError):
@@ -170,6 +173,14 @@ def validate(cfg: dict) -> dict:
     if delivery.get("auto_merge_up_to") not in RISK_LEVELS:
         raise _err(f"delivery.auto_merge_up_to «{delivery.get('auto_merge_up_to')}» no es "
                    f"válido (usa: {', '.join(RISK_LEVELS)}).")
+    scope = cfg["scope"]
+    if not isinstance(scope, dict):
+        raise _err("scope debe ser un objeto.")
+    if not isinstance(scope.get("enforce"), bool):
+        raise _err("scope.enforce debe ser true o false.")
+    max_files = scope.get("max_files")
+    if isinstance(max_files, bool) or not isinstance(max_files, int) or max_files < 1:
+        raise _err("scope.max_files debe ser un entero mayor que 0.")
     prices = cfg["prices_usd_per_mtok"]
     if not isinstance(prices, dict):
         raise _err("prices_usd_per_mtok debe ser un objeto.")
