@@ -231,6 +231,21 @@ class FailureTest(DoctorBase):
         self.assert_line(out, "✗ atta/checks.json no tiene checks: el Filtro siempre falla",
                          "Agrega los checks reales del proyecto (README, sección 4.2).")
 
+    # F3 upgrade: a routing copied before the Rastreador existed never gets it.
+    def test_own_routing_without_rastreador_is_a_warning(self):
+        import copy, json
+        from atta.spine import config
+        routing = copy.deepcopy(config.DEFAULT_ROUTING)
+        routing["risk"]["high"]["reviewers"] = [
+            r for r in routing["risk"]["high"]["reviewers"] if r["reviewer"] != "rastreador"]
+        (self.root / "atta" / "config.json").write_text(
+            json.dumps({"routing": routing}), encoding="utf-8")
+        code, out = self.run_doctor()
+        self.assertEqual(code, 0, out)
+        self.assert_line(out, "⚠ tu routing propio no incluye al Rastreador en riesgo alto",
+                         "Si nunca editaste «routing», bórralo de atta/config.json para usar "
+                         "el de fábrica; si es tuyo, agrega el reviewer rastreador (T3) a «high».")
+
     def test_missing_command_file(self):
         (self.root / ".claude" / "commands" / "atta.md").unlink()
         code, out = self.run_doctor()

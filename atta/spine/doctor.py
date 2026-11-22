@@ -189,6 +189,7 @@ def _project(r: Report, root: Path) -> tuple[bool, dict]:
                    "Corrígelo a mano en tu terminal (atta settings muestra cada clave).")
         else:
             r.ok("atta/config.json es válido")
+            _routing(r, cfg)
     try:
         checks = gate.load_checks(root)["checks"]
     except gate.GateError as exc:
@@ -202,6 +203,18 @@ def _project(r: Report, root: Path) -> tuple[bool, dict]:
                    "Agrega los checks reales del proyecto (README, sección 4.2).")
     _ast_grep(r, root)
     return is_repo, cfg
+
+
+def _routing(r: Report, cfg: dict) -> None:
+    """F3 upgrade: a routing copied into config.json before the Rastreador existed keeps
+    working but never gets it; say so instead of changing a human-owned file."""
+    if cfg.get("routing") == config.DEFAULT_ROUTING:
+        return
+    high = (cfg.get("routing") or {}).get("risk", {}).get("high", {}).get("reviewers", [])
+    if not any(isinstance(x, dict) and x.get("reviewer") == "rastreador" for x in high):
+        r.warn("tu routing propio no incluye al Rastreador en riesgo alto",
+               "Si nunca editaste «routing», bórralo de atta/config.json para usar el de "
+               "fábrica; si es tuyo, agrega el reviewer rastreador (T3) a «high».")
 
 
 def _ast_grep(r: Report, root: Path) -> None:

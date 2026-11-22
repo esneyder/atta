@@ -1496,6 +1496,7 @@ Corrige lo marcado con ✗ antes de correr /atta.
 | Síntoma | Causa y solución |
 |---|---|
 | No sé si el proyecto está listo, o algo falla y no sé qué | `atta doctor`: cada `✗` trae cómo arreglarlo |
+| `atta doctor` avisa «tu routing propio no incluye al Rastreador en riesgo alto» | Tu `atta/config.json` copió el routing antes de F3. Si nunca lo editaste, borra la clave `routing` para usar el de fábrica; si es tuyo, agrega `{"reviewer": "rastreador", "lenses": ["adversarial"], "tier": "T3"}` a `high` |
 | Claude Code dice «Unknown command: /atta» | Falta `.claude/commands/atta.md` (`atta doctor` lo marca): corre `atta init` |
 | `atta handoff` no pudo poner `atta:needs-review` | La label no existe en el repo (`atta doctor` la marca): corre `atta init` sin `--no-github` |
 | Después de actualizar Atta los agentes se comportan como antes | Los archivos del proyecto quedaron atrás: `atta init --check` los lista y `atta init --force` los pone al día |
