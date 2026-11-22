@@ -104,15 +104,21 @@ Idea: un menú por área, con la opción actual marcada y una vista previa del e
 | `/atta:risk` | Categorías de riesgo y alcance (`scope.enforce`, `scope.max_files`) |
 | `/atta:labels` | Labels de la cola y de espera |
 
-Preguntas de diseño abiertas (se deciden antes de implementar):
+Decisiones:
 
-1. **Dónde vive el menú.** Opciones: (a) en Claude Code con preguntas seleccionables, (b) un menú de
-   terminal `atta config` (flechas y Enter, funciona en Windows, macOS y Linux), (c) una pestaña de
-   configuración en el hormiguero. Pueden convivir; la fuente de verdad sigue siendo `atta/config.json`.
-2. **Seguridad (L29 de F2).** Hoy el guard impide que un agente cambie la configuración. Un menú dentro
-   de Claude Code necesita que el cambio lo confirme el humano y no el modelo: por ejemplo, el menú
-   solo prepara el cambio y el humano lo aplica con un comando o token de confirmación, o el cambio se
-   aplica desde el menú de terminal/hormiguero, donde el agente no participa.
+1. **Dónde vive el menú: dentro de Claude Code** (decisión del usuario: «que el menú esté dentro del
+   claude se siente más profesional»). Cada comando `/atta:*` muestra preguntas seleccionables con la
+   opción actual marcada y la vista previa del efecto. La fuente de verdad sigue siendo
+   `atta/config.json`; `atta settings` y `atta models` quedan como base y para uso sin Claude Code.
+
+Preguntas abiertas (se deciden antes de implementar):
+
+2. **Seguridad (L29 de F2).** Propuesta a validar: el guard responde `ask` (no `deny`) a
+   `atta settings set`, `atta models set` y `atta init` cuando el comando viene del menú, así
+   Claude Code le pide al humano que apruebe ese comando exacto y el modelo no puede aplicarlo solo.
+   Hay que verificar cómo se comporta `ask` en los modos de permisos que omiten confirmaciones.
+   Alternativa: el menú solo prepara el cambio y muestra el comando exacto para que el humano lo
+   corra en su terminal.
 3. **Hormiguero editable.** Hoy es de solo lectura por diseño; editar desde la web exige protección
    contra CSRF y confirmación local.
 4. **Perfiles.** Formato (archivo por usuario o por proyecto) y cómo conviven con los overrides de
