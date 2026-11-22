@@ -20,15 +20,15 @@ Rama: `feat/f3-calidad` (apilada sobre `feat/f2-colonia`, PR #9). Diseño: `docs
 
 | ID | Specs | Route | Estado | Commit |
 |---|---|---|---|---|
-| T1 | S3 | `atta doctor` + `atta init --check` | hecho (765 tests) | ver commit feat(doctor) |
-| T2 | S4, S2 | Riesgo por reglas sobre el diff (categorías de alto riesgo) → riesgo efectivo | hecho (766 tests) | ver commit feat(risk) |
-| T3 | S5, S2 | Refutador + corrección acotada | hecho (Refutador; corrección acotada en T5) | ver commits feat(refute), feat(gate) |
-| T4 | S6 | Ratchet `PREVENTION:` + Cultivadora + `atta/memory/` | pendiente | — |
-| T5 | S7 | Filtro: ast-grep, alcance `FILES:`, frescura, tests por riesgo | hecho | ver commit feat(gate) |
-| T6 | S8 | Rastreador en riesgo alto | pendiente | — |
-| T7 | S9 | Plantillas con contrato estructurado + tope Vigía | hecho en plantillas (falta que la espina lea `build.md`, llene `pr-body.md` y aplique el tope de la Vigía) | ver commit feat(templates): structured |
-| T9 | S2, S10 | Falla de configuración del Filtro → needs-human sin quemar rondas + reintento del Filtro en la misma ronda; checkout principal en `integration_branch` (Filtro y doctor) | hecho (865 tests) | ver commit fix(gate): config |
-| T8 | S1-S10 | Corrida en el sandbox + docs + CI | pendiente | — |
+| T1 | S3 | `atta doctor` + `atta init --check` | hecho (765 tests) | cc3442d |
+| T2 | S4, S2 | Riesgo por reglas sobre el diff (categorías de alto riesgo) → riesgo efectivo | hecho (766 tests) | eb7c489 |
+| T3 | S5, S2 | Refutador + corrección acotada | hecho (Refutador; corrección acotada en T5) | eb1c776, 5690f21, d2e0ad9 (guard) |
+| T4 | S6 | Ratchet `PREVENTION:` + Cultivadora + `atta/memory/` | hecho (núcleo, cableado al merge y a los prompts; cosecha también PASS con hallazgos) | 1dc9c34, 5e1de0c, fix(memory) |
+| T5 | S7 | Filtro: ast-grep, alcance `FILES:`, frescura, tests por riesgo | hecho | 5690f21 |
+| T6 | S8 | Rastreador en riesgo alto | hecho (falta verlo en una corrida real de riesgo alto) | f2124bb, 8474303 (aviso de upgrade) |
+| T7 | S9 | Plantillas con contrato estructurado + tope Vigía | hecho (plantillas + espina: contrato de `build.md`, PR con plantilla, tope de 3 REVISE) | 3ef4632, 5e1de0c |
+| T9 | S2, S10 | Falla de configuración del Filtro → needs-human sin quemar rondas + reintento del Filtro en la misma ronda; checkout principal en `integration_branch` (Filtro y doctor) | hecho (865 tests) | 306a1af |
+| T8 | S1-S10 | Corrida en el sandbox + docs + CI | en curso: corrida #11 (riesgo medio) → PR #12 en awaiting-merge en ~4 min sin rondas extra; faltan merge + cosecha, corrida de riesgo alto (Rastreador), docs y CI | — |
 
 ## Log
 
@@ -59,3 +59,4 @@ Rama: `feat/f3-calidad` (apilada sobre `feat/f2-colonia`, PR #9). Diseño: `docs
 - **L16** T7b+T4b hecho (942 tests): la espina valida `build.md` (secciones, Tests no vacío, Acceptance con ✓/✗; un reintento en la misma ronda, luego needs-human), el PR se arma con `pr-body.md` y se contrasta con el diff, tope de 3 REVISE de la Vigía (`spec_reviews`), `atta memory` en la CLI, cosecha al cerrar el merge (solo warning), lecciones relevantes en los prompts. Hallazgo: el guard no deja escribir `round-N/refute.md` ni `refute-retry.md` (bug previo, se corrige aparte).
 - **L17** Fix guard: el Refutador no podía escribir `round-N/refute.md` ni `refute-retry.md` (hallado en T7b). Se permiten exactamente esos dos nombres; verificador independiente PASS (probes de rondas, variantes de nombre, formas Windows, traversal, shell).
 - **L18** Upgrade hallado en T8: `atta init` copia `routing` al config.json del proyecto, así que los proyectos existentes no reciben al Rastreador. `atta doctor` avisa (⚠) cuando el routing propio no lo tiene en `high`, con la salida; no se toca el archivo del humano.
+- **L19** Corrida real #11 en el sandbox (riesgo medio, `auto_merge_up_to: none`): intake→awaiting-merge en ~4 min, 0 rondas extra; `build.md` con contrato completo (rojo inicial, salida real, criterios textuales con ✓), `FILES:` respetado, PR #12 armado con `pr-body.md` sin advertencia de diff. Hallazgos: (a) la Exploradora clasificó medio y las reglas no subieron el riesgo, así que el Rastreador no entró → falta una corrida de riesgo alto; (b) un PASS con menores traía un `PREVENTION:` útil que la Cultivadora ignoraba → ahora cosecha reviews con hallazgos (CHANGES o PASS con menores).
