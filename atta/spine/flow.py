@@ -20,6 +20,17 @@ already happened, so they exit 0 and are listed under `## Avisos` in merge.md. E
 isolated (any exception is a warning, never a traceback) and runs after merge.md and the
 `merging → merged` advance, which happen as soon as GitHub confirms the merge.
 
+PR body (K16, T7b): a new PR's body is the packaged `templates/pr-body.md` filled from the round's
+build.md: `## Summary`, `## Changes` (cross-checked with `git diff --name-only
+<origin/integration>...HEAD`, the file list of `git diff --stat`: files missing from either side
+are listed under a warning line), `## Tests`, `## Acceptance` and `Closes #<issue>`. Without
+build.md, with any of those sections empty or missing, or without the template, the body is the
+previous one-line text. An existing PR is never edited.
+
+Lessons (T4b, S6): once a job is merged (by Atta or by a person), `_finish_merge` harvests its
+`PREVENTION:` lines into `atta/memory/lessons.md` (memory.Lessons.harvest, idempotent) as the
+last isolated post-merge step: a failure is one more warning, never a block.
+
 Resumable merge (L22): `atta merge` on a job in `merging` asks GitHub. MERGED at the sha recorded
 in this stage's merge-checks.md → merge.md, merged and the post-merge steps; OPEN → continue
 from the merge step (sync and Filtro again only if HEAD moved); CLOSED or another sha →
@@ -57,13 +68,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import branches, config, gate, github, intake, issue, machine, voice
+from . import branches, config, gate, github, intake, issue, machine, memory, project, voice
 from .board import summary as artifact_summary
 from .github import GhError
 from .ids import InvalidId
 from .initcmd import LABEL_STYLE
 from .lock import LockTimeout, job_lock
-from .next import _fresh, handoff_recovery
+from .next import _fresh, build_section_map, handoff_recovery
 from .store import JobStore, StoreError, _replace
 
 OK, NEGATIVE, REFUSED = 0, 1, 2
@@ -79,6 +90,10 @@ AWAITING_MERGE = "awaiting-merge"
 NO_SLOT = WAITING_HUMAN | {AWAITING_MERGE}
 RUNNING = frozenset(machine.STAGES) - machine.TERMINAL - NO_SLOT
 _SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+PR_BODY_TEMPLATE = "pr-body.md"
+PR_BODY_SECTIONS = ("Summary", "Changes", "Tests", "Acceptance")
+_TEMPLATE_COMMENT = re.compile(r"\A\s*<!--.*?-->\s*", re.S)
+_CHANGE_PATH = re.compile(r"^\s*[-*]\s+`?([^\s`]+)`?")
 
 
 class FlowError(RuntimeError):
@@ -364,6 +379,67 @@ def cmd_worktree(args, cfg, jobs: JobStore) -> int:
     return OK
 
 
+def _fallback_body(job: dict, integration: str) -> str:
+    return (f"La Cortadora abre este PR para el issue #{job['issue']}. Se integra solo en "
+            f"{integration}, cuando la Reina lo apruebe.\n\nCloses #{job['issue']}")
+
+
+def _listed_paths(changes: str) -> list[str]:
+    """The file of each `- path — what` line of build.md `## Changes`, in order."""
+    out: list[str] = []
+    for line in changes.splitlines():
+        m = _CHANGE_PATH.match(line)
+        if m:
+            path = m.group(1).replace("\\", "/")
+            if path not in out:
+                out.append(path)
+    return out
+
+
+def _changes_check(wt: Path, base: str, changes: str) -> str:
+    """The warning lines when build.md `## Changes` and the real diff list other files."""
+    diff = git(wt, "diff", "--name-only", f"{base}...HEAD", check=False)
+    if diff.returncode != 0:
+        detail = (diff.stderr or diff.stdout).strip() or f"exit {diff.returncode}"
+        return f"⚠️ No se pudo comparar con `git diff --stat {base}...HEAD`: {detail}"
+    actual = [p.strip() for p in diff.stdout.splitlines() if p.strip()]
+    listed = _listed_paths(changes)
+    missing = [p for p in actual if p not in listed]
+    extra = [p for p in listed if p not in actual]
+    if not missing and not extra:
+        return ""
+    lines = [f"⚠️ La lista de cambios de build.md no coincide con "
+             f"`git diff --stat {base}...HEAD`:"]
+    if missing:
+        lines.append("- En el diff pero no en build.md: " + ", ".join(f"`{p}`" for p in missing))
+    if extra:
+        lines.append("- En build.md pero no en el diff: " + ", ".join(f"`{p}`" for p in extra))
+    return "\n".join(lines)
+
+
+def _pr_body(job: dict, jobs: JobStore, wt: Path, integration: str) -> str:
+    """K16: the PR body from pr-body.md and the round's build.md; the old text as fallback."""
+    fallback = _fallback_body(job, integration)
+    build = jobs.job_dir(job["id"]) / f"round-{job['total_rounds'] + 1}" / "build.md"
+    try:
+        sections = build_section_map(build.read_text(encoding="utf-8", errors="replace"))
+        template = (project.TEMPLATES_DIR / PR_BODY_TEMPLATE).read_text(encoding="utf-8")
+    except OSError:
+        return fallback
+    if any(not sections.get(name) for name in PR_BODY_SECTIONS):
+        return fallback
+    changes = sections["Changes"]
+    warning = _changes_check(wt, f"origin/{integration}", changes)
+    if warning:
+        changes = f"{changes}\n\n{warning}"
+    values = {"summary": sections["Summary"], "changes": changes, "tests": sections["Tests"],
+              "acceptance": sections["Acceptance"], "issue": str(job["issue"])}
+    body = _TEMPLATE_COMMENT.sub("", template, count=1)
+    # One pass, so a value that contains `{{...}}` is never filled again.
+    return re.sub(r"\{\{(summary|changes|tests|acceptance|issue)\}\}",
+                  lambda m: values[m.group(1)], body).strip()
+
+
 def cmd_publish(args, cfg, jobs: JobStore) -> int:
     job = jobs.load(args.job)
     jid = job["id"]
@@ -385,9 +461,7 @@ def cmd_publish(args, cfg, jobs: JobStore) -> int:
     _push(wt, branch, cfg)
     if pr is None:
         branches.check_pr_base(integration, cfg)
-        body = github.sign("cortadora", f"La Cortadora abre este PR para el issue "
-                                        f"#{job['issue']}. Se integra solo en {integration}, "
-                                        f"cuando la Reina lo apruebe.\n\nCloses #{job['issue']}")
+        body = github.sign("cortadora", _pr_body(job, jobs, wt, integration))
         url = github.create_pr(branch, integration, job["title"], body)
         pr = github.view_pr(url)
         if pr.get("isCrossRepository"):
@@ -742,11 +816,22 @@ def _finish_merge(args, cfg, jobs: JobStore, job: dict, wt: Path | None, sha: st
     job = machine.advance(jobs, jid, "merged")
     print(line)
     warnings += _after_merge(args, cfg, job, wt, sha, closing, extra_labels)
+    # T4b: the Cultivadora runs once the job is closed; isolated like every post-merge step.
+    _step(warnings, f"No se pudieron cosechar las lecciones de {jid}",
+          lambda: _harvest(args.root, jobs, jid))
     if warnings:
         _write_merge_md(jobs.job_dir(jid), "DONE", line, sha, warnings)
         for warning in warnings:
             _err(f"Aviso: {warning}")
     return OK
+
+
+def _harvest(root, jobs: JobStore, jid: str) -> None:
+    """Fold the job's PREVENTION: lines into atta/memory/lessons.md (once per job)."""
+    try:
+        memory.Lessons(root).harvest(jid, jobs_dir=jobs.root)
+    except (memory.LessonsError, LockTimeout) as exc:
+        raise FlowError(str(exc)) from None  # the message already says what to do
 
 
 _MERGE_ERRORS = (_MergeFailure, branches.BranchRefused, GhError, FlowError)
@@ -1097,7 +1182,10 @@ def register(subparsers) -> None:
     p = subparsers.add_parser("publish", help="Empuja atta/<id> y abre el PR en borrador.",
                               description="Empuja solo la rama atta/<id> (sin --force) y abre un "
                                           "PR en borrador contra la rama de integración si no "
-                                          "existe; guarda pr y pr_url.")
+                                          "existe; guarda pr y pr_url. El cuerpo del PR sale "
+                                          "de la plantilla pr-body.md con el build.md de la "
+                                          "ronda (resumen, cambios contrastados con git diff "
+                                          "--stat, pruebas, criterios) y Closes #<issue>.")
     p.add_argument("job", help="id del job")
     p.set_defaults(func=_guarded(cmd_publish))
 

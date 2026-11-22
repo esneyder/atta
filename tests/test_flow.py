@@ -577,6 +577,71 @@ class PublishTests(FlowBase):
     def issue_comments(self):
         return [c for c in self.state().get("comments", []) if c["on"] == "issue"]
 
+    # ---- K16: the PR body from atta/templates/pr-body.md and the round's build.md
+
+    def build_md(self, changes="- src/feature.py — nueva constante x.", **drop):
+        sections = {"Summary": "La Cortadora agregó la constante x.",
+                    "Changes": changes,
+                    "Tests": "- `python -m pytest` → `1 passed in 0.01s`",
+                    "Acceptance": "- ✓ «Existe x.» — tests/test_x.py::test_x",
+                    "Risks": "- ninguno"}
+        text = "STATUS: DONE\n\n" + "".join(f"## {k}\n\n{v}\n\n" for k, v in sections.items()
+                                           if k not in drop)
+        write(self.store.job_dir(JID) / "round-1" / "build.md", text)
+
+    def body(self, changes):
+        return ("<!-- atta -->\n## Resumen\n\nLa Cortadora agregó la constante x.\n\n"
+                f"## Cambios\n\n{changes}\n\n"
+                "## Pruebas\n\n- `python -m pytest` → `1 passed in 0.01s`\n\n"
+                "## Criterios de aceptación\n\n- ✓ «Existe x.» — tests/test_x.py::test_x\n\n"
+                "Closes #12\n\n— La Cortadora · Atta\n")
+
+    def test_pr_body_fills_the_template_from_build_md(self):
+        self.commit_in_wt()
+        self.build_md()
+        self.ok("publish", JID)
+        self.assertEqual(self.state()["prs"][0]["body"],
+                         self.body("- src/feature.py — nueva constante x."))
+        self.assertIn(["diff", "--name-only", "origin/develop...HEAD"], self.git_calls)
+
+    def test_pr_body_lists_files_missing_from_either_side(self):
+        self.commit_in_wt()
+        self.commit_in_wt("src/extra.py", "y = 2\n")
+        self.build_md("- src/feature.py — x.\n- `src/fantasma.py` — nunca existió.")
+        self.ok("publish", JID)
+        self.assertEqual(self.state()["prs"][0]["body"], self.body(
+            "- src/feature.py — x.\n- `src/fantasma.py` — nunca existió.\n\n"
+            "⚠️ La lista de cambios de build.md no coincide con "
+            "`git diff --stat origin/develop...HEAD`:\n"
+            "- En el diff pero no en build.md: `src/extra.py`\n"
+            "- En build.md pero no en el diff: `src/fantasma.py`"))
+
+    def test_pr_body_falls_back_without_the_build_md_sections(self):
+        fallback = ("<!-- atta -->\nLa Cortadora abre este PR para el issue #12. Se integra "
+                    "solo en develop, cuando la Reina lo apruebe.\n\nCloses #12\n\n"
+                    "— La Cortadora · Atta\n")
+        self.commit_in_wt()
+        self.build_md(Tests=True)
+        self.ok("publish", JID)
+        self.assertEqual(self.state()["prs"][0]["body"], fallback)
+
+    def test_pr_body_falls_back_without_build_md(self):
+        self.commit_in_wt()
+        self.ok("publish", JID)
+        self.assertTrue(self.state()["prs"][0]["body"].startswith(
+            "<!-- atta -->\nLa Cortadora abre este PR para el issue #12."))
+
+    def test_existing_pr_keeps_its_body(self):
+        self.commit_in_wt()
+        self.ok("publish", JID)
+        before = self.state()["prs"][0]["body"]
+        self.build_md()
+        self.assertEqual(self.ok("publish", JID),
+                         "PR #101 ya existe contra develop: https://github.com/o/r/pull/101\n")
+        self.assertEqual(self.state()["prs"][0]["body"], before)
+        self.assertEqual([c for c in self.gh_calls() if c[:2] == ["pr", "edit"]], [])
+        self.assertEqual(len(self.gh_by("pr", "create")), 1)
+
     def test_new_pr_is_announced_on_the_issue_once(self):
         # T11: the Cortadora signs a comment on the issue when she opens the PR.
         self.commit_in_wt()
@@ -892,6 +957,40 @@ class MergeTests(MergeBase):
                               "La Reina integró el PR #101 en develop.\n")
         self.assertEqual(self.job()["stage"], "merged")
         self.assert_never_forced()
+
+    # ---- T4b: the Cultivadora harvests the job once it is merged
+
+    def lessons(self):
+        return self.root / "atta" / "memory" / "lessons.md"
+
+    def test_merge_harvests_the_job_preventions(self):
+        write(self.store.job_dir(JID) / "round-1" / "review-code.md",
+              "VERDICT: CHANGES\n\n## Summary\n\nX.\n\n## Findings\n\n"
+              "- [major] src/feature.py:1 — sin test — agrégalo.\n\n"
+              "PREVENTION: Probar la constante nueva antes de exportarla\n")
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        text = self.lessons().read_text(encoding="utf-8")
+        self.assertIn("Regla: Probar la constante nueva antes de exportarla\n", text)
+        self.assertIn(f"- {JID}: src/feature.py\n", text)
+        self.assertEqual((self.root / "atta" / "memory" / ".harvested").read_text(
+            encoding="utf-8"), f"{JID}\n")
+        self.assertTrue(self.merge_md().startswith("MERGE: DONE\n"))
+        self.assertNotIn("## Avisos", self.merge_md())
+
+    def test_harvest_failure_is_a_warning_that_never_blocks(self):
+        write(self.lessons(), "## Mal Nombre\n")
+        code, out, err = self.merge()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.job()["stage"], "merged")
+        warning = (f"No se pudieron cosechar las lecciones de {JID}: atta/memory/lessons.md "
+                   "está dañado (línea 1): «Mal Nombre» no es un nombre de lección válido. "
+                   "Corrígelo a mano o restáuralo desde git; Atta no lo tocó.")
+        self.assertEqual(err, f"Aviso: {warning}\n")
+        self.assertIn(f"## Avisos\n\n- {warning}\n", self.merge_md())
+        self.assertEqual(self.lessons().read_text(encoding="utf-8"), "## Mal Nombre\n")
+        sha = self.gh_by("pr", "merge")[0][-1]
+        self.assert_post_merge_done(sha)
 
     def test_post_merge_failures_are_warnings_recorded_in_merge_md(self):
         st = self.state()
@@ -1750,6 +1849,13 @@ class AwaitingMergeTests(HandoffBase):
         # Running it again is a no-op.
         self.assertEqual(self.merge(), (0, f"El job {JID} ya está mergeado: nada que hacer.\n",
                                         ""))
+
+    def test_human_merge_harvests_the_job_once(self):
+        self.set_pr(state="MERGED", headRefOid=self.sha)
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        harvested = self.root / "atta" / "memory" / ".harvested"
+        self.assertEqual(harvested.read_text(encoding="utf-8"), f"{JID}\n")
 
     def test_human_merge_with_extra_commits_records_the_merged_sha(self):
         # The human may push fixes: Atta does not require the Filtro's sha, it records GitHub's.

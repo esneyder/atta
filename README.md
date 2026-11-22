@@ -136,8 +136,10 @@ Todo el estado vive en archivos (`atta/jobs/<id>/`), así que cualquier job se p
 | **Filtro** | — (`atta gate`) | Corre los checks del proyecto. **Es un script, no un agente** | `round-N/checks.md` | `GATE: PASS\|FAIL` |
 | **Jardineras** | `atta-jardinera-code`, `-ux`, `-ui`, `-resilience` | Revisan calidad con lentes | `round-N/review-<lente>.md` | `VERDICT: PASS\|CHANGES` |
 | **Soldado** | `atta-soldado` | Revisa seguridad | `round-N/review-security.md` | `VERDICT: PASS\|CHANGES` |
+| **Rastreador** | `atta-rastreador` | Revisor adversarial solo en riesgo alto: sigue cada validación o escritura nueva hasta sus callers | `round-N/review-rastreador.md` | `VERDICT: PASS\|CHANGES` |
+| **Refutador** | `atta-refutador` | Antes de abrir otra ronda, comprueba contra el diff los hallazgos blocker/major de un `CHANGES` | `round-N/refute.md` | `REFUTE: UPHELD\|REFUTED\|PARTIAL` |
 | **Reina** | `atta-reina` | Aprueba (merge a `develop`) o escala a un humano. Nunca mergea ella misma | `decision.md` | `APPROVE\|ESCALATE` |
-| **Cultivadora** | — | Convierte lecciones de las revisiones en memoria y reglas (F3) | `atta/memory/` | — |
+| **Cultivadora** | — (`atta memory`) | Convierte las `PREVENTION:` de las revisiones en lecciones al cerrar el job. **Es código, no un agente** | `atta/memory/lessons.md` | — |
 
 Los tokens de contrato (`ACCEPT`, `PASS`, `CHANGES`…) van siempre en inglés: son la interfaz entre
 máquinas. Lo que ve el humano va en español y firmado por rol: «La Exploradora aceptó el issue #12
@@ -156,7 +158,7 @@ issue (label atta)
 intake ──► needs-info ──► (el autor responde) ──► intake
    │  └──► rejected
    ▼
-spec ──► spec-review (riesgo medio/alto) ──► spec (si REVISE)
+spec ──► spec-review (riesgo medio/alto) ──► spec (si REVISE; el 3.er REVISE → needs-human)
    │                 │
    ▼                 ▼
 build ◄──────────────┘
@@ -181,7 +183,7 @@ approve ──► merging ──► merged  (gh pr merge contra develop)
 | `intake` | `spec`, `needs-info`, `rejected` |
 | `needs-info` | `intake`, `rejected` |
 | `spec` | `spec-review`, `build` |
-| `spec-review` | `spec`, `build` |
+| `spec-review` | `spec`, `build`, `needs-human` (tope de REVISE de la Vigía, sección 2.5) |
 | `build` | `gate`, `needs-human` |
 | `gate` | `review`, `build`, `needs-human` |
 | `review` | `approve`, `build`, `needs-human` |
@@ -202,6 +204,21 @@ Cada vuelta `build → gate → review` es una ronda. Hay dos límites:
   `review_rounds` (volver a build por las Jardineras) y `sync_attempts` (entradas a `merging`).
 - **Global** (`max_total_rounds`, 6 por defecto): suma de rondas del job. El feedback humano **no lo
   reinicia**. Al llegar al tope, la única salida es `needs-human`.
+
+**Tope de la Vigía.** `spec_reviews` (en `job.json`) cuenta los `REVISE` de la Vigía. Los dos
+primeros devuelven el job a `spec`; desde el segundo, el prompt de la Vigía le pide `REVISE` solo
+por un bloqueante. El **tercer** `REVISE` no vuelve a `spec`: el job pasa a `needs-human` («La
+Vigía pidió cambios al spec tres veces (REVISE) y sigue sin estar listo. Te lo dejamos a ti: revisa
+spec-review.md y deja tu feedback con /atta.»). `atta advance <job> spec` en ese punto se rechaza.
+No gasta rondas de build.
+
+**Contrato de `build.md`.** Un `round-N/build.md` con `STATUS: DONE` debe traer, en este orden,
+`## Summary`, `## Changes`, `## Tests` (no vacío), `## Acceptance` (cada criterio en su línea con
+✓ o ✗; una línea con sangría continúa la anterior) y `## Risks`. Si falta algo, o si algún
+criterio está en ✗, el job no publica ni va al Filtro: `atta next` lanza a la Cortadora **una vez
+más** en la misma ronda (sin tocar contadores) con una nota que dice qué falta o qué criterios
+quedan abiertos, y guarda ese reintento en `job.json` (`build_retry`). Si el `build.md` reescrito
+sigue mal, el job pasa a `needs-human`.
 
 ### 2.6 Ruteo por riesgo
 
@@ -747,7 +764,13 @@ sale `0`.
 
 Verifica que la rama sea `atta/<id>` (`check-push`) y que el worktree esté en ella, empuja **solo** esa
 rama con refspec explícito y sin `--force`, y si no hay PR abre uno **en borrador** contra `develop`
-(firmado por la Cortadora, con `Closes #<issue>`). Verifica la base real del PR (nunca `main`) y
+(firmado por la Cortadora, con `Closes #<issue>`). El cuerpo sale de la plantilla
+`atta/templates/pr-body.md` con el `build.md` de la ronda: `## Summary` (Resumen), `## Changes`
+(Cambios), `## Tests` (Pruebas), `## Acceptance` (Criterios de aceptación) y `Closes #<issue>`. Los
+cambios se comparan con `git diff --stat origin/develop...HEAD`: si un archivo está en un lado y no
+en el otro, el PR lo lista bajo una línea de aviso («⚠️ La lista de cambios de build.md no coincide
+con …»). Sin `build.md` o sin esas secciones, el cuerpo es el texto corto de siempre. Un PR que ya
+existe no se edita. Verifica la base real del PR (nunca `main`) y
 rechaza PRs de forks. Guarda `pr` y `pr_url`. Mensaje: «PR #101 abierto en borrador contra develop:
 <url>» o «PR #101 ya existe contra develop: <url>». Al abrir el PR comenta en el issue, firmado por
 la Cortadora: «La Cortadora abrió el PR #101 contra develop.» (una sola vez; si `gh` falla, avisa por
@@ -791,7 +814,11 @@ no hace nada. Ver sección 8.
 #### `next <job>`
 
 Decide, sin red, la siguiente acción del job e imprime una línea JSON (sección 5.2). Sale `0`. Lo
-único que escribe es `pending_agent` en `job.json` cuando la acción lanza agentes (sección 11).
+único que escribe es `pending_agent` en `job.json` cuando la acción lanza agentes (sección 11),
+`build_retry` cuando pide a la Cortadora rehacer un `build.md` que no cumple el contrato (sección
+2.5) y el evento `refute` del Refutador. Los prompts de la Guía, la Cortadora y los reviewers
+(Rastreador incluido) terminan con las lecciones relevantes de `atta/memory/lessons.md` para los
+archivos del diff (o los de `FILES:` del spec), dentro del presupuesto de 1.500 caracteres.
 Ejemplo recién creado el job:
 
 ```json
@@ -847,6 +874,14 @@ sale `2` sin escribir nada, por ejemplo:
 ```text
 «gpt-4» no es un modelo válido para claude-code: usa haiku, sonnet u opus, o un id completo que cumpla claude-[a-z0-9.-]+ (p. ej. claude-sonnet-4-5). No cambié nada.
 ```
+
+#### `memory` · `memory harvest <job>`
+
+Sin subcomando lista las lecciones de `atta/memory/lessons.md` (nombre, veces, si es mecanizable y
+la regla). `harvest <job>` agrega las `PREVENTION:` de las revisiones `CHANGES` del job que el
+Refutador no refutó: una lección parecida se actualiza en vez de repetirse, y cosechar dos veces el
+mismo job no agrega nada. `atta merge` lo corre solo al cerrar un job (sección 8). Sale `2` si
+`lessons.md` está dañado, el job no existe o el id es inválido.
 
 #### `save-artifact <job> intake --from-reply <archivo>`
 
@@ -927,9 +962,12 @@ Si todo pasa: `merge.md` con `MERGE: DONE` y el `COMMIT`, el job pasa a `merged`
 16. Si el worktree está limpio, `git worktree remove` y borra la rama local `atta/<id>` (solo si
     sigue en el commit que GitHub mergeó). Si tiene cambios sin commitear, los deja y avisa. Si el
     worktree ya no existe, solo borra la rama local.
+17. La Cultivadora cosecha el job (`atta memory harvest`): sus `PREVENTION:` no refutadas pasan a
+    `atta/memory/lessons.md` del checkout principal (una vez por job). También corre cuando una
+    persona mergea el PR (sección 8.2). Commitea ese archivo cuando quieras compartir las lecciones.
 
 `merge.md` y el paso a `merged` se escriben apenas GitHub confirma el merge, antes de los pasos
-13-16. Cada uno de esos pasos va aislado: cualquier fallo (de `gh`, de git o inesperado, como un
+13-17. Cada uno de esos pasos va aislado: cualquier fallo (de `gh`, de git o inesperado, como un
 worktree en uso en Windows) es solo un aviso («Aviso: …» en stderr y una sección `## Avisos` en
 `merge.md`) y el paso siguiente corre igual; el merge ya ocurrió, así que `atta merge` sale `0`.
 Si `gh pr merge` devuelve un error pero GitHub muestra el PR mergeado con el sha del Filtro (por
@@ -1177,6 +1215,8 @@ muestran el dashboard y el PR.
 | `agents` | Plan del router: reviewers, lentes, tier, Vigía |
 | `started`, `ended` | Inicio y fin (UTC) |
 | `cost_usd` | Suma de costos conocidos; `null` si ninguno tiene precio |
+| `spec_reviews` | Veces que la Vigía pidió `REVISE` (tope 3, sección 2.5); falta en jobs viejos |
+| `build_retry` | El reintento del contrato de `build.md`: `{round, since, mtime}` (sección 2.5) |
 | `pending_agent` | Lo que `atta next` decidió al lanzar agentes en la etapa actual: `{stage, role, agent, model, tier, at}`, o una lista de esos para los reviewers en paralelo. Lo consume y borra la siguiente transición |
 
 ### `events.jsonl`

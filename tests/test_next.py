@@ -12,7 +12,7 @@ from pathlib import Path
 import support  # noqa: F401
 from support import TempDirMixin
 
-from atta.spine import config, events, gate, machine, store
+from atta.spine import config, events, gate, machine, memory, store
 from atta.spine import next as nxt
 from atta.spine.timeutil import from_iso
 
@@ -37,6 +37,14 @@ CHANGES_BLOCKER = ("VERDICT: CHANGES\n\n## Summary\n\nRompe datos.\n\n## Finding
                    "- [blocker] src/b.py:9 — borra filas — valida antes.\n"
                    "- [minor] src/b.py:12 — comentario viejo — bórralo.\n\n"
                    "PREVENTION: test \"no delete without check\".\n")
+
+
+BUILD_OK = ("STATUS: DONE\n\n## Summary\n\nLa Cortadora agregó la exportación.\n\n"
+            "## Changes\n\n- src/a.py — nueva export_csv().\n\n"
+            "## Tests\n\n- `python -m pytest` → `6 passed in 0.41s`\n\n"
+            "## Acceptance\n\n- ✓ «Exporta los pedidos filtrados.» — tests/test_a.py::test_x\n"
+            "  (continuación del criterio)\n\n"
+            "## Risks\n\n- ninguno\n")
 
 
 def refute(header, *lines):
@@ -211,6 +219,40 @@ class SpecReviewTest(NextBase):
                 self.write("spec-review.md", f"VERDICT: {verdict}\n\n## Summary\n\nX.\n")
                 self.assertEqual(self.decide(), self.run_action("advance", JID, stage))
 
+    # S9: the third REVISE of a job goes to a person instead of back to spec.
+    def test_third_revise_goes_to_needs_human(self):
+        self.write("spec-review.md", "VERDICT: REVISE\n\n## Summary\n\nX.\n")
+        for done, stage in ((0, "spec"), (1, "spec"), (2, "needs-human"), (5, "needs-human")):
+            with self.subTest(spec_reviews=done):
+                self.job["spec_reviews"] = done
+                self.assertEqual(self.decide(), self.run_action("advance", JID, stage))
+        # READY still builds at the cap.
+        self.write("spec-review.md", "VERDICT: READY\n\n## Summary\n\nX.\n")
+        self.assertEqual(self.decide(), self.run_action("advance", JID, "build"))
+
+    def test_second_review_prompt_says_so(self):
+        self.assertNotIn("This is review", self.decide()["prompt"])
+        self.job["spec_reviews"] = 1
+        self.assertIn("This is review 2 of this spec (your previous review asked for changes 1 "
+                      "time): REVISE only for a blocker", self.decide()["prompt"])
+
+    def test_revise_cap_end_to_end_through_advance(self):
+        # Three REVISE verdicts in a row: two go back to spec, the third to needs-human.
+        self.jobs.save(self.job)
+        for expected in ("spec", "spec", "needs-human"):
+            job = self.jobs.load(JID)
+            self.assertEqual(job["stage"], "spec-review")
+            path = self.write("spec-review.md", "VERDICT: REVISE\n\n## Summary\n\nX.\n")
+            os.utime(path, (from_iso(job["stage_since"]).timestamp() + 1,) * 2)
+            action = nxt.decide(job, self.dir, self.root, self.cfg, MODELS)
+            self.assertEqual(action, self.run_action("advance", JID, expected))
+            machine.advance(self.jobs, JID, expected)
+            if expected == "spec":
+                machine.advance(self.jobs, JID, "spec-review")
+        job = self.jobs.load(JID)
+        self.assertEqual((job["stage"], job["spec_reviews"], job["total_rounds"]),
+                         ("needs-human", 3, 0))
+
 
 class BuildTest(NextBase):
     def setUp(self):
@@ -249,7 +291,7 @@ class BuildTest(NextBase):
                          self.dir / "round-2" / "build.md", *files)
 
     def test_done_on_first_round_publishes_then_advances(self):
-        self.write("round-1/build.md", "STATUS: DONE\n")
+        self.write("round-1/build.md", BUILD_OK)
         self.assertEqual(self.decide(), self.run_action("publish", JID))
         self.job["pr"] = 7
         self.assertEqual(self.decide(), self.run_action("advance", JID, "gate"))
@@ -262,6 +304,139 @@ class BuildTest(NextBase):
         self.write("round-1/build.md", "STATUS: BLOCKED\n")
         self.job["stage_since"] = FUTURE
         self.assertEqual(self.decide()["agent"], "atta-cortadora")
+
+
+class BuildContractTest(NextBase):
+    """G10: a STATUS: DONE build.md keeps the section contract and every criterion ✓."""
+
+    def setUp(self):
+        super().setUp()
+        self.routed(risk="low")
+        self.with_worktree()
+        self.job["stage"] = "build"
+        self.jobs.save(self.job)
+        self.build = self.dir / "round-1" / "build.md"
+
+    def call_next(self):
+        parser = argparse.ArgumentParser(prog="atta")
+        nxt.register(parser.add_subparsers(dest="command"))
+        args = parser.parse_args(["next", JID])
+        args.root = self.root
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = args.func(args, self.cfg, self.jobs)
+        self.assertEqual((code, err.getvalue()), (0, ""))
+        self.job = self.jobs.load(JID)
+        return json.loads(out.getvalue())
+
+    def rewrite(self, text, offset):
+        """The Cortadora's retry: the same build.md, written later (another mtime)."""
+        path = self.write("round-1/build.md", text)
+        stamp = path.stat().st_mtime + offset
+        os.utime(path, (stamp, stamp))
+
+    def counters(self):
+        job = self.jobs.load(JID)
+        return (job["stage"], job["total_rounds"], job["gate_rounds"], job["review_rounds"])
+
+    def test_valid_report_publishes(self):
+        self.write("round-1/build.md", BUILD_OK)
+        self.assertEqual(self.call_next(), self.run_action("publish", JID))
+        self.assertNotIn("build_retry", self.job)
+
+    def test_malformed_reports_respawn_once_naming_what_is_missing(self):
+        cases = {
+            "only the status line": ("STATUS: DONE\n", "missing `## Summary`, `## Changes`, "
+                                     "`## Tests`, `## Acceptance`, `## Risks`"),
+            "no Risks": (BUILD_OK.split("## Risks")[0], "missing `## Risks`"),
+            "out of order": (BUILD_OK.replace("## Summary", "## Tmp").replace(
+                "## Risks", "## Summary").replace("## Tmp", "## Risks"),
+                "sections out of order (expected `## Summary`, `## Changes`, `## Tests`, "
+                "`## Acceptance`, `## Risks`)"),
+            "empty Tests": (BUILD_OK.replace("- `python -m pytest` → `6 passed in 0.41s`\n", ""),
+                            "`## Tests` is empty"),
+            "empty Acceptance": (BUILD_OK.replace(
+                "- ✓ «Exporta los pedidos filtrados.» — tests/test_a.py::test_x\n"
+                "  (continuación del criterio)\n", ""), "`## Acceptance` is empty"),
+            "unmarked criterion": (BUILD_OK.replace("- ✓ «Exporta", "- «Exporta"),
+                                   "acceptance lines without ✓ or ✗: «- «Exporta"),
+        }
+        for name, (text, note) in cases.items():
+            with self.subTest(name):
+                job = self.jobs.load(JID)
+                job.pop("build_retry", None)
+                self.jobs.save(job)
+                self.write("round-1/build.md", text)
+                before = self.counters()
+                action = self.call_next()
+                self.assertSpawn(action, "atta-cortadora", "sonnet", "Round: 1.",
+                                 f"Your previous {self.build} says STATUS: DONE but breaks the "
+                                 "build.md contract: ", note,
+                                 f"Write the full {self.build} again")
+                self.assertEqual(self.job["build_retry"],
+                                 {"round": 1, "since": PAST, "mtime": self.build.stat().st_mtime})
+                self.assertEqual(self.counters(), before)
+                # Asking again before the rewrite repeats the same retry, no needs-human.
+                self.assertEqual(self.call_next()["agent"], "atta-cortadora")
+                # The rewrite is still malformed: a person decides.
+                self.rewrite(text, 5)
+                self.assertEqual(self.call_next(), self.run_action("advance", JID, "needs-human"))
+                self.assertEqual(self.counters(), before)
+
+    def test_open_criterion_respawns_asking_to_finish_then_needs_human(self):
+        text = BUILD_OK.replace("— tests/test_a.py::test_x\n",
+                                "— tests/test_a.py::test_x\n- ✗ «Pagina.» — not covered\n")
+        self.write("round-1/build.md", text)
+        action = self.call_next()
+        self.assertSpawn(action, "atta-cortadora", "sonnet",
+                         f"Your previous {self.build} says STATUS: DONE but these acceptance "
+                         "criteria are ✗: «- ✗ «Pagina.» — not covered». Finish them test-first "
+                         "and commit", "STATUS: BLOCKED")
+        self.assertNotIn("breaks the build.md contract", action["prompt"])
+        self.rewrite(text, 5)
+        self.assertEqual(self.call_next(), self.run_action("advance", JID, "needs-human"))
+        self.assertEqual(self.counters(), ("build", 0, 0, 0))
+
+    def test_a_fixed_retry_goes_on_to_publish_and_the_gate(self):
+        self.write("round-1/build.md", "STATUS: DONE\n\n## Summary\n\nX.\n")
+        self.assertEqual(self.call_next()["agent"], "atta-cortadora")
+        self.rewrite(BUILD_OK, 5)
+        self.assertEqual(self.call_next(), self.run_action("publish", JID))
+        self.job["pr"] = 7
+        self.jobs.save(self.job)
+        self.assertEqual(self.call_next(), self.run_action("advance", JID, "gate"))
+
+    def test_blocked_retry_goes_to_needs_human(self):
+        self.write("round-1/build.md", "STATUS: DONE\n")
+        self.call_next()
+        self.rewrite("STATUS: BLOCKED\n\n## Blocked\n\n- falta una decisión\n", 5)
+        self.assertEqual(self.call_next(), self.run_action("advance", JID, "needs-human"))
+
+    def test_a_retry_of_an_earlier_stage_entry_or_round_does_not_count(self):
+        self.write("round-1/build.md", "STATUS: DONE\n")
+        mtime = self.build.stat().st_mtime + 99
+        for retry in ({"round": 1, "since": "2019-01-01T00:00:00Z", "mtime": mtime},
+                      {"round": 2, "since": PAST, "mtime": mtime}):
+            with self.subTest(**retry):
+                self.jobs.save(dict(self.jobs.load(JID), build_retry=retry))
+                self.assertEqual(self.call_next()["agent"], "atta-cortadora")
+
+    def test_contract_decision_stays_pure(self):
+        self.write("round-1/build.md", "STATUS: DONE\n")
+        before = (self.dir / "job.json").read_bytes()
+        action = nxt.decide(self.jobs.load(JID), self.dir, self.root, self.cfg, MODELS)
+        self.assertEqual(set(action), {"action", "agent", "model", "prompt"})
+        self.assertEqual((self.dir / "job.json").read_bytes(), before)
+
+    def test_check_build_reports_problems_and_open_criteria(self):
+        self.assertEqual(nxt.check_build(BUILD_OK), ([], []))
+        # Extra sections (## Blocked) and ✗ lines: format ok, one open criterion.
+        text = BUILD_OK + "\n## Blocked\n\n- nada\n"
+        text = text.replace("- ✓ «Exporta", "- ✗ «Exporta")
+        problems, open_items = nxt.check_build(text)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(open_items), 1)
+        self.assertTrue(open_items[0].startswith("- ✗ «Exporta"))
 
 
 class GateTest(NextBase):
@@ -458,6 +633,32 @@ class ReviewTest(NextBase):
         self.write("round-1/review-security-retry.md", "VERDICT: CHANGES\n\n## Findings\n")
         self.assertEqual(self.decide(), self.run_action("advance", JID, "needs-human"))
 
+    def test_rastreador_maps_to_its_agent_and_review_file(self):
+        # G6/L14: the router may list `rastreador`; same verdict handling as any reviewer.
+        rastreador = {"reviewer": "rastreador", "lenses": ["callers"], "tier": "T3"}
+        self.routed(risk="high", reviewers=(CODE, rastreador))
+        rd = self.dir / "round-1"
+        self.write("round-1/review-code.md", PASS)
+        action = self.decide()
+        self.assertEqual([(a["agent"], a["model"]) for a in action["agents"]],
+                         [("atta-rastreador", "opus")])
+        self.assertIn(str(rd / "review-rastreador.md"), action["agents"][0]["prompt"])
+        self.write("round-1/review-rastreador.md", PASS)
+        self.assertEqual(self.decide(), self.run_action("advance", JID, "approve"))
+        # A broken review is asked once more, then needs-human.
+        self.write("round-1/review-rastreador.md", "VERDICT: MAYBE\n")
+        self.assertIn(str(rd / "review-rastreador-retry.md"),
+                      self.decide()["agents"][0]["prompt"])
+        self.write("round-1/review-rastreador-retry.md", CHANGES_NO_PREVENTION)
+        self.assertEqual(self.decide(), self.run_action("advance", JID, "needs-human"))
+        # A serious CHANGES goes to the Refutador, which judges it by the reviewer name.
+        (rd / "review-rastreador-retry.md").unlink()
+        self.write("round-1/review-rastreador.md", CHANGES)
+        self.assertSpawn(self.decide(), "atta-refutador", "opus", rd / "review-rastreador.md")
+        self.write("round-1/refute.md",
+                   refute("REFUTED", "REFUTED atta-rastreador src/a.py:3 — no aplica"))
+        self.assertEqual(self.decide(), self.run_action("advance", JID, "approve"))
+
     def test_valid_retry_replaces_the_invalid_review(self):
         self.write("round-1/review-code.md", PASS)
         self.write("round-1/review-security.md", "VERDICT: MAYBE\n")
@@ -582,6 +783,85 @@ def _git(cwd, *args):
 
 
 OK_CHECKS = json.dumps({"checks": [{"name": "ok", "run": "git --version"}]})
+
+
+class LessonsInPromptsTest(NextBase):
+    """T4b (G9, G12): relevant lessons reach the Guía, the Cortadora and the reviewers."""
+
+    HEADER = "Relevant lessons from atta/memory/lessons.md"
+
+    def setUp(self):
+        super().setUp()
+        self.store = memory.Lessons(self.root)
+        self.store.upsert({"rule": "Validar la entrada vacía del exportador", "job": "1-a",
+                           "paths": ["src/a.py"]})
+        self.store.upsert({"rule": "Cerrar los sockets del cliente HTTP", "job": "2-b",
+                           "paths": ["net/client.py"]})
+        self.store.upsert({"rule": "Cerrar los sockets del cliente HTTP siempre", "job": "3-c",
+                           "paths": ["net/client.py"]})
+        self.write("spec.md", "STATUS: READY\n\nFILES: src/a.py, tests/test_a.py\n")
+
+    def block(self, prompt):
+        self.assertIn(self.HEADER, prompt)
+        return prompt.split(self.HEADER, 1)[1].split("\n", 1)[1]
+
+    def test_spec_files_rank_the_related_lesson_first(self):
+        # Guía (re-writing the spec), Cortadora (no diff), reviewers (no git repo): FILES.
+        self.routed(risk="low")
+        self.job.update(stage="spec", stage_since=FUTURE)
+        prompts = [self.decide()["prompt"]]
+        self.with_worktree()
+        self.job.update(stage="build", stage_since=PAST)
+        prompts.append(self.decide()["prompt"])
+        self.job.update(stage="review", pr=7)
+        prompts.append(self.decide()["agents"][0]["prompt"])
+        for prompt in prompts:
+            lines = self.block(prompt).splitlines()
+            self.assertEqual(lines[0], "- Validar la entrada vacía del exportador (Veces: 1)")
+            self.assertEqual(lines[1], "- Cerrar los sockets del cliente HTTP (Veces: 2)")
+
+    def test_diff_paths_win_over_spec_files_when_available(self):
+        self.routed(risk="low")
+        self.wt.mkdir(parents=True)
+        _git(self.wt, "init", "-q")
+        (self.wt / "README").write_text("x\n", encoding="utf-8")
+        _git(self.wt, "add", "-A")
+        _git(self.wt, "commit", "-q", "-m", "base")
+        _git(self.wt, "update-ref", "refs/remotes/origin/develop", "HEAD")
+        (self.wt / "net").mkdir()
+        (self.wt / "net" / "server.py").write_text("y\n", encoding="utf-8")
+        _git(self.wt, "add", "-A")
+        _git(self.wt, "commit", "-q", "-m", "feature")
+        self.job.update(worktree=str(self.wt), stage="review", pr=7)
+        lines = self.block(self.decide()["agents"][0]["prompt"]).splitlines()
+        self.assertEqual(lines[0], "- Cerrar los sockets del cliente HTTP (Veces: 2)")
+
+    def test_budget_is_kept(self):
+        for n in range(12):
+            self.store.upsert({"rule": f"Regla {n} " + " ".join(f"palabra{n}x{k}" for k in range(40)),
+                               "job": f"{n + 10}-x", "paths": ["src/a.py"]})
+        self.routed(risk="low")
+        self.with_worktree()
+        self.job["stage"] = "build"
+        block = self.block(self.decide()["prompt"])
+        self.assertLessEqual(len(block), memory.BUDGET_CHARS)
+        self.assertLessEqual(len(block.splitlines()), 5)
+
+    def test_no_lessons_or_a_damaged_file_adds_nothing(self):
+        self.routed(risk="low")
+        self.with_worktree()
+        self.job["stage"] = "build"
+        self.store.path.write_text("## Mal Nombre\n", encoding="utf-8")
+        self.assertNotIn(self.HEADER, self.decide()["prompt"])
+        self.store.path.unlink()
+        self.assertNotIn(self.HEADER, self.decide()["prompt"])
+
+    def test_other_agents_get_no_lessons(self):
+        self.assertNotIn(self.HEADER, self.decide()["prompt"])  # Exploradora
+        self.routed(risk="low")
+        self.with_worktree()
+        self.job["stage"] = "approve"
+        self.assertNotIn(self.HEADER, self.decide()["prompt"])  # Reina
 
 
 class GateConfigRecoveryTest(NextBase):

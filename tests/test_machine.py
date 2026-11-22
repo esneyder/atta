@@ -49,7 +49,7 @@ class TableTests(unittest.TestCase):
             "intake": ("spec", "needs-info", "rejected"),
             "needs-info": ("intake", "rejected"),
             "spec": ("spec-review", "build"),
-            "spec-review": ("spec", "build"),
+            "spec-review": ("spec", "build", "needs-human"),
             "build": ("gate", "needs-human"),
             "gate": ("review", "build", "needs-human"),
             "review": ("approve", "build", "needs-human"),
@@ -243,6 +243,44 @@ class AdvanceTests(MachineTestBase):
     def test_sync_attempts_counter_on_merging_retry(self):
         job = self.walk("spec", "build", "gate", "review", "approve", "merging")
         self.assertEqual(job["sync_attempts"], 1)
+
+    # S9: the Vigía's REVISE cap. spec_reviews counts the REVISEs the spine acted on.
+    def test_revise_counts_spec_reviews_without_spending_rounds(self):
+        job = self.walk("spec", "spec-review", "spec", "spec-review", "spec", "spec-review")
+        self.assertEqual(job["spec_reviews"], 2)
+        self.assertEqual((job["total_rounds"], job["gate_rounds"], job["review_rounds"]),
+                         (0, 0, 0))
+        self.assertEqual(machine.MAX_SPEC_REVISE, 3)
+        self.assertTrue(machine.spec_revise_capped(job))
+
+    def test_third_revise_cannot_go_back_to_spec_only_needs_human(self):
+        self.walk("spec", "spec-review", "spec", "spec-review", "spec", "spec-review")
+        self.assertRefused(
+            "spec",
+            "La Vigía ya pidió cambios al spec de 12-exportar-csv 2 veces (REVISE); la vez 3 "
+            "no vuelve a spec. Desde spec-review solo se puede ir a build o needs-human.")
+        job = self.go("needs-human")
+        self.assertEqual((job["stage"], job["spec_reviews"], job["total_rounds"]),
+                         ("needs-human", 3, 0))
+        # A person decides: back to build like any needs-human.
+        self.assertEqual(self.go("build")["stage"], "build")
+
+    def test_jobs_without_the_counter_count_zero(self):
+        job = self.walk("spec", "spec-review")
+        self.assertNotIn("spec_reviews", job)
+        self.assertEqual(machine.spec_reviews(job), 0)
+        self.assertFalse(machine.spec_revise_capped(job))
+        self.assertEqual(self.go("spec")["spec_reviews"], 1)
+
+    def test_ready_to_build_keeps_the_counter(self):
+        job = self.walk("spec", "spec-review", "spec", "spec-review", "build")
+        self.assertEqual(job["spec_reviews"], 1)
+
+    def test_voice_for_the_revise_cap(self):
+        self.assertEqual(voice.for_transition({"spec_reviews": 3}, "spec-review", "needs-human"),
+                         "La Vigía pidió cambios al spec tres veces (REVISE) y sigue sin estar "
+                         "listo. Te lo dejamos a ti: revisa spec-review.md y deja tu feedback "
+                         "con /atta.")
 
 
 class StoredEventsJsonTests(MachineTestBase):

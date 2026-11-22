@@ -11,6 +11,11 @@ HEAD is still the commit that passed merge-checks (flow.cmd_handoff checks all o
 `needs-human → gate` (T9): the Filtro stopped on a configuration failure (job.json
 `gate_failure.kind == "config"`, written by gate.run_gate) and a person fixed it; the gate runs
 again in the same round. Like every move into gate, it changes no counter.
+
+Vigía REVISE cap (T7b, S9): `spec_reviews` in job.json counts the REVISE verdicts the spine acted
+on (each `spec-review → spec` and the final `spec-review → needs-human`; a job without the field
+counts 0). The `MAX_SPEC_REVISE`-th REVISE never goes back to spec: `spec-review → spec` is
+refused once `spec_reviews + 1` reaches the cap, and `atta next` sends the job to needs-human.
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ TRANSITIONS = {
     "intake": ("spec", "needs-info", "rejected"),
     "needs-info": ("intake", "rejected"),
     "spec": ("spec-review", "build"),
-    "spec-review": ("spec", "build"),
+    "spec-review": ("spec", "build", "needs-human"),
     "build": ("gate", "needs-human"),
     "gate": ("review", "build", "needs-human"),
     "review": ("approve", "build", "needs-human"),
@@ -47,6 +52,21 @@ TERMINAL = frozenset(s for s, exits in TRANSITIONS.items() if not exits)
 
 # Rework rounds: re-entering build from these stages bumps their counter and total_rounds.
 ROUND_COUNTERS = {"gate": "gate_rounds", "review": "review_rounds"}
+
+# Vigía REVISE cap (S9): the third REVISE of a job goes to a person, not back to spec.
+SPEC_REVIEWS = "spec_reviews"
+MAX_SPEC_REVISE = 3
+
+
+def spec_reviews(job: dict) -> int:
+    """REVISE verdicts of the Vigía the spine already acted on (0 for older jobs)."""
+    value = job.get(SPEC_REVIEWS)
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
+def spec_revise_capped(job: dict) -> bool:
+    """True when one more REVISE reaches MAX_SPEC_REVISE (it goes to needs-human)."""
+    return spec_reviews(job) + 1 >= MAX_SPEC_REVISE
 
 
 class Refused(Exception):
@@ -79,6 +99,12 @@ def check(job: dict, to: str) -> None:
             f"El job {job['id']} no vuelve de needs-human a gate: el Filtro solo se retoma "
             "cuando lo detuvo una falla de configuración."
         )
+    if frm == "spec-review" and to == "spec" and spec_revise_capped(job):
+        raise Refused(
+            f"La Vigía ya pidió cambios al spec de {job['id']} {spec_reviews(job)} veces "
+            f"(REVISE); la vez {MAX_SPEC_REVISE} no vuelve a spec. Desde spec-review solo se "
+            "puede ir a build o needs-human."
+        )
     # K13: total_rounds is never reset; once another round would exceed the cap,
     # the only way out of the rework loop is needs-human.
     if to == "build" and frm in ROUND_COUNTERS:
@@ -100,6 +126,8 @@ def apply(job: dict, to: str, now: datetime) -> dict:
         new["total_rounds"] = job["total_rounds"] + 1
     if to == "merging":
         new["sync_attempts"] = job["sync_attempts"] + 1
+    if frm == "spec-review" and to in ("spec", "needs-human"):
+        new[SPEC_REVIEWS] = spec_reviews(job) + 1
     new["stage"] = to
     new["stage_since"] = to_iso(now)
     if to in TERMINAL:

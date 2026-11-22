@@ -71,6 +71,14 @@ def gate_config_retry() -> str:
     return "La configuración ya está lista: el Filtro vuelve a correr en la misma ronda."
 
 
+def vigia_revise_cap(revisions: int) -> str:
+    """S9: the Vigía's REVISE cap (spec-review → needs-human)."""
+    word = _NUMBERS_ES.get(revisions, str(revisions)).lower()
+    veces = "vez" if revisions == 1 else "veces"
+    return (f"La Vigía pidió cambios al spec {word} {veces} (REVISE) y sigue sin estar listo. "
+            "Te lo dejamos a ti: revisa spec-review.md y deja tu feedback con /atta.")
+
+
 def reina_approved(pr: int) -> str:
     return f"La Reina aprobó el PR #{pr} (APPROVE)."
 
@@ -144,6 +152,8 @@ def for_transition(job: dict, frm: str, to: str, integration_branch: str = "deve
             reason = failure.get("reason")
             return gate_config_stopped(reason if isinstance(reason, str) else None)
         return rounds_exhausted(job["gate_rounds"])
+    if frm == "spec-review" and to == "needs-human":
+        return vigia_revise_cap(int(job.get("spec_reviews") or 0))
     if frm == "needs-human" and to == "gate":
         return gate_config_retry()
     if frm == "approve" and to == "merging":

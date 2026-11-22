@@ -119,6 +119,10 @@ Resuming is the same command: run `/atta run` again. All state lives in the spin
 
 If `atta next` prints the same `spawn` or `spawn-group` right after those agents finished, they
 did not write their artifact: stop this job and report it instead of launching them again.
+(A Cortadora spawn whose prompt names what its `build.md` is missing is a new action, the one
+retry of the build.md contract: run it.) Prompts may end with lessons from
+`atta/memory/lessons.md`; pass them unchanged, and never edit that file: the spine harvests it
+after each merge.
 
 ## `/atta settings [...]` and `/atta models [...]`
 
