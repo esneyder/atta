@@ -1,6 +1,6 @@
 ---
 name: atta
-description: Run Atta's colony on this repository. `/atta run [n]` works the queue of GitHub issues labelled atta through the spine (`atta next`) until each job waits or ends; `/atta <text>` answers questions about jobs or records human feedback for a job.
+description: Run Atta's colony on this repository. `/atta run [n]` works the queue of GitHub issues labelled atta through the spine (`atta next`) until each job waits or ends; `/atta settings` and `/atta models` show the configuration (changes are for the human's terminal); `/atta <text>` answers questions about jobs or records human feedback for a job.
 argument-hint: run [n] | <question or feedback>
 ---
 
@@ -108,6 +108,19 @@ Resuming is the same command: run `/atta run` again. All state lives in the spin
 
 If `atta next` prints the same `spawn` or `spawn-group` right after those agents finished, they
 did not write their artifact: stop this job and report it instead of launching them again.
+
+## `/atta settings [...]` and `/atta models [...]`
+
+Configuration is changed only by the human, in their own terminal; the guard denies the
+mutating forms to every agent session, including yours.
+
+- `/atta settings` or `/atta settings get <key>`: run exactly `atta settings` (or
+  `atta settings get <key>`) and show its output unchanged.
+- `/atta models`: run exactly `atta models` and show its output unchanged.
+- Any change (`set`, `reset`, `unset`, `atta init`): do NOT run it. Reply with the exact
+  command for the human to run in their terminal, for example
+  `atta settings set delivery.auto_merge_up_to none` or `atta models set --role reina haiku`,
+  and say that Atta keeps configuration changes for humans.
 
 ## `/atta <text>`
 
