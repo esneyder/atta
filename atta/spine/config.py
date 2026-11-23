@@ -78,7 +78,9 @@ DEFAULTS = {
 # Optional keys, never defaulted: `models` (per-runtime tier and role overrides, S12; see
 # models.py and `atta models`) and `routing_matrix` (bool; false turns off the stage×risk model
 # matrix of F4 T3 and keeps the routing of before; absent means on, and `atta doctor` tells
-# a project without the key that the default changed).
+# a project without the key that the default changed) and `stage_timeouts_s` ({stage: seconds}
+# over timeouts.DEFAULT_LIMITS_S, the per-stage limit of a pending agent, F4 T5; absent =
+# defaults; only humans write it, the guard blocks agents from editing config.json).
 
 # Labels that may be absent from `labels` and take these defaults (S13). They are kept out of
 # DEFAULTS["labels"] so a config's `labels` keeps its F1 shape; read them with `label()`.
@@ -202,6 +204,11 @@ def validate(cfg: dict) -> dict:
             raise _err(problem)
     if "routing_matrix" in cfg and not isinstance(cfg["routing_matrix"], bool):
         raise _err("routing_matrix debe ser true o false.")
+    if "stage_timeouts_s" in cfg:
+        from . import timeouts  # lazy: timeouts.py imports machine
+        problem = timeouts.config_error(cfg["stage_timeouts_s"])
+        if problem:
+            raise _err(problem)
     if "models" in cfg:
         from . import models  # lazy: models.py reads config lazily too
         problem = models.config_error(cfg["models"])
