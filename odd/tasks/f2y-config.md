@@ -1,0 +1,34 @@
+# F2.y: configuración interactiva
+
+Fase F2.y de `docs/PLAN.md` §6 y §6.2: menús seleccionables dentro de Claude Code para toda la configuración de Atta.
+Rama: `feat/f2y-config` (desde `develop` en c993d29, que ya tiene F4 completa).
+
+## Specs
+
+- **S1** Objetivo. Fila F2.y del plan, textual: «Menús seleccionables para modelos, entrega, rondas, labels, riesgo y alcance (§6.2)». Salida verificable: «Cambiar cualquier configuración sin escribir claves ni valores a mano». Pedido original del usuario (§6.2): «todo el tema de configuraciones es completo y poco practico con comandos … necesitamos incluir un menu seleccionable para que todo lo relacionado con configuraciones, modelos, etc sea manipulable desde la interfaz de forma mas fluida as como lo hace gentle-ai: gentle:models, gentle:profiles, etc». Idea del plan: «un menú por área, con la opción actual marcada y una vista previa del efecto antes de guardar».
+- **S2** Comandos (tabla de §6.2, textual): `/atta:config` (hub) «Entrada única: elige el área y salta a su menú»; `/atta:models` «Modelo por tier y por rol; vista «quién corre con qué» y reglas de escalada»; `/atta:profiles` «Perfiles guardados (por ejemplo `económico`, `equilibrado`, `calidad`) que fijan modelos y entrega de una vez, y se aplican por proyecto»; `/atta:delivery` «Umbral de auto-merge (`none/low/medium/high`) con la tabla de qué se mergea solo»; `/atta:rounds` «Rondas por contador, tope global, concurrencia»; `/atta:risk` «Categorías de riesgo y alcance (`scope.enforce`, `scope.max_files`)»; `/atta:labels` «Labels de la cola y de espera».
+- **S3** Dónde vive el menú (decisión 1 de §6.2, usuario): «que el menú esté dentro del claude se siente más profesional». Cada comando `/atta:*` muestra preguntas seleccionables con la opción actual marcada y la vista previa del efecto. La fuente de verdad sigue siendo `atta/config.json`; `atta settings` y `atta models` quedan como base y para uso sin Claude Code.
+- **S4** Seguridad (L29 de F2). Decisión del usuario: «Guard pide aprobación (Recomendado)»: «El guard responde «ask» al comando exacto que arma el menú (Claude Code te pide aprobarlo) y responde «deny» si la sesión corre en un modo que salta confirmaciones. Antes verifico en la doc que el hook recibe ese modo.» Verificado (L2): el input de `PreToolUse` trae `permission_mode` (opcional); `deny` bloquea en todo modo; `ask` pide confirmación y en `-p` sin nadie que responda se deniega. Regla: `ask` solo cuando `permission_mode` es un modo interactivo que pregunta; `deny` cuando es `bypassPermissions`, `dontAsk` o falta (falla cerrado), con el comando exacto para correrlo en la terminal. Un subagente (`agent_id` no vacío) sigue recibiendo `deny`.
+- **S5** Hormiguero. Decisión del usuario: «No, sigue de solo lectura (Recomendado)».
+- **S6** Perfiles. Decisión del usuario: «De fábrica + elección por proyecto (Recomendado)»: «Atta trae los perfiles; atta/config.json guarda cuál usa el proyecto. Los overrides de `atta models` ganan sobre el perfil y `atta models` muestra el origen.»
+- **S7** Alcance de la primera entrega (usuario, selección múltiple): «/atta:config + /atta:models», «/atta:profiles», «/atta:delivery + /atta:rounds», «/atta:risk + /atta:labels».
+- **S8** Reglas vigentes: multiplataforma (D2); configuración solo por humanos (L29); Atta solo integra en `develop` (D3); un cambio que afecta a proyectos existentes se avisa con `atta doctor` y se sincroniza con `atta init --check`/`--force` (F3 L18, G2).
+
+## Tasks
+
+| ID | Specs | Route | Estado | Commit |
+|---|---|---|---|---|
+| T1 | S4, S8 | Guard: `ask` para los comandos de configuración en modo interactivo, `deny` en modos que saltan confirmaciones, sin modo o en subagentes | hecho (L4-L5; suite 1193 OK) | ver git log |
+| T2 | S1, S2, S3, S7 | Hub `/atta:config` y `/atta:models` (salida legible por máquina de `atta settings`/`atta models` para marcar la opción actual y la vista previa) | pendiente | — |
+| T3 | S6, S2 | Perfiles de fábrica, `profile` en `atta/config.json`, origen en `atta models`, `/atta:profiles` | pendiente | — |
+| T4 | S2 | `/atta:delivery` y `/atta:rounds` | pendiente | — |
+| T5 | S2 | `/atta:risk` y `/atta:labels` | pendiente | — |
+| T6 | S8, S1 | `atta init`/`--check`/doctor instalan y vigilan los comandos nuevos, README, plan y corrida en el sandbox | pendiente | — |
+
+## Log
+
+- **L1** (usuario) «listo ya quedo, continuemos con lo que falta» → elección «F2.y: siguiente fase del plan». Respuestas a las preguntas abiertas de §6.2: seguridad «Guard pide aprobación (Recomendado)»; hormiguero «No, sigue de solo lectura (Recomendado)»; perfiles «De fábrica + elección por proyecto (Recomendado)»; alcance: los cuatro grupos de menús.
+- **L2** Investigación (Context7, documentación de hooks y permisos de Claude Code en code.claude.com): `PreToolUse` recibe `permission_mode` (opcional); «a hook that returns `permissionDecision: "deny"` blocks the tool even in `bypassPermissions` mode or with `--dangerously-skip-permissions`»; «`"ask"` prompts the user to confirm»; en una corrida `-p` sin nadie que responda, la llamada se deniega. No está documentado si un `ask` de hook pregunta en `bypassPermissions`, por eso T1 responde `deny` en ese modo.
+- **L3** Estado de partida: no existe ningún `/atta:*` salvo `/atta` (`atta/templates/claude/commands/atta.md`); `atta settings` (`settings.py`, `settings_registry.py`) y `atta models` son la base CLI; el guard (`guard.py`) solo devuelve `deny`.
+- **L4** T1 (worker, sin commitear; 1187 OK): `guard.decide()` devuelve `ask` o `deny`; `ask` solo si `permission_mode` es exactamente `default`, `acceptEdits` o `plan`, sin `agent_id` y con una invocación simple de `atta` (sin `; & | < > ( ) { } ` $`, backslash, salto de línea; en PowerShell tampoco `@`; el primer token tiene que ser atta). El deny agrega « Comando: <comando>». Pendiente para T2/T6: el template `SKILL.md` (L141, L150) todavía dice que la configuración es solo humana y que el guard la niega. En verificación independiente (Risk item 2).
+- **L5** Verificación de T1: S4 y S8 no cumplidos. D1 error de tipeo «Apútalo» (`guard.py`, test) frente a «Apruébalo» del README; D2 un prefijo `VAR=/x/atta` hacía «plana» la invocación y daba `ask`. Advisories: A1 cualquier binario llamado atta por ruta (`./atta.sh`, `/tmp/evil/atta`, `perl atta.py`) recibía `ask`; A2 un comando de más de 400 caracteres se mostraba cortado en el `ask`; A3 una regla `deny_commands` del proyecto perdía frente al `ask`. Las pruebas de bypass y la comparación contra HEAD no corrieron: la política de seguridad de Gentle AI bloqueó el script de sondas dos veces (cadenas de prueba como `sudo atta init`), por eso quedan como no verificadas. Corregido inline (RED observado): `ask` solo para `atta`/`atta.exe`/`atta.cmd` o `python`/`py -m atta.spine.cli` sin ruta ni `VAR=`; `deny` por encima de 400 caracteres; `deny_commands` antes del `ask`; texto corregido. 112 OK en guard + wiring.

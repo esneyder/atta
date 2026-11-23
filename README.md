@@ -1059,7 +1059,8 @@ Atta cambió delivery.auto_merge_up_to en atta/config.json: none → low.
 ```
 
 Como `atta models set`, el guard no deja a los agentes correr `settings set` ni `settings reset`
-(sección 14.2): la configuración la cambia una persona.
+(sección 14.2): la configuración la cambia una persona. En una sesión interactiva de Claude Code, el
+guard le pide a esa persona que apruebe el comando exacto; en cualquier otro caso lo niega.
 
 #### `save-artifact <job> intake --from-reply <archivo>`
 
@@ -1598,10 +1599,17 @@ UTF-8 en todos los sistemas. El color se adapta a la terminal: truecolor, 256 o 
 `MultiEdit`, `NotebookEdit`, `Bash` o `PowerShell`, Claude Code corre `atta guard` con el JSON de la
 herramienta. Si permite, no imprime nada; si bloquea, devuelve `permissionDecision: deny` con el
 motivo en español firmado «Atta». Una entrada mal formada, una configuración ilegible o cualquier
-error interno **bloquean** (falla cerrado).
+error interno **bloquean** (falla cerrado). La única excepción es `ask`, solo para los comandos de
+configuración de Atta (ver abajo).
 
 ```json
 {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Atta no empuja a main: es una rama prohibida. — «Atta»"}}
+```
+
+Y, para un comando de configuración aprobable:
+
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": "Atta pide tu aprobación para cambiar la configuración (atta init). Comando exacto: atta init. Apruébalo solo si lo pediste tú; si no, recházalo y corre ese comando en tu terminal. — «Atta»"}}
 ```
 
 **Escrituras permitidas** (la ruta se normaliza, se resuelven `..`, symlinks y junctions):
@@ -1630,7 +1638,21 @@ espacios finales, rutas relativas a una unidad (`C:src/a.py`) y rutas de disposi
   escribir esas claves con `git config`, `git send-pack`, `git update-ref -d`, borrar ramas;
 - los comandos de Atta que cambian la configuración: `atta settings set|reset`,
   `atta models set|unset|reset|fallback` y `atta init` (con cualquier opción). Las formas de solo
-  lectura (`atta settings`, `atta settings get`, `atta models`) y `atta doctor` sí se permiten;
+  lectura (`atta settings`, `atta settings get`, `atta models`) y `atta doctor` sí se permiten. El
+  motivo trae siempre el comando exacto para que lo corras tú en tu terminal. **Excepción: `ask`.**
+  El guard responde `permissionDecision: ask` (Claude Code te pide aprobar ese comando exacto)
+  solo si se cumplen las tres condiciones: (1) el modo de permisos de la sesión (`permission_mode`
+  del hook) es uno que pregunta: `default`, `acceptEdits` o `plan`; (2) lo corre la sesión
+  principal, no un subagente (`agent_id` vacío); (3) es **una sola** invocación simple de Atta: sin
+  `;`, `&&`, `||`, pipes, subshells, `$(...)`, backticks, `bash -c`, `env`/`sudo`/`timeout`/`nohup`,
+  heredocs, redirecciones ni variables (`VAR=valor atta …`), de hasta 400 caracteres, y lanzada
+  como `atta`, `atta.exe`, `atta.cmd` o `python`/`py -m atta.spine.cli`, **sin ruta**: `./atta.sh`,
+  `/ruta/atta` o `x/atta.py` podrían ser un archivo escrito por un agente y reciben `deny`. Una
+  regla `guard.deny_commands` del proyecto que nombre el comando gana sobre el `ask`. Con
+  `bypassPermissions`, `dontAsk`, `auto`, sin modo o con
+  un modo desconocido, desde un subagente o en un comando compuesto, sigue siendo `deny` (falla
+  cerrado). `ask` nunca se da a un comando que no sea de configuración. En `claude -p` sin nadie
+  que responda, un `ask` se deniega;
 - `atta model-failed` dentro de un subagente (el hook trae `agent_id`): solo lo corre el
   orquestador `/atta`;
 - `gh pr merge`, `gh repo delete|archive`, `gh release …`, `gh alias set|import`, `gh api` con
