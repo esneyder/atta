@@ -676,5 +676,14 @@ class BoardAssetsTests(unittest.TestCase):
             self.assertIn(flag, out.stdout)
 
 
+class StageTimeoutEventBoardTests(unittest.TestCase):
+    def test_stage_timeout_events_add_no_stage_time(self):
+        # F4 T5: `stage_timeout` has no from/duration_s, so it never counts as a stage duration.
+        events = [{"event": "stage_timeout", "stage": "intake", "agent": "atta-exploradora",
+                   "model": "haiku", "limit_s": 600, "elapsed_s": 700, "outcome": "retry"},
+                  {"from": "intake", "to": "spec", "duration_s": 5}]
+        self.assertEqual(board.durations(events), {"intake": 5})
+
+
 if __name__ == "__main__":
     unittest.main()
