@@ -91,6 +91,9 @@ SETTINGS = (
            editable=False, how=EDIT_BY_HAND),
     _entry("models", "summary", "Modelo de cada tier y rol (solo lectura: usa atta models).",
            default={}, editable=False, how="usa atta models"),
+    _entry("profile", "summary",
+           "Perfil de fábrica del proyecto (económico, equilibrado o calidad; solo lectura: usa "
+           "atta profiles).", default=None, editable=False, how="usa atta profiles"),
 )
 
 

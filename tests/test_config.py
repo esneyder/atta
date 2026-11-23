@@ -183,6 +183,17 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
                     config.load_config(self.write(data))
                 self.assertEqual(str(ctx.exception), f"config.json: {msg}")
 
+    def test_profile_is_optional_and_must_be_a_packaged_id(self):  # F2.y T3
+        self.assertNotIn("profile", config.load_config(self.write({})))
+        for name in ("economico", "equilibrado", "calidad"):
+            self.assertEqual(config.load_config(self.write({"profile": name}))["profile"], name)
+        for bad in ("barato", "Económico", "", 3, None, ["calidad"]):
+            with self.subTest(profile=bad):
+                with self.assertRaises(config.ConfigError) as ctx:
+                    config.load_config(self.write({"profile": bad}))
+                self.assertIn("config.json: profile", str(ctx.exception))
+                self.assertIn("usa economico, equilibrado o calidad", str(ctx.exception))
+
     def test_models_is_optional_and_accepts_tiers_and_roles(self):
         self.assertNotIn("models", config.load_config(self.write({})))
         models = {"claude-code": {"tiers": {"T2": "haiku", "T3": "claude-opus-4-1"},

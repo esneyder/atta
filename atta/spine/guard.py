@@ -84,11 +84,11 @@ Denied:
   --post-data` implying one);
 - Atta's configuration-mutating subcommands (L29), which change atta/config.json and .claude/
   through the CLI where the write rules cannot see them: `atta settings set|reset`,
-  `atta models set|unset|reset|fallback` and `atta init` (any flags). Detected as `atta`, `atta.exe`,
+  `atta models set|unset|reset|fallback`, `atta profiles use|clear` and `atta init` (any flags). Detected as `atta`, `atta.exe`,
   `atta.cmd`, `atta.bat`, `./atta.sh` (also `sh atta.sh`), `python|python3|python3.N|py [-3.N]
   -m atta.spine.cli` and `python .../atta.py`, with global options (`--project X`,
   `--jobs-dir Y`, `=` forms and argparse prefixes) and `models --runtime X` before the action.
-  Read-only forms (`atta settings`, `atta settings get <k>`, `atta models [--runtime X]`) and
+  Read-only forms (`atta settings`, `atta settings get <k>`, `atta models [--runtime X]`, `atta profiles [--json]`, `atta profiles show X`) and
   every other subcommand stay allowed;
   the reason always carries the exact command (cut at 400 characters) so the human can run it in
   their terminal. F2.y (S4): the answer is `ask` (Claude Code asks the user to approve that exact
@@ -268,7 +268,8 @@ ATTA_SCRIPT = "atta.py"
 ATTA_MODULES = {"atta.spine.cli"}
 _ATTA_GLOBAL_VALUED = ("--project", "--jobs-dir")
 _ATTA_MUTATING = {"init": None, "settings": {"set", "reset"},
-                  "models": {"set", "unset", "reset", "fallback"}}
+                  "models": {"set", "unset", "reset", "fallback"},
+                  "profiles": {"use", "clear"}}
 _ATTA_SUB_VALUED = {"models": ("--runtime",)}
 # Orchestrator actions only the /atta driver runs; denied inside a subagent (F4 T4).
 _ATTA_DRIVER_ONLY = {"model-failed"}

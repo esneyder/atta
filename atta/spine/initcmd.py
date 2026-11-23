@@ -6,7 +6,7 @@ What it does, on the project root:
   models.py with the project's config (S5 defaults T1 haiku, T2 sonnet, T3 opus; S12 overrides
   from `models` in atta/config.json survive `--force`; the Vigía avoids the Guía's model), and
   `.claude/skills/atta/SKILL.md`, `.claude/commands/atta.md` and the `/atta:*` menus
-  (`.claude/commands/atta/config.md`, `models.md`: models.DRIVER_FILES) when those templates exist, with
+  (`.claude/commands/atta/config.md`, `models.md`, `profiles.md`: models.DRIVER_FILES) when those templates exist, with
   their `{{model:T0}}` resolved to the project's T0 model (F4 S5: the `/atta` orchestrator runs
   on the cheap tier; `atta models` keeps that line in sync).
 - `.claude/settings.json`: created from the template, or the template hooks are appended to the
