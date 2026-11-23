@@ -575,7 +575,9 @@ class CheckTest(InitBase):
         code, out, err = self.run_check(templates=packaged)
         self.assertEqual((code, err), (1, ""))
         self.assertEqual(out, self.outdated_text("distinto: .claude/skills/atta/SKILL.md",
-                                                 "distinto: .claude/commands/atta.md"))
+                                                 "distinto: .claude/commands/atta.md",
+                                                 "distinto: .claude/commands/atta/config.md",
+                                                 "distinto: .claude/commands/atta/models.md"))
         self.assertEqual(tree(self.root), before)
 
     def test_hand_edited_driver_model_is_reported(self):
@@ -596,9 +598,74 @@ class CheckTest(InitBase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             code = cli.main(["--project", str(self.root), "init", "--check"])
         self.assertEqual(code, 0, out.getvalue())
-        # 12 agents + SKILL.md + commands/atta.md + settings.json hook
-        self.assertIn(": al día (15 archivos).", out.getvalue())
+        # 12 agents + SKILL.md + commands/atta.md + 2 menus + settings.json hook
+        self.assertIn(": al día (17 archivos).", out.getvalue())
         self.assertEqual(tree(self.root), before)
+
+
+class MenuCommandsTest(InitBase):
+    """F2.y T2: `/atta:config` and `/atta:models` live in .claude/commands/atta/."""
+
+    MENUS = (".claude/commands/atta/config.md", ".claude/commands/atta/models.md")
+
+    def run_check(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = initcmd.check(self.root, templates_dir=project.TEMPLATES_DIR)
+        return code, out.getvalue(), err.getvalue()
+
+    def init_packaged(self, **kw):
+        return self.run_init(templates=project.TEMPLATES_DIR, **kw)
+
+    def test_init_installs_the_menus_with_the_t0_model(self):
+        code, out, err = self.init_packaged()
+        self.assertEqual(code, 0, err)
+        for rel in self.MENUS:
+            path = self.root / rel
+            self.assertTrue(path.is_file(), rel)
+            self.assertIn(f"creé: {rel}", out)
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("{{", text)
+            front = "\n" + text.split("---\n", 2)[1]
+            self.assertIn("\nmodel: haiku\n", front, rel)
+            self.assertIn("\ndescription:", front)
+        # /atta keeps working next to the namespace
+        self.assertTrue((self.root / ".claude" / "commands" / "atta.md").is_file())
+
+    def test_menus_follow_the_project_t0(self):
+        cfg = self.root / "atta" / "config.json"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text(json.dumps({"models": {"claude-code": {"tiers": {"T0": "sonnet"}}}}),
+                       encoding="utf-8")
+        self.assertEqual(self.init_packaged()[0], 0)
+        for rel in self.MENUS:
+            self.assertIn("\nmodel: sonnet\n", (self.root / rel).read_text(encoding="utf-8"))
+
+    def test_check_is_clean_after_init_and_flags_missing_and_outdated(self):
+        self.assertEqual(self.init_packaged()[0], 0)
+        self.assertEqual(self.run_check()[0], 0)
+        (self.root / self.MENUS[0]).unlink()
+        models_md = self.root / self.MENUS[1]
+        models_md.write_text(models_md.read_text(encoding="utf-8") + "\nedición a mano\n",
+                             encoding="utf-8")
+        code, out, err = self.run_check()
+        self.assertEqual((code, err), (1, ""))
+        self.assertIn(f"  falta: {self.MENUS[0]}\n", out)
+        self.assertIn(f"  distinto: {self.MENUS[1]}\n", out)
+
+    def test_init_without_force_keeps_an_edited_menu_and_force_refreshes_it(self):
+        self.assertEqual(self.init_packaged()[0], 0)
+        path = self.root / self.MENUS[1]
+        original = path.read_bytes()
+        path.write_bytes(b"mio\n")
+        code, out, _ = self.init_packaged()
+        self.assertIn(f"ya existe, la dejé igual: {self.MENUS[1]}", out)
+        self.assertEqual(path.read_bytes(), b"mio\n")
+        code, out, err = self.init_packaged(force=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"reemplacé: {self.MENUS[1]}", out)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(self.run_check()[0], 0)
 
 
 class RegisterTest(TempDirMixin, unittest.TestCase):

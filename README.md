@@ -393,6 +393,7 @@ Qué crea:
 | `.claude/agents/atta-*.md` | Los 12 agentes de la colonia, con el modelo de cada tier ya resuelto (T1 `haiku`, T2 `sonnet`, T3 `opus`) |
 | `.claude/skills/atta/SKILL.md` | El comando `/atta` |
 | `.claude/commands/atta.md` | Registra `/atta` en Claude Code |
+| `.claude/commands/atta/config.md`, `.claude/commands/atta/models.md` | Los menús `/atta:config` y `/atta:models` (ver «Menús» en la referencia de comandos); corren en T0 como `/atta` y `atta models set T0` mantiene su línea `model:` |
 | `.claude/settings.json` | El hook PreToolUse `atta guard` para `Write\|Edit\|MultiEdit\|NotebookEdit\|Bash\|PowerShell`. Si ya tienes un `settings.json`, agrega el hook al final **sin borrar ni reordenar** lo tuyo |
 | `atta/config.json` | Configuración por defecto (sección 10), solo si falta, con `"delivery": {"auto_merge_up_to": "none"}`: en un proyecto nuevo Atta nunca mergea solo hasta que lo habilites (sección 8.2). Un `config.json` existente no se toca |
 | `atta/checks.json` | Vacío a propósito, solo si falta: el Filtro falla hasta que pongas checks reales |
@@ -402,13 +403,13 @@ Y en GitHub (salvo con `--no-github`): verifica que `develop` exista en `origin`
 `git ls-remote` y crea o actualiza las labels de `config.json` con `gh label create --force`. Nunca
 toca `main`.
 
-**Es idempotente**: correrlo otra vez no cambia nada («sin cambios: 18 archivos»). Un archivo que ya
+**Es idempotente**: correrlo otra vez no cambia nada («sin cambios: 20 archivos»). Un archivo que ya
 existe y es distinto se respeta y se reporta como «ya existe, la dejé igual: …».
 
 | Opción | Efecto |
 |---|---|
-| `--force` | Reemplaza los agentes y el skill existentes («reemplacé: …»). **Nunca** `config.json`, `checks.json` ni `settings.json` |
-| `--check` | No escribe nada ni usa la red: compara lo que `atta init` escribiría (agentes con sus modelos resueltos, skill, comando `/atta`, hook del guard) con los archivos del proyecto. Dice «al día» y sale `0`, o lista cada archivo como `falta:` o `distinto:`, sugiere `atta init --force` y sale `1`. No se combina con `--force` |
+| `--force` | Reemplaza los agentes, el skill y los comandos `/atta` y `/atta:*` existentes («reemplacé: …»). **Nunca** `config.json`, `checks.json` ni `settings.json` |
+| `--check` | No escribe nada ni usa la red: compara lo que `atta init` escribiría (agentes con sus modelos resueltos, skill, comando `/atta`, menús `/atta:*`, hook del guard) con los archivos del proyecto. Dice «al día» y sale `0`, o lista cada archivo como `falta:` o `distinto:`, sugiere `atta init --force` y sale `1`. No se combina con `--force` |
 | `--no-github` | No verifica `origin/develop` ni crea labels (sin red) |
 | `--runtime claude-code` | Runtime de los agentes (hoy el único) |
 
@@ -1059,7 +1060,41 @@ Atta cambió delivery.auto_merge_up_to en atta/config.json: none → low.
 ```
 
 Como `atta models set`, el guard no deja a los agentes correr `settings set` ni `settings reset`
-(sección 14.2): la configuración la cambia una persona.
+(sección 14.2): la configuración la cambia una persona. En una sesión interactiva de Claude Code, el
+guard le pide a esa persona que apruebe el comando exacto; en cualquier otro caso lo niega.
+
+#### Menús `/atta:config` y `/atta:models` (dentro de Claude Code)
+
+Para cambiar la configuración sin escribir claves ni valores a mano. `atta init` instala los dos
+comandos en `.claude/commands/atta/` (`/atta:config` y `/atta:models`; coexisten con `/atta`) y
+`atta init --check` los vigila como al resto.
+
+- **`/atta:config`** es la entrada única: pregunta el área (modelos, perfiles, entrega, rondas,
+  riesgo, labels) y te manda a su menú. Hoy solo `/atta:models` está construido; las otras áreas
+  lo dicen con honestidad y siguen disponibles con `atta settings`.
+- **`/atta:models`** corre `atta models --json`, te muestra «quién corre con qué» y las reglas de
+  escalada, y con preguntas seleccionables (opción actual marcada, vista previa del efecto) te deja
+  cambiar el modelo de un tier, el de un rol, quitar el de un rol, una cadena de fallback o
+  restablecer. Luego corre **un solo** comando simple `atta models ...` y muestra la tabla nueva.
+
+**Aprobación.** El menú nunca edita `atta/config.json` ni encadena comandos. El guard le pide a
+la persona que apruebe el comando exacto (`ask`) si la sesión es interactiva (`default`,
+`acceptEdits` o `plan`), la corre la sesión principal y es una sola invocación simple de `atta`
+(sección 14.2); en cualquier otro caso lo niega y da el comando para tu terminal. El driver `/atta`
+sigue sin cambiar configuración.
+
+**Salida JSON** (solo lectura, no escribe nada, claves ordenadas), la que leen los menús:
+
+- `atta settings --json`: `{"root", "settings": [...]}`; cada entrada trae `key`, `type`
+  (`str`, `int`, `bool`, `enum`, `list`, `summary`), `value`, `default`, `changed`, `choices`
+  (solo `enum`), `editable`, `how` (dónde se cambia una clave de solo lectura) y `description`.
+- `atta models --json`: `runtime`, `tiers` (`model`, `default`, `origin` `fábrica`/`proyecto`),
+  `roles` (por rol: `tier`, `model`, `origin` `tier`/`rol`/`regla ≠ guía`, `override`,
+  `escalates_to`), `routing_matrix` (`enabled` y, si está activa, `stages` con el modelo en riesgo
+  `low`, `medium` y `high`), `fallbacks` (cadena efectiva por tier), `ladder_round`, `driver`
+  y `valid_models`.
+
+Con una acción (`atta models --json set ...`) `--json` sale `2` sin escribir nada.
 
 #### `save-artifact <job> intake --from-reply <archivo>`
 
@@ -1598,10 +1633,17 @@ UTF-8 en todos los sistemas. El color se adapta a la terminal: truecolor, 256 o 
 `MultiEdit`, `NotebookEdit`, `Bash` o `PowerShell`, Claude Code corre `atta guard` con el JSON de la
 herramienta. Si permite, no imprime nada; si bloquea, devuelve `permissionDecision: deny` con el
 motivo en español firmado «Atta». Una entrada mal formada, una configuración ilegible o cualquier
-error interno **bloquean** (falla cerrado).
+error interno **bloquean** (falla cerrado). La única excepción es `ask`, solo para los comandos de
+configuración de Atta (ver abajo).
 
 ```json
 {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Atta no empuja a main: es una rama prohibida. — «Atta»"}}
+```
+
+Y, para un comando de configuración aprobable:
+
+```json
+{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": "Atta pide tu aprobación para cambiar la configuración (atta init). Comando exacto: atta init. Apruébalo solo si lo pediste tú; si no, recházalo y corre ese comando en tu terminal. — «Atta»"}}
 ```
 
 **Escrituras permitidas** (la ruta se normaliza, se resuelven `..`, symlinks y junctions):
@@ -1630,7 +1672,21 @@ espacios finales, rutas relativas a una unidad (`C:src/a.py`) y rutas de disposi
   escribir esas claves con `git config`, `git send-pack`, `git update-ref -d`, borrar ramas;
 - los comandos de Atta que cambian la configuración: `atta settings set|reset`,
   `atta models set|unset|reset|fallback` y `atta init` (con cualquier opción). Las formas de solo
-  lectura (`atta settings`, `atta settings get`, `atta models`) y `atta doctor` sí se permiten;
+  lectura (`atta settings`, `atta settings get`, `atta models`) y `atta doctor` sí se permiten. El
+  motivo trae siempre el comando exacto para que lo corras tú en tu terminal. **Excepción: `ask`.**
+  El guard responde `permissionDecision: ask` (Claude Code te pide aprobar ese comando exacto)
+  solo si se cumplen las tres condiciones: (1) el modo de permisos de la sesión (`permission_mode`
+  del hook) es uno que pregunta: `default`, `acceptEdits` o `plan`; (2) lo corre la sesión
+  principal, no un subagente (`agent_id` vacío); (3) es **una sola** invocación simple de Atta: sin
+  `;`, `&&`, `||`, pipes, subshells, `$(...)`, backticks, `bash -c`, `env`/`sudo`/`timeout`/`nohup`,
+  heredocs, redirecciones ni variables (`VAR=valor atta …`), de hasta 400 caracteres, y lanzada
+  como `atta`, `atta.exe`, `atta.cmd` o `python`/`py -m atta.spine.cli`, **sin ruta**: `./atta.sh`,
+  `/ruta/atta` o `x/atta.py` podrían ser un archivo escrito por un agente y reciben `deny`. Una
+  regla `guard.deny_commands` del proyecto que nombre el comando gana sobre el `ask`. Con
+  `bypassPermissions`, `dontAsk`, `auto`, sin modo o con
+  un modo desconocido, desde un subagente o en un comando compuesto, sigue siendo `deny` (falla
+  cerrado). `ask` nunca se da a un comando que no sea de configuración. En `claude -p` sin nadie
+  que responda, un `ask` se deniega;
 - `atta model-failed` dentro de un subagente (el hook trae `agent_id`): solo lo corre el
   orquestador `/atta`;
 - `gh pr merge`, `gh repo delete|archive`, `gh release …`, `gh alias set|import`, `gh api` con

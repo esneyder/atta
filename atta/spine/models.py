@@ -81,7 +81,9 @@ FULL_ID_EXAMPLE = {"claude-code": "claude-sonnet-4-5"}
 # The /atta orchestrator (command and skill, `{{model:T0}}` in their templates) only executes
 # what `atta next` prints, so it runs on the cheap tier (F4 S5, G8).
 DRIVER_TIER = "T0"
-DRIVER_FILES = (".claude/skills/atta/SKILL.md", ".claude/commands/atta.md")
+# The `/atta:*` configuration menus (F2.y T2) only run `atta` commands, so they run on it too.
+DRIVER_FILES = (".claude/skills/atta/SKILL.md", ".claude/commands/atta.md",
+                ".claude/commands/atta/config.md", ".claude/commands/atta/models.md")
 PLACEHOLDER = re.compile(r"\{\{model:([A-Za-z0-9]+)\}\}")
 _MODEL_LINE = re.compile(r"^model:[^\r\n]*", re.M)
 SIGN = "— Atta"
@@ -564,6 +566,38 @@ def render(root: Path, tab: Table) -> str:
     return "\n".join(out)
 
 
+def state(root: Path, tab: Table) -> dict:
+    """Read-only, machine-readable state of `atta models --json` (F2.y T2): what the
+    `/atta:models` menu shows to mark the current option and preview the effect."""
+    tiers = {t: {"model": tab.tiers.get(t), "default": tab.base.get(t),
+                 "origin": "proyecto" if tab.tiers.get(t) != tab.base.get(t) else "fábrica"}
+             for t in TIERS}
+    roles = {}
+    for role in ROLES:
+        origin = tab.origin(role)
+        roles[role] = {"tier": tab.tier_of(role), "model": tab.agent_model(role),
+                       "origin": origin.split(" · escala")[0],
+                       "override": tab.roles.get(role),
+                       "escalates_to": tab.tier_model("T3") if role in ESCALATING else None}
+    stages = {}
+    if tab.matrix:
+        for role, reviewer in (("guia", None), ("jardinera-ux", None), ("cortadora", None),
+                               ("reina", None), ("soldado", "security")):
+            low, medium, high = tab.risk_models(role, reviewer)
+            stages[role] = {"low": low, "medium": medium, "high": high}
+    return {
+        "driver": {"model": tab.tiers.get(DRIVER_TIER), "tier": DRIVER_TIER},
+        "fallbacks": {t: tab.chain(t) if tab.tiers.get(t) else [] for t in TIERS},
+        "ladder_round": LADDER_ROUND if tab.matrix else LEGACY_LADDER_ROUND,
+        "root": str(root),
+        "roles": roles,
+        "routing_matrix": {"enabled": tab.matrix, "stages": stages},
+        "runtime": tab.runtime,
+        "tiers": tiers,
+        "valid_models": list(SHORT_NAMES[tab.runtime]),
+    }
+
+
 def _change(root: Path, cfg_data: dict, runtime: str, headline: str) -> int:
     from . import project
     _save_config(root, cfg_data)
@@ -646,6 +680,12 @@ def cmd_models(args, cfg, jobs) -> int:
     runtime = args.runtime
     action = getattr(args, "models_action", None)
     try:
+        if getattr(args, "json", False):
+            if action is not None:
+                return _refuse("--json solo se usa sin acción (atta models --json).")
+            print(json.dumps(state(root, table(cfg, runtime)), indent=2, sort_keys=True,
+                             ensure_ascii=False))
+            return OK
         if action is None:
             print(render(root, table(cfg, runtime)))
             return OK
@@ -709,7 +749,8 @@ def register(subparsers) -> None:
     runtime_help = "runtime de los agentes (por defecto: claude-code)"
     p = subparsers.add_parser(
         "models", help="Muestra o cambia qué modelo corre cada rol en este proyecto.",
-        description="Sin acción, imprime la tabla ROL / TIER / MODELO / ORIGEN. set, unset, "
+        description="Sin acción, imprime la tabla ROL / TIER / MODELO / ORIGEN (con --json, "
+                    "el mismo estado como JSON, solo lectura). set, unset, "
                     "fallback y reset cambian «models» en atta/config.json y la línea model: de "
                     ".claude/agents/atta-*.md y del comando y skill /atta (que corren en "
                     "T0). Un modelo, rol o tier inválido sale 2 sin "
@@ -717,6 +758,10 @@ def register(subparsers) -> None:
         epilog="Modelos válidos en claude-code: haiku, sonnet, opus o un id completo "
                "claude-[a-z0-9.-]+. Roles: " + ", ".join(ROLES) + ".")
     p.add_argument("--runtime", choices=RUNTIMES, default=RUNTIME, help=runtime_help)
+    p.add_argument("--json", action="store_true",
+                   help="solo lectura: imprime en JSON (claves ordenadas) tiers, modelo y origen "
+                        "de cada rol, la matriz etapa×riesgo (routing_matrix) y los fallbacks; "
+                        "no escribe nada (lo usan los menús /atta:*)")
     p.set_defaults(func=cmd_models, models_action=None, role=None)
     sub = p.add_subparsers(dest="models_action", metavar="<acción>")
 

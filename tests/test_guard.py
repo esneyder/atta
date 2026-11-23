@@ -901,10 +901,10 @@ class ConfigCommandTests(GuardBase):
     atta/config.json and .claude/ through the CLI; agents may only run the read-only forms."""
 
     MESSAGE = ("Atta no deja que un agente cambie su propia configuración ({}). Corre ese "
-               "comando tú en tu terminal.")
+               "comando tú en tu terminal. Comando: {}")
 
-    def assertConfigDenied(self, reason, command):
-        self.assertEqual(reason, self.MESSAGE.format(command))
+    def assertConfigDenied(self, reason, shown, command):
+        self.assertEqual(reason, self.MESSAGE.format(shown, command))
 
     def test_hook_output_is_signed_deny(self):
         out = io.StringIO()
@@ -914,7 +914,8 @@ class ConfigCommandTests(GuardBase):
         data = json.loads(out.getvalue())["hookSpecificOutput"]
         self.assertEqual(data["permissionDecision"], "deny")
         self.assertEqual(data["permissionDecisionReason"],
-                         self.MESSAGE.format("atta settings set") + " — «Atta»")
+                         self.MESSAGE.format("atta settings set", "atta settings set max_rounds 9")
+                         + " — «Atta»")
 
     def test_mutating_subcommands_denied(self):
         cases = [
@@ -935,7 +936,7 @@ class ConfigCommandTests(GuardBase):
         ]
         for command, shown in cases:
             with self.subTest(command=command):
-                self.assertConfigDenied(self.bash_reason(command), shown)
+                self.assertConfigDenied(self.bash_reason(command), shown, command)
 
     def test_every_invocation_form_denied(self):
         cases = [
@@ -976,7 +977,7 @@ class ConfigCommandTests(GuardBase):
         ]
         for command, shown in cases:
             with self.subTest(command=command):
-                self.assertConfigDenied(self.bash_reason(command), shown)
+                self.assertConfigDenied(self.bash_reason(command), shown, command)
 
     def test_wrappers_chaining_and_nesting_denied(self):
         cases = [
@@ -1070,6 +1071,285 @@ class ConfigCommandTests(GuardBase):
                 self.assertDenied(self.bash_reason(command), "su propia configuración",
                                   "Corre ese comando tú en tu terminal")
 
+class AskConfigCommandTests(GuardBase):
+    """F2.y T1 (S4): in a session where Claude Code prompts the user (`default`, `acceptEdits`,
+    `plan`), the main session running a single plain config command gets `ask`; every other case
+    keeps `deny` with the exact command to run in the terminal."""
+
+    ASK = ("Atta pide tu aprobación para cambiar la configuración ({shown}). Comando exacto: "
+           "{command}. Apruébalo solo si lo pediste tú; si no, recházalo y corre ese comando en "
+           "tu terminal.")
+    DENY = ("Atta no deja que un agente cambie su propia configuración ({shown}). Corre ese "
+            "comando tú en tu terminal. Comando: {command}")
+    INTERACTIVE = ("default", "acceptEdits", "plan")
+    SKIPPING = ("bypassPermissions", "dontAsk", "auto")
+
+    PLAIN = (
+        ("atta settings set delivery.auto_merge_up_to high", "atta settings set"),
+        ("atta settings reset merge_method", "atta settings reset"),
+        ("atta models set T2 haiku", "atta models set"),
+        ("atta models set --role soldado opus", "atta models set"),
+        ("atta models unset --role soldado", "atta models unset"),
+        ("atta models reset", "atta models reset"),
+        ("atta models fallback T3 sonnet", "atta models fallback"),
+        ("atta models fallback T3 --clear", "atta models fallback"),
+        ("atta models --runtime claude-code set T1 opus", "atta models set"),
+        ("atta models --runtime=claude-code reset", "atta models reset"),
+        ("atta init", "atta init"),
+        ("atta init --force --no-github --runtime claude-code", "atta init"),
+        ("atta.exe settings set max_rounds 9", "atta settings set"),
+        ("atta.cmd models reset", "atta models reset"),
+        ("ATTA.EXE init", "atta init"),
+        ("python -m atta.spine.cli settings set max_rounds 9", "atta settings set"),
+        ("python3.11 -m atta.spine.cli init", "atta init"),
+        ("python -X utf8 -m atta.spine.cli init", "atta init"),
+        ("py -3.11 -m atta.spine.cli settings reset merge_method", "atta settings reset"),
+        ("atta --project /x settings set max_rounds 9", "atta settings set"),
+        ("atta --jobs-dir y models reset", "atta models reset"),
+        ("atta --project=/x --jobs-dir=y init", "atta init"),
+        ("atta --project /x --jobs-dir y models --runtime claude-code unset --role guia",
+         "atta models unset"),
+        ('atta settings set labels.queue "mi cola"', "atta settings set"),
+    )
+    # A1: a launcher given by path (an agent could have written that file) never gets `ask`.
+    PATHED = (
+        ("./atta.sh init", "atta init"),
+        ("/opt/bin/atta init --force", "atta init"),
+        ("C:/Tools/atta.exe models set T2 haiku", "atta models set"),
+        ("python atta/bin/atta.py init --force", "atta init"),
+        ("python3 /repo/atta/bin/atta.py models unset --role reina", "atta models unset"),
+        ("py -3.11 atta/bin/atta.py settings set max_rounds 2", "atta settings set"),
+        ("/tmp/evil/atta init", "atta init"),
+        ("perl atta.py init", "atta init"),
+        ("node x/atta.py init", "atta init"),
+    )
+    COMPOUND = (
+        "cd sub && atta init", "echo ok; atta models reset",
+        "true || atta settings set max_rounds 9", "atta queue | atta init", "atta init | cat",
+        "atta init &", "sudo atta init", "env FOO=1 atta init",
+        "FOO=1 atta settings set max_rounds 9", "nohup atta models reset", "timeout 5 atta init",
+        "command atta init", "if true; then atta init; fi", "! atta init",
+        "bash -c 'atta settings set max_rounds 9'", "sh atta.sh init",
+        "bash ./atta.sh models reset", "echo $(atta init)", "echo `atta models reset`",
+        "eval atta init", "cmd /c atta init", "atta \\\n  init", "(atta init)",
+        "{ atta init; }", "bash <<'EOF'\natta models reset\nEOF", "cat <<EOF\n$(atta init)\nEOF",
+        "atta init > /dev/null", "atta init 2>&1", "atta init < /dev/null", "atta init <<< x",
+        "atta models set T2 $MODEL", "atta init\natta models reset", "atta init #x; ls",
+    )
+
+    def hook_with(self, command, mode="default", agent_id=None, tool="Bash"):
+        h = self.hook(tool, command=command)
+        if mode is not None:
+            h["permission_mode"] = mode
+        if agent_id is not None:
+            h["agent_id"] = agent_id
+        return h
+
+    def decide(self, command, **kw):
+        return guard.decide(self.hook_with(command, **kw), root=self.root)
+
+    def assertAsk(self, got, shown, command):
+        self.assertEqual(got, ("ask", self.ASK.format(shown=shown, command=command)))
+
+    def assertDeny(self, got, shown, command):
+        self.assertEqual(got, ("deny", self.DENY.format(shown=shown, command=command)))
+
+    def test_plain_invocation_asks_in_interactive_modes(self):
+        for mode in self.INTERACTIVE:
+            for command, shown in self.PLAIN:
+                with self.subTest(mode=mode, command=command):
+                    self.assertAsk(self.decide(command, mode=mode), shown, command)
+
+    def test_powershell_plain_invocation_asks(self):
+        self.assertAsk(self.decide("atta.exe models reset", tool="PowerShell"),
+                       "atta models reset", "atta.exe models reset")
+        self.assertAsk(self.decide("py -3.11 -m atta.spine.cli init", tool="PowerShell"),
+                       "atta init", "py -3.11 -m atta.spine.cli init")
+
+    def test_surrounding_whitespace_is_still_plain(self):
+        self.assertAsk(self.decide("  atta init  "), "atta init", "atta init")
+
+    def test_evaluate_still_reports_a_reason_for_ask(self):
+        # evaluate() is the legacy API: a non-None result means the call is NOT silently allowed.
+        self.assertEqual(guard.evaluate(self.hook_with("atta init"), root=self.root),
+                         self.ASK.format(shown="atta init", command="atta init"))
+
+    def test_deny_when_mode_skips_confirmations_or_is_unknown(self):
+        for mode in self.SKIPPING + ("acceptEditsPlus", "", "DEFAULT", " default", None, 3, [],
+                                     {"a": 1}, True):
+            for command, shown in self.PLAIN[:12]:
+                with self.subTest(mode=mode, command=command):
+                    h = self.hook_with(command, mode=None)
+                    if mode is not None:
+                        h["permission_mode"] = mode
+                    self.assertDeny(guard.decide(h, root=self.root), shown, command)
+
+    def test_deny_for_every_plain_form_when_mode_missing(self):
+        for command, shown in self.PLAIN:
+            with self.subTest(command=command):
+                self.assertDeny(self.decide(command, mode=None), shown, command)
+
+    def test_subagent_is_denied_in_every_mode(self):
+        for mode in self.INTERACTIVE + self.SKIPPING + (None,):
+            for command, shown in self.PLAIN[:12]:
+                with self.subTest(mode=mode, command=command):
+                    self.assertDeny(self.decide(command, mode=mode, agent_id="a1b2"), shown,
+                                    command)
+
+    def test_empty_agent_id_is_the_main_session(self):
+        for agent_id in ("", "  "):
+            with self.subTest(agent_id=agent_id):
+                self.assertAsk(self.decide("atta init", agent_id=agent_id), "atta init",
+                               "atta init")
+
+    def test_non_string_agent_id_fails_closed(self):
+        for agent_id in (5, ["a"], {"a": 1}, True):
+            with self.subTest(agent_id=agent_id):
+                self.assertDeny(self.decide("atta init", agent_id=agent_id), "atta init",
+                                "atta init")
+
+    def test_compound_and_wrapped_forms_stay_denied_in_interactive_modes(self):
+        for mode in self.INTERACTIVE:
+            for command in self.COMPOUND:
+                with self.subTest(mode=mode, command=command):
+                    got = self.decide(command, mode=mode)
+                    self.assertIsNotNone(got)
+                    self.assertEqual(got[0], "deny")
+                    self.assertIn("su propia configuración", got[1])
+                    self.assertIn("Corre ese comando tú en tu terminal", got[1])
+
+    def test_powershell_compound_forms_stay_denied(self):
+        for command in ("& atta.exe settings set max_rounds 9",
+                        "atta models reset; Write-Output ok",
+                        "& 'C:\\Tools\\atta.cmd' init --force",
+                        'pwsh -Command "atta models reset"', "atta init | Out-Null",
+                        "atta init > $null"):
+            with self.subTest(command=command):
+                got = self.decide(command, tool="PowerShell")
+                self.assertIsNotNone(got)
+                self.assertEqual(got[0], "deny")
+                self.assertIn("su propia configuración", got[1])
+
+    def test_deny_reason_names_the_exact_command(self):
+        command = "cd sub && atta settings set max_rounds 9"
+        self.assertDeny(self.decide(command), "atta settings set", command)
+        self.assertDeny(self.decide("atta settings set max_rounds 9", mode="bypassPermissions"),
+                        "atta settings set", "atta settings set max_rounds 9")
+
+    def test_long_command_is_denied_not_asked(self):  # A2: the prompt could not show it whole
+        command = "atta settings set labels.queue " + "x" * 600
+        kind, reason = self.decide(command)
+        self.assertEqual(kind, "deny")
+        self.assertIn("…", reason)
+        self.assertLess(len(reason), 700)
+
+    def test_glob_and_expansion_characters_are_never_plain(self):  # review R3
+        for command, shown in (("atta settings set labels.queue *", "atta settings set"),
+                               ("atta settings set labels.queue co?a", "atta settings set"),
+                               ("atta settings set labels.queue [ab]", "atta settings set"),
+                               ("atta init --project ~/otro", "atta init"),
+                               ("atta settings set labels.queue !x", "atta settings set"),
+                               ("atta models set T2 haiku # nota", "atta models set")):
+            with self.subTest(command=command):
+                self.assertDeny(self.decide(command), shown, command)
+
+    def test_launcher_given_by_path_is_denied(self):  # A1
+        for mode in self.INTERACTIVE:
+            for command, shown in self.PATHED:
+                with self.subTest(mode=mode, command=command):
+                    self.assertDeny(self.decide(command, mode=mode), shown, command)
+
+    def test_ask_text_is_spelled_right(self):  # D1
+        kind, reason = self.decide("atta init")
+        self.assertEqual(kind, "ask")
+        self.assertIn("Apruébalo solo si lo pediste tú", reason)
+
+    def test_env_assignment_prefix_is_never_plain(self):  # D2
+        for command, shown in (
+                ("PATH=/tmp/evil/atta atta init", "atta init"),
+                ("X=/a/atta atta settings set max_rounds 9", "atta settings set"),
+                ("ATTA_PROJECT=/other/atta atta models reset", "atta models reset"),
+                ("PYTHONPATH=/e/atta python3 -m atta.spine.cli init", "atta init"),
+                ("X=a/atta.exe Y=2 atta init", "atta init")):
+            for mode in self.INTERACTIVE:
+                with self.subTest(mode=mode, command=command):
+                    self.assertDeny(self.decide(command, mode=mode), shown, command)
+
+    def test_mode_and_agent_matrix_fails_closed(self):  # S4
+        modes = ("Default", "default ", "default\n", "acceptedits", "Plan", "delegate", 0,
+                 False, 1.5, ["default"], {"default": 1}, "default\u200b")
+        for mode in modes:
+            with self.subTest(mode=mode):
+                self.assertEqual(self.decide("atta init", mode=mode)[0], "deny")
+        for agent_id in (0, False, [], {}, "\u200b", " x "):
+            with self.subTest(agent_id=agent_id):
+                h = self.hook_with("atta init")
+                h["agent_id"] = agent_id
+                self.assertEqual(guard.decide(h, root=self.root)[0], "deny")
+
+    def test_never_ask_for_non_config_in_any_mode(self):  # S4
+        for mode in self.INTERACTIVE:
+            for command in (f"atta advance {JID} spec", "atta guard", "atta --help",
+                            "echo atta init", "X=/a/atta init", "ls"):
+                with self.subTest(mode=mode, command=command):
+                    got = self.decide(command, mode=mode)
+                    self.assertTrue(got is None or got[0] == "deny", got)
+
+    def test_project_deny_rule_on_a_config_command_is_not_downgraded(self):  # A3
+        write(self.root / "atta" / "config.json",
+              json.dumps({"guard": {"deny_commands": ["atta init"]}}))
+        self.assertEqual(self.decide("atta init")[0], "deny")
+
+    def test_json_shape_for_ask(self):
+        out = io.StringIO()
+        code = guard.run(json.dumps(self.hook_with("atta models set T2 haiku")), out,
+                         root=self.root)
+        self.assertEqual(code, 0)
+        data = json.loads(out.getvalue())
+        self.assertEqual(set(data), {"hookSpecificOutput"})
+        spec = data["hookSpecificOutput"]
+        self.assertEqual(set(spec), {"hookEventName", "permissionDecision",
+                                     "permissionDecisionReason"})
+        self.assertEqual(spec["hookEventName"], "PreToolUse")
+        self.assertEqual(spec["permissionDecision"], "ask")
+        self.assertEqual(spec["permissionDecisionReason"],
+                         self.ASK.format(shown="atta models set",
+                                         command="atta models set T2 haiku") + " — «Atta»")
+
+    def test_json_shape_for_deny_by_mode(self):
+        out = io.StringIO()
+        guard.run(json.dumps(self.hook_with("atta init", mode="bypassPermissions")), out,
+                  root=self.root)
+        spec = json.loads(out.getvalue())["hookSpecificOutput"]
+        self.assertEqual(spec["permissionDecision"], "deny")
+        self.assertEqual(spec["permissionDecisionReason"],
+                         self.DENY.format(shown="atta init", command="atta init") + " — «Atta»")
+
+    def test_ask_never_applies_to_non_config_commands(self):  # PRESERVE
+        for command in (f"atta next {JID}", "atta queue", "atta settings", "atta models",
+                        "atta settings get max_rounds", "atta doctor", "git status"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.decide(command, mode="default"))
+        self.assertIsNone(guard.evaluate(self.hook_with("git status"), root=self.root))
+        for command in ("git push origin main", "gh pr merge 1"):
+            with self.subTest(command=command):
+                self.assertEqual(self.decide(command, mode="default")[0], "deny")
+
+    def test_other_guard_rules_keep_deny_in_default_mode(self):  # PRESERVE
+        command = f"atta model-failed {JID} --agent a --reason quota"
+        self.assertIsNone(self.decide(command))
+        self.assertEqual(self.decide(command, agent_id="x")[0], "deny")
+        h = self.hook("Write", file_path=str(self.root / "atta" / "config.json"))
+        h["permission_mode"] = "default"
+        self.assertEqual(guard.decide(h, root=self.root)[0], "deny")
+
+    def test_malformed_input_is_still_denied(self):  # PRESERVE
+        out = io.StringIO()
+        guard.run("{roto", out, root=self.root)
+        self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"],
+                         "deny")
+
+
 class DriverOnlyCommandTests(GuardBase):
     """F4 T4: `atta model-failed` is an orchestrator action: the /atta driver (main session)
     runs it; a subagent (hook payload with `agent_id`) may not."""
@@ -1118,7 +1398,8 @@ class DriverOnlyCommandTests(GuardBase):
             with self.subTest(command=command):
                 self.assertAllowed(self.reason(command, agent_id="a1b2"))
         self.assertEqual(self.reason("atta models fallback T3 sonnet"),
-                         ConfigCommandTests.MESSAGE.format("atta models fallback"))
+                         ConfigCommandTests.MESSAGE.format("atta models fallback",
+                                                           "atta models fallback T3 sonnet"))
 
 
 class SettingsTemplateTests(unittest.TestCase):
