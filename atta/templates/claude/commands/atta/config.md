@@ -38,13 +38,12 @@ directa, sin adornos. No cambias nada tú: cada área tiene su propio menú `/at
    - **Labels**: labels de la cola y de espera.
    (`AskUserQuestion` admite hasta 4 opciones por pregunta: ofrece primero Modelos, Perfiles,
    Entrega y Rondas; si la persona elige «Other» y escribe riesgo o labels, o te lo pide, trátalo
-   como esa área.)
-2. Según la respuesta:
-   - **Modelos** → dile que escriba `/atta:models`.
-   - **Perfiles** → dile que escriba `/atta:profiles`.
-   - **Entrega**, **Rondas**, **Riesgo**, **Labels** → todavía no está construido:
-     dilo con honestidad («Atta: el menú de <área> aún no está listo.»). Mientras tanto, ofrece la
-     vista de solo lectura `atta settings` y, para cambiar, el comando de terminal
-     `atta settings set <clave> <valor>` (por ejemplo `atta settings set max_rounds 4`), que la
-     persona corre ella misma o que aprueba cuando Claude Code se lo pide.
+   como esa área y mándala a `/atta:risk` o `/atta:labels`.)
+2. Según la respuesta, dile qué comando escribir (cada área tiene su menú):
+   - **Modelos** → `/atta:models`.
+   - **Perfiles** → `/atta:profiles`.
+   - **Entrega** → `/atta:delivery`.
+   - **Rondas** → `/atta:rounds`.
+   - **Riesgo** → `/atta:risk`.
+   - **Labels** → `/atta:labels`.
 3. Cierra con `— Atta`.

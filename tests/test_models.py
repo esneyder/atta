@@ -44,7 +44,9 @@ Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o `atta models set --role <r
 """
 DRIVER = (".claude/commands/atta.md", ".claude/skills/atta/SKILL.md",
           ".claude/commands/atta/config.md", ".claude/commands/atta/models.md",
-          ".claude/commands/atta/profiles.md")
+          ".claude/commands/atta/profiles.md", ".claude/commands/atta/delivery.md",
+          ".claude/commands/atta/rounds.md", ".claude/commands/atta/risk.md",
+          ".claude/commands/atta/labels.md")
 BAD_MODEL = ("«gpt-4» no es un modelo válido para claude-code: usa haiku, sonnet u opus, o un id "
              "completo que cumpla claude-[a-z0-9.-]+ (p. ej. claude-sonnet-4-5). No cambié nada.\n")
 
@@ -208,6 +210,10 @@ class SetTest(ModelsBase):
                               "  actualicé: .claude/commands/atta/config.md → sonnet\n"
                               "  actualicé: .claude/commands/atta/models.md → sonnet\n"
                               "  actualicé: .claude/commands/atta/profiles.md → sonnet\n"
+                              "  actualicé: .claude/commands/atta/delivery.md → sonnet\n"
+                              "  actualicé: .claude/commands/atta/rounds.md → sonnet\n"
+                              "  actualicé: .claude/commands/atta/risk.md → sonnet\n"
+                              "  actualicé: .claude/commands/atta/labels.md → sonnet\n"
                               "Revisa la tabla con `atta models`.\n— Atta\n")
         for rel in DRIVER:
             self.assertEqual(self.driver_model(rel), ["sonnet"], rel)
