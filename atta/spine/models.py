@@ -88,7 +88,9 @@ DRIVER_TIER = "T0"
 # The `/atta:*` configuration menus (F2.y T2) only run `atta` commands, so they run on it too.
 DRIVER_FILES = (".claude/skills/atta/SKILL.md", ".claude/commands/atta.md",
                 ".claude/commands/atta/config.md", ".claude/commands/atta/models.md",
-                ".claude/commands/atta/profiles.md")
+                ".claude/commands/atta/profiles.md", ".claude/commands/atta/delivery.md",
+                ".claude/commands/atta/rounds.md", ".claude/commands/atta/risk.md",
+                ".claude/commands/atta/labels.md")
 PLACEHOLDER = re.compile(r"\{\{model:([A-Za-z0-9]+)\}\}")
 _MODEL_LINE = re.compile(r"^model:[^\r\n]*", re.M)
 SIGN = "— Atta"

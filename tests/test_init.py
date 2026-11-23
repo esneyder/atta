@@ -578,7 +578,11 @@ class CheckTest(InitBase):
                                                  "distinto: .claude/commands/atta.md",
                                                  "distinto: .claude/commands/atta/config.md",
                                                  "distinto: .claude/commands/atta/models.md",
-                                                 "distinto: .claude/commands/atta/profiles.md"))
+                                                 "distinto: .claude/commands/atta/profiles.md",
+                                                 "distinto: .claude/commands/atta/delivery.md",
+                                                 "distinto: .claude/commands/atta/rounds.md",
+                                                 "distinto: .claude/commands/atta/risk.md",
+                                                 "distinto: .claude/commands/atta/labels.md"))
         self.assertEqual(tree(self.root), before)
 
     def test_hand_edited_driver_model_is_reported(self):
@@ -599,8 +603,8 @@ class CheckTest(InitBase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             code = cli.main(["--project", str(self.root), "init", "--check"])
         self.assertEqual(code, 0, out.getvalue())
-        # 12 agents + SKILL.md + commands/atta.md + 3 menus + settings.json hook
-        self.assertIn(": al día (18 archivos).", out.getvalue())
+        # 12 agents + SKILL.md + commands/atta.md + 7 menus + settings.json hook
+        self.assertIn(": al día (22 archivos).", out.getvalue())
         self.assertEqual(tree(self.root), before)
 
 
@@ -608,7 +612,9 @@ class MenuCommandsTest(InitBase):
     """F2.y T2: `/atta:config` and `/atta:models` live in .claude/commands/atta/."""
 
     MENUS = (".claude/commands/atta/config.md", ".claude/commands/atta/models.md",
-             ".claude/commands/atta/profiles.md")
+             ".claude/commands/atta/profiles.md", ".claude/commands/atta/delivery.md",
+             ".claude/commands/atta/rounds.md", ".claude/commands/atta/risk.md",
+             ".claude/commands/atta/labels.md")
 
     def run_check(self):
         out, err = io.StringIO(), io.StringIO()

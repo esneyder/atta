@@ -393,7 +393,7 @@ Qué crea:
 | `.claude/agents/atta-*.md` | Los 12 agentes de la colonia, con el modelo de cada tier ya resuelto (T1 `haiku`, T2 `sonnet`, T3 `opus`) |
 | `.claude/skills/atta/SKILL.md` | El comando `/atta` |
 | `.claude/commands/atta.md` | Registra `/atta` en Claude Code |
-| `.claude/commands/atta/config.md`, `.claude/commands/atta/models.md`, `.claude/commands/atta/profiles.md` | Los menús `/atta:config`, `/atta:models` y `/atta:profiles` (ver «Menús» en la referencia de comandos); corren en T0 como `/atta` y `atta models set T0` mantiene su línea `model:` |
+| `.claude/commands/atta/config.md`, `.claude/commands/atta/models.md`, `.claude/commands/atta/profiles.md`, `delivery.md`, `rounds.md`, `risk.md`, `labels.md` | Los menús `/atta:config`, `/atta:models`, `/atta:profiles`, `/atta:delivery`, `/atta:rounds`, `/atta:risk` y `/atta:labels` (ver «Menús» en la referencia de comandos); corren en T0 como `/atta` y `atta models set T0` mantiene su línea `model:` |
 | `.claude/settings.json` | El hook PreToolUse `atta guard` para `Write\|Edit\|MultiEdit\|NotebookEdit\|Bash\|PowerShell`. Si ya tienes un `settings.json`, agrega el hook al final **sin borrar ni reordenar** lo tuyo |
 | `atta/config.json` | Configuración por defecto (sección 10), solo si falta, con `"delivery": {"auto_merge_up_to": "none"}`: en un proyecto nuevo Atta nunca mergea solo hasta que lo habilites (sección 8.2). Un `config.json` existente no se toca |
 | `atta/checks.json` | Vacío a propósito, solo si falta: el Filtro falla hasta que pongas checks reales |
@@ -1066,12 +1066,11 @@ guard le pide a esa persona que apruebe el comando exacto; en cualquier otro cas
 #### Menús `/atta:config` y `/atta:models` (dentro de Claude Code)
 
 Para cambiar la configuración sin escribir claves ni valores a mano. `atta init` instala los
-comandos en `.claude/commands/atta/` (`/atta:config`, `/atta:models` y `/atta:profiles`; coexisten con `/atta`) y
+comandos en `.claude/commands/atta/` (`/atta:config`, `/atta:models`, `/atta:profiles`, `/atta:delivery`, `/atta:rounds`, `/atta:risk` y `/atta:labels`; coexisten con `/atta`) y
 `atta init --check` los vigila como al resto.
 
 - **`/atta:config`** es la entrada única: pregunta el área (modelos, perfiles, entrega, rondas,
-  riesgo, labels) y te manda a su menú. Hoy están construidos `/atta:models` y `/atta:profiles`; las
-  otras áreas lo dicen con honestidad y siguen disponibles con `atta settings`.
+  riesgo, labels) y te manda a su menú (`AskUserQuestion` admite 4 opciones: las otras dos van por «Other»).
 - **`/atta:models`** corre `atta models --json`, te muestra «quién corre con qué» y las reglas de
   escalada, y con preguntas seleccionables (opción actual marcada, vista previa del efecto) te deja
   cambiar el modelo de un tier, el de un rol, quitar el de un rol, una cadena de fallback o
@@ -1079,6 +1078,17 @@ comandos en `.claude/commands/atta/` (`/atta:config`, `/atta:models` y `/atta:pr
 - **`/atta:profiles`** corre `atta profiles --json`, muestra cada perfil con su efecto sobre la
   configuración actual (el actual marcado) y, con una pregunta seleccionable, corre **un solo**
   `atta profiles use <perfil>` (o `atta profiles clear`) y muestra `atta models`.
+- Los menús de `atta settings` (`/atta:delivery`, `/atta:rounds`, `/atta:risk`, `/atta:labels`)
+  leen `atta settings --json`, muestran el valor vigente y el efecto, preguntan con selector
+  (la opción actual marcada), confirman y corren **un solo** `atta settings set <clave> <valor>`
+  o `atta settings reset <clave>` (solo claves editables):
+
+  | Menú | Qué cambia | Claves |
+  |---|---|---|
+  | `/atta:delivery` | Umbral de auto-merge, con la tabla de qué se mergea solo y qué va a una persona | `delivery.auto_merge_up_to` |
+  | `/atta:rounds` | Rondas por contador (`gate_rounds`, `review_rounds`), tope global y concurrencia | `max_rounds`, `max_total_rounds`, `concurrency` |
+  | `/atta:risk` | Alcance del Filtro; `risk_rules` es de solo lectura en `atta settings`: el menú la muestra y no la edita | `scope.enforce`, `scope.max_files` |
+  | `/atta:labels` | Labels de la cola y de espera. Cambiar una no renombra las labels que ya existen en GitHub: `atta init` crea la nueva (`gh label create --force`) pero no borra ni renombra las viejas. Un nombre con espacios va entre comillas dobles; si trae `$`, `;`, `&` u otro carácter que el guard no acepta, el menú muestra el comando para tu terminal | `labels.queue`, `labels.needs_info`, `labels.needs_human`, `labels.needs_review` |
 
 **Aprobación.** El menú nunca edita `atta/config.json` ni encadena comandos. El guard le pide a
 la persona que apruebe el comando exacto (`ask`) si la sesión es interactiva (`default`,
