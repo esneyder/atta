@@ -1,6 +1,6 @@
 ---
 name: atta
-description: Run Atta's colony on this repository. `/atta run [n]` works the queue of GitHub issues labelled atta through the spine (`atta next`) until each job waits or ends; `/atta settings` and `/atta models` show the configuration (changes are for the human's terminal); `/atta <text>` answers questions about jobs or records human feedback for a job.
+description: Run Atta's colony on this repository. `/atta run [n]` works the queue of GitHub issues labelled atta through the spine (`atta next`) until each job waits or ends; `/atta settings` and `/atta models` show the configuration (changes go through `/atta:config` and `/atta:models`, approved by the person); `/atta <text>` answers questions about jobs or records human feedback for a job.
 argument-hint: run [n] | <question or feedback>
 model: {{model:T0}}
 ---
@@ -138,16 +138,19 @@ after each merge.
 
 ## `/atta settings [...]` and `/atta models [...]`
 
-Configuration is changed only by the human, in their own terminal; the guard denies the
-mutating forms to every agent session, including yours.
+You never change configuration yourself. Changes go through the `/atta:config` and
+`/atta:models` menus (the person picks the options), and the guard asks the person to approve the
+exact command before it runs; in a mode that skips confirmations, or from a subagent, the guard
+denies it.
 
 - `/atta settings` or `/atta settings get <key>`: run exactly `atta settings` (or
   `atta settings get <key>`) and show its output unchanged.
 - `/atta models`: run exactly `atta models` and show its output unchanged.
-- Any change (`set`, `reset`, `unset`, `fallback`, `atta init`): do NOT run it. Reply with the exact
-  command for the human to run in their terminal, for example
-  `atta settings set delivery.auto_merge_up_to none` or `atta models set --role reina haiku`,
-  and say that Atta keeps configuration changes for humans.
+- Any change (`set`, `reset`, `unset`, `fallback`, `atta init`): do NOT run it from `/atta`.
+  Point the person to `/atta:config` (or `/atta:models` for models), or give the exact command for
+  their terminal, for example `atta settings set delivery.auto_merge_up_to none` or
+  `atta models set --role reina haiku`. Claude Code asks them to approve it; the `/atta` driver
+  itself never changes configuration.
 
 ## `/atta <text>`
 

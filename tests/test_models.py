@@ -42,7 +42,8 @@ Fallback por cuota, rate limit o red: ninguno (`atta models fallback <tier> <mod
 Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o `atta models set --role <rol> <modelo>`.
 — Atta
 """
-DRIVER = (".claude/commands/atta.md", ".claude/skills/atta/SKILL.md")
+DRIVER = (".claude/commands/atta.md", ".claude/skills/atta/SKILL.md",
+          ".claude/commands/atta/config.md", ".claude/commands/atta/models.md")
 BAD_MODEL = ("«gpt-4» no es un modelo válido para claude-code: usa haiku, sonnet u opus, o un id "
              "completo que cumpla claude-[a-z0-9.-]+ (p. ej. claude-sonnet-4-5). No cambié nada.\n")
 
@@ -203,6 +204,8 @@ class SetTest(ModelsBase):
                               "  sin cambios: 12 agentes\n"
                               "  actualicé: .claude/skills/atta/SKILL.md → sonnet\n"
                               "  actualicé: .claude/commands/atta.md → sonnet\n"
+                              "  actualicé: .claude/commands/atta/config.md → sonnet\n"
+                              "  actualicé: .claude/commands/atta/models.md → sonnet\n"
                               "Revisa la tabla con `atta models`.\n— Atta\n")
         for rel in DRIVER:
             self.assertEqual(self.driver_model(rel), ["sonnet"], rel)
@@ -702,6 +705,93 @@ class FallbackResolveTest(unittest.TestCase):
         tab = models.table({"models": {"claude-code": {"fallbacks": {"T3": ["sonnet"]}}}})
         self.assertEqual(tab.chain("T3"), ["sonnet"])
         self.assertEqual(models.table({}).chain("T3"), [])
+
+
+class JsonStateTest(ModelsBase):
+    """`atta models --json` (F2.y T2): read-only state for the /atta:models menu."""
+
+    def state(self, *extra):
+        code, out, err = self.atta("models", "--json", *extra)
+        self.assertEqual((code, err), (0, ""), out)
+        return json.loads(out), out
+
+    def test_fresh_project_state(self):
+        data, out = self.state()
+        self.assertEqual(sorted(data), ["driver", "fallbacks", "ladder_round", "roles", "root",
+                                        "routing_matrix", "runtime", "tiers", "valid_models"])
+        self.assertEqual(data["runtime"], "claude-code")
+        self.assertEqual(data["root"], str(self.root))
+        self.assertEqual(data["valid_models"], ["haiku", "sonnet", "opus"])
+        self.assertEqual(data["driver"], {"model": "haiku", "tier": "T0"})
+        self.assertEqual(data["ladder_round"], 2)
+        self.assertEqual(data["tiers"], {
+            "T0": {"default": "haiku", "model": "haiku", "origin": "fábrica"},
+            "T1": {"default": "haiku", "model": "haiku", "origin": "fábrica"},
+            "T2": {"default": "sonnet", "model": "sonnet", "origin": "fábrica"},
+            "T3": {"default": "opus", "model": "opus", "origin": "fábrica"}})
+        self.assertEqual(sorted(data["roles"]), sorted(ROLES))
+        self.assertEqual(data["roles"]["guia"], {
+            "escalates_to": None, "model": "sonnet", "origin": "tier", "override": None,
+            "tier": "T2"})
+        self.assertEqual(data["roles"]["vigia"]["origin"], "regla ≠ guía")
+        self.assertEqual(data["roles"]["vigia"]["model"], "haiku")
+        self.assertEqual(data["roles"]["reina"]["escalates_to"], "opus")
+        self.assertEqual(data["roles"]["rastreador"]["tier"], "T3")
+        self.assertEqual(data["fallbacks"], {"T0": [], "T1": [], "T2": [], "T3": []})
+        self.assertEqual(data["routing_matrix"], {"enabled": True, "stages": {
+            "guia": {"high": "sonnet", "low": "haiku", "medium": "sonnet"},
+            "jardinera-ux": {"high": "sonnet", "low": "haiku", "medium": "sonnet"},
+            "cortadora": {"high": "opus", "low": "sonnet", "medium": "sonnet"},
+            "reina": {"high": "opus", "low": "sonnet", "medium": "sonnet"},
+            "soldado": {"high": "opus", "low": "sonnet", "medium": "sonnet"}}})
+        self.assertEqual(out, json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False)
+                         + "\n")
+
+    def test_overrides_fallbacks_and_matrix_off(self):
+        cfg = json.loads(self.cfg_path.read_text(encoding="utf-8"))
+        cfg["routing_matrix"] = False
+        cfg["models"] = {"claude-code": {"tiers": {"T2": "haiku"}, "roles": {"soldado": "opus"},
+                                         "fallbacks": {"T3": ["sonnet", "haiku"]}}}
+        self.cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+        data, _ = self.state()
+        self.assertEqual(data["tiers"]["T2"], {"default": "sonnet", "model": "haiku",
+                                               "origin": "proyecto"})
+        self.assertEqual(data["roles"]["soldado"], {
+            "escalates_to": "opus", "model": "opus", "origin": "rol", "override": "opus",
+            "tier": "T2"})
+        self.assertEqual(data["roles"]["guia"]["model"], "haiku")
+        self.assertEqual(data["roles"]["vigia"]["origin"], "regla ≠ guía")
+        self.assertEqual(data["roles"]["vigia"]["model"], "opus")
+        self.assertEqual(data["fallbacks"], {"T0": [], "T1": [], "T2": [],
+                                             "T3": ["sonnet", "haiku"]})
+        self.assertEqual(data["routing_matrix"], {"enabled": False, "stages": {}})
+        self.assertEqual(data["ladder_round"], 3)
+
+    def test_is_read_only(self):
+        before = self.files()
+        self.assertEqual(self.state()[0]["runtime"], "claude-code")
+        self.assertEqual(self.files(), before)
+
+    def test_json_with_an_action_is_refused_without_writing(self):
+        before = self.files()
+        code, out, err = self.atta("models", "--json", "set", "T2", "haiku")
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(err, "--json solo se usa sin acción (atta models --json). "
+                              "No cambié nada.\n")
+        self.assertEqual(self.files(), before)
+
+    def test_help_documents_json(self):
+        code, out, err = self.atta("models", "--help")
+        self.assertEqual(code, 0)
+        self.assertIn("--json", out)
+        self.assertIn("solo lectura", out)
+
+    def test_text_output_is_unchanged(self):
+        # PRESERVE: the table of `atta models` is the same with the new flag defined.
+        code, out, err = self.atta("models")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, f"Modelos de Atta en {self.root} (runtime claude-code):\n"
+                              + DEFAULT_TABLE)
 
 
 if __name__ == "__main__":

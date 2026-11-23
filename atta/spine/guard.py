@@ -3,8 +3,9 @@
 Claude Code runs `atta guard` before every Write/Edit/MultiEdit/NotebookEdit/Bash/PowerShell call
 and passes the hook JSON on stdin (`tool_name`, `tool_input`, `cwd`, ...; extra fields ignored).
 Allowed: prints nothing, exit 0. Denied: prints the PreToolUse decision JSON
-(`permissionDecision: deny`, reason in Spanish signed «Atta»), exit 0. Malformed input, an
-unreadable project config or any internal error: denied (fail closed).
+(`permissionDecision: deny`, reason in Spanish signed «Atta»), exit 0. The only `ask` is for
+Atta's configuration commands (S4, below). Malformed input, an unreadable project config or any
+internal error: denied (fail closed).
 
 Project root: `--project`, then `$ATTA_PROJECT` (both taken as given), else the hook `cwd`
 resolved like every Atta command (git top level, then the folder itself); when that lands on a job
@@ -89,6 +90,18 @@ Denied:
   `--jobs-dir Y`, `=` forms and argparse prefixes) and `models --runtime X` before the action.
   Read-only forms (`atta settings`, `atta settings get <k>`, `atta models [--runtime X]`) and
   every other subcommand stay allowed;
+  the reason always carries the exact command (cut at 400 characters) so the human can run it in
+  their terminal. F2.y (S4): the answer is `ask` (Claude Code asks the user to approve that exact
+  command) instead of `deny` only when ALL hold: the hook `permission_mode` is `default`,
+  `acceptEdits` or `plan` (missing, non-string or any other value, including `bypassPermissions`,
+  `dontAsk` and `auto`, fails closed to `deny`); `agent_id` is absent or blank (a subagent, or a
+  non-string `agent_id`, always gets `deny`); and the command is ONE plain Atta invocation: its
+  first word is Atta itself and it has no `;`, `&`, `|`, `<`, `>`, parentheses, braces, backticks,
+  `$`, backslash, newline (PowerShell: no `@` either), so no chaining, pipes, subshells,
+  substitutions, heredocs, redirections, variables, `env`/`sudo`/`timeout`/`nohup`/`command`
+  wrappers or `bash -c`/`eval`/`cmd /c`. Every other rule keeps `deny`; `ask` is never given for
+  a non-config command. `decide()` returns `(kind, reason)`; `evaluate()` returns the reason for
+  both kinds, so a non-None result is never an allow;
 - orchestrator-only Atta commands (F4 T4): `atta model-failed` (any detected form, see above)
   when the hook payload carries a non-empty `agent_id`, which Claude Code sets only for tool
   calls inside a subagent. The /atta driver (main session, no `agent_id`) runs it; a payload
@@ -262,20 +275,39 @@ _ATTA_DRIVER_ONLY = {"model-failed"}
 _PY_VALUED = {"-X", "-W"}
 
 
+# F2.y (S4): `permission_mode` values where Claude Code prompts the user, so an `ask` is answered
+# by a person. Anything else (bypassPermissions, dontAsk, auto, missing, unknown) fails closed.
+ASK_MODES = ("default", "acceptEdits", "plan")
+# A command with any of these is not a single plain invocation (chaining, pipes, subshells,
+# substitutions, heredocs, redirections, backslash escapes, variables, newlines) nor what the
+# person approves verbatim (globs `* ? [`, `~` and `!` expansion, `#` comments): the shell
+# would run something else (review R3). PowerShell also expands `@` (splatting).
+_NOT_PLAIN_BASH = re.compile(r"[;&|<>(){}`$\\\r\n*?\[~!#]")
+_NOT_PLAIN_PS = re.compile(r"[;&|<>(){}`$@\r\n*?\[~!#]")
+# The `ask` prompt shows the command whole; a longer one is shown cut, so it is denied.
+MAX_SHOWN_COMMAND = 400
+
+
 class Deny(Exception):
     """The tool call is refused; the message is the reason shown to the agent."""
 
 
+class Ask(Deny):
+    """Not refused outright: Claude Code must ask the user to approve this exact command."""
+
+
 # ---------------------------------------------------------------- entry points
 
-def decision(reason: str) -> dict:
-    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+def decision(reason: str, kind: str = "deny") -> dict:
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": kind,
                                    "permissionDecisionReason": f"{reason} — {SIGNATURE}"}}
 
 
 def run(data, out, *, root=None, explicit=None, environ=None) -> int:
-    """Decide on hook input `data` (str or bytes); write the deny JSON to `out`. Always 0."""
+    """Decide on hook input `data` (str or bytes); write the decision JSON (deny or ask) to
+    `out`. Always 0."""
     reason = None
+    kind = "deny"
     try:
         if isinstance(data, bytes):
             try:
@@ -286,24 +318,72 @@ def run(data, out, *, root=None, explicit=None, environ=None) -> int:
             hook = json.loads(data)
         except (TypeError, ValueError):
             raise Deny("Entrada del hook inválida: no es JSON. Atta bloquea por seguridad.") from None
-        reason = evaluate(hook, root=root, explicit=explicit, environ=environ)
+        got = decide(hook, root=root, explicit=explicit, environ=environ)
+        if got:
+            kind, reason = got
     except Deny as exc:
         reason = str(exc)
     except Exception as exc:  # fail closed on any unexpected error
         reason = f"Error interno del guard ({type(exc).__name__}: {exc}). Atta bloquea por seguridad."
     if reason:
-        out.write(json.dumps(decision(reason)) + "\n")
+        out.write(json.dumps(decision(reason, kind)) + "\n")
         out.flush()
     return 0
 
 
-def evaluate(hook, *, root=None, explicit=None, environ=None) -> str | None:
-    """Deny reason for one PreToolUse hook payload, or None when the call is allowed."""
+def decide(hook, *, root=None, explicit=None, environ=None) -> tuple[str, str] | None:
+    """`("deny" | "ask", reason)` for one PreToolUse hook payload, or None when it is allowed."""
     try:
         _evaluate(hook, root, explicit, environ)
+    except Ask as exc:
+        return "ask", str(exc)
     except Deny as exc:
-        return str(exc)
+        return "deny", str(exc)
     return None
+
+
+def evaluate(hook, *, root=None, explicit=None, environ=None) -> str | None:
+    """Reason for one PreToolUse hook payload that is denied OR must be asked (see `decide` for
+    which), or None when the call is allowed."""
+    got = decide(hook, root=root, explicit=explicit, environ=environ)
+    return got[1] if got else None
+
+
+# The only launchers that may get `ask` (S4): the installed command found on PATH, or a bare
+# Python running the installed module. A launcher given by path (`./atta.sh`, `/x/atta`,
+# `x/atta.py`) could be a file an agent wrote, so it is denied (F2.y T1, A1).
+_PLAIN_LAUNCHERS = frozenset(("atta", "atta.exe", "atta.cmd"))
+_PLAIN_PYTHON = re.compile(r"(?:python(?:3(?:\.[0-9]+)?)?|py)(?:\.exe)?", re.IGNORECASE)
+
+
+def _is_plain_atta(command: str, powershell: bool) -> bool:
+    """True for exactly one Atta invocation with nothing around it: no chaining, pipes,
+    subshells, substitutions, heredocs, redirections, variables or wrappers (`env`, `timeout`,
+    `nohup`, `sudo`, `bash -c`, ...), no longer than MAX_SHOWN_COMMAND (the prompt shows it
+    whole), and the first word is a bare launcher: `atta`, `atta.exe`, `atta.cmd`, or a bare
+    `python`/`python3`/`py` running `-m atta.spine.cli`. No path, no `VAR=value` prefix."""
+    if len(command) > MAX_SHOWN_COMMAND:
+        return False
+    if (_NOT_PLAIN_PS if powershell else _NOT_PLAIN_BASH).search(command):
+        return False
+    words = _tokenize(command, powershell)
+    if not words:
+        return False
+    first = words[0]
+    if "/" in first or "\\" in first or _ASSIGN.match(first):
+        return False
+    if first.lower() in _PLAIN_LAUNCHERS:
+        return True
+    if not _PLAIN_PYTHON.fullmatch(first) or _atta_via_interpreter(words[1:]) is None:
+        return False
+    rest = words[1:]
+    return any(rest[i] == "-m" and rest[i + 1] == "atta.spine.cli"
+               for i in range(len(rest) - 1))
+
+
+def _shown_command(command: str) -> str:
+    command = command.strip()
+    return command if len(command) <= MAX_SHOWN_COMMAND else command[:MAX_SHOWN_COMMAND] + "…"
 
 
 def _evaluate(hook, root, explicit, environ) -> None:
@@ -340,6 +420,13 @@ def _evaluate(hook, root, explicit, environ) -> None:
     agent_id = hook.get("agent_id")
     ctx = _Ctx(root, cfg, rules, base, environ,
                subagent=isinstance(agent_id, str) and bool(agent_id.strip()))
+    ctx.command = _shown_command(command)
+    # S4: `ask` only for a person at an interactive prompt: main session (agent_id absent or
+    # blank; any other value fails closed) running a single plain Atta invocation.
+    main = agent_id is None or (isinstance(agent_id, str) and not agent_id.strip())
+    ctx.ask_ok = (main and hook.get("permission_mode") in ASK_MODES
+                  and isinstance(hook.get("permission_mode"), str)
+                  and _is_plain_atta(command.strip(), tool == "PowerShell"))
     check_command(command, ctx, powershell=tool == "PowerShell")
 
 
@@ -362,7 +449,9 @@ def register(subparsers) -> None:
     p = subparsers.add_parser(
         "guard", help="Hook PreToolUse de Claude Code: bloquea escrituras y comandos peligrosos.",
         description="Lee el JSON del hook PreToolUse por stdin. Si permite, no imprime nada; si "
-                    "bloquea, imprime la decisión deny. Siempre sale 0.")
+                    "bloquea, imprime la decisión deny; para un comando de configuración de "
+                    "Atta en una sesión interactiva imprime ask (pide tu aprobación). "
+                    "Siempre sale 0.")
     p.set_defaults(func=cmd_guard)
 
 
@@ -524,6 +613,8 @@ class _Ctx:
         self.root, self.cfg, self.rules, self.cwd = root, cfg, rules, cwd
         self.environ = environ
         self.subagent = subagent
+        self.command = ""
+        self.ask_ok = False
 
 
 def deny_rules(cfg: dict):
@@ -1069,10 +1160,14 @@ def _check_words(words: list[str], ctx: _Ctx, powershell: bool, depth: int) -> N
     elif name in HTTP_CLIENTS:
         _check_http(name, args)
     elif name in ATTA_NAMES:
+        if ctx.ask_ok:  # A3: a project deny rule beats the `ask` of a config command
+            _check_deny_rules(name, args, ctx)
         _check_atta(args, ctx)
     elif _is_interpreter(name):
         atta_args = _atta_via_interpreter(args)
         if atta_args is not None:
+            if ctx.ask_ok:
+                _check_deny_rules(name, args, ctx)
             _check_atta(atta_args, ctx)
     _check_deny_rules(name, args, ctx)
 
@@ -1115,8 +1210,13 @@ def _check_atta(args: list[str], ctx: "_Ctx | None" = None) -> None:
         if action not in actions:
             return
         shown += f" {action}"
+    command = ctx.command if ctx is not None else ""
+    if ctx is not None and ctx.ask_ok:
+        raise Ask(f"Atta pide tu aprobación para cambiar la configuración ({shown}). Comando "
+                  f"exacto: {command}. Apruébalo solo si lo pediste tú; si no, recházalo y corre "
+                  "ese comando en tu terminal.")
     raise Deny(f"Atta no deja que un agente cambie su propia configuración ({shown}). Corre ese "
-               "comando tú en tu terminal.")
+               f"comando tú en tu terminal. Comando: {command}")
 
 
 def _check_atta_script(args: list[str], ctx: "_Ctx | None" = None) -> None:
