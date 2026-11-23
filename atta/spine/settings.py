@@ -62,6 +62,8 @@ def _summary(setting: Setting, value) -> str:
         if not value:
             return "sin precios"
         return f"{len(value)} modelo{'' if len(value) == 1 else 's'}"
+    if setting.key == "profile":
+        return value or "ninguno"
     return "de fábrica" if value == setting.default else "propio"
 
 

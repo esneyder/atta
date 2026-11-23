@@ -30,7 +30,8 @@ directa, sin adornos. No cambias nada tú: cada área tiene su propio menú `/at
    como esa área.)
 2. Según la respuesta:
    - **Modelos** → dile que escriba `/atta:models`.
-   - **Perfiles**, **Entrega**, **Rondas**, **Riesgo**, **Labels** → todavía no está construido:
+   - **Perfiles** → dile que escriba `/atta:profiles`.
+   - **Entrega**, **Rondas**, **Riesgo**, **Labels** → todavía no está construido:
      dilo con honestidad («Atta: el menú de <área> aún no está listo.»). Mientras tanto, ofrece la
      vista de solo lectura `atta settings` y, para cambiar, el comando de terminal
      `atta settings set <clave> <valor>` (por ejemplo `atta settings set max_rounds 4`), que la

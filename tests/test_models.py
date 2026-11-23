@@ -43,7 +43,8 @@ Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o `atta models set --role <r
 — Atta
 """
 DRIVER = (".claude/commands/atta.md", ".claude/skills/atta/SKILL.md",
-          ".claude/commands/atta/config.md", ".claude/commands/atta/models.md")
+          ".claude/commands/atta/config.md", ".claude/commands/atta/models.md",
+          ".claude/commands/atta/profiles.md")
 BAD_MODEL = ("«gpt-4» no es un modelo válido para claude-code: usa haiku, sonnet u opus, o un id "
              "completo que cumpla claude-[a-z0-9.-]+ (p. ej. claude-sonnet-4-5). No cambié nada.\n")
 
@@ -206,6 +207,7 @@ class SetTest(ModelsBase):
                               "  actualicé: .claude/commands/atta.md → sonnet\n"
                               "  actualicé: .claude/commands/atta/config.md → sonnet\n"
                               "  actualicé: .claude/commands/atta/models.md → sonnet\n"
+                              "  actualicé: .claude/commands/atta/profiles.md → sonnet\n"
                               "Revisa la tabla con `atta models`.\n— Atta\n")
         for rel in DRIVER:
             self.assertEqual(self.driver_model(rel), ["sonnet"], rel)
@@ -717,8 +719,10 @@ class JsonStateTest(ModelsBase):
 
     def test_fresh_project_state(self):
         data, out = self.state()
-        self.assertEqual(sorted(data), ["driver", "fallbacks", "ladder_round", "roles", "root",
-                                        "routing_matrix", "runtime", "tiers", "valid_models"])
+        self.assertEqual(sorted(data), ["driver", "fallbacks", "ladder_round", "profile",
+                                        "roles", "root", "routing_matrix", "runtime", "tiers",
+                                        "valid_models"])
+        self.assertIsNone(data["profile"])
         self.assertEqual(data["runtime"], "claude-code")
         self.assertEqual(data["root"], str(self.root))
         self.assertEqual(data["valid_models"], ["haiku", "sonnet", "opus"])

@@ -9,7 +9,7 @@ import support  # noqa: F401
 from atta.spine import guard, project
 
 COMMANDS = project.TEMPLATES_DIR / "claude" / "commands"
-MENUS = ("config", "models")
+MENUS = ("config", "models", "profiles")
 FENCE = re.compile(r"^[ \t]*```[^\n]*\n(.*?)^[ \t]*```", re.M | re.S)
 
 
@@ -71,7 +71,34 @@ class MenuTemplatesTest(unittest.TestCase):
         for area in ("Modelos", "Perfiles", "Entrega", "Rondas", "Riesgo", "Labels"):
             self.assertIn(area, text)
         self.assertIn("/atta:models", text)
+        self.assertIn("/atta:profiles", text)
+        # Perfiles is built now: only the areas still pending say «aún no está listo»
+        self.assertNotRegex(text, r"\*\*Perfiles\*\*[^\n]*todavía no está construido")
+        pending = text.split("Perfiles** → dile que escriba `/atta:profiles`.", 1)[1]
+        self.assertIn("**Entrega**, **Rondas**, **Riesgo**, **Labels** → todavía no", pending)
         self.assertIn("aún no está listo", text)
+
+    def test_profiles_menu_runs_the_json_and_every_change_form(self):
+        lines = commands_in(self.read("profiles"))
+        self.assertEqual(lines[0], "atta profiles --json")
+        for form in ("atta profiles use equilibrado", "atta profiles use economico",
+                     "atta profiles use calidad", "atta profiles clear"):
+            self.assertIn(form, lines)
+        self.assertEqual(len(lines), 5)
+
+    def test_profiles_menu_rules_preview_and_delivery_warning(self):
+        text = self.read("profiles")
+        self.assertIn("AskUserQuestion", text)
+        self.assertIn("Nunca edites `atta/config.json`", text)
+        self.assertIn("UN comando", text)
+        self.assertIn("(actual)", text)
+        self.assertIn("efecto", text)
+        self.assertIn("delivery.auto_merge_up_to", text)
+        self.assertIn("ganan sobre el perfil", text)
+
+    def test_profiles_menu_is_installed_with_the_driver_files(self):
+        from atta.spine import models
+        self.assertIn(".claude/commands/atta/profiles.md", models.DRIVER_FILES)
 
 
 if __name__ == "__main__":

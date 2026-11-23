@@ -393,7 +393,7 @@ Qué crea:
 | `.claude/agents/atta-*.md` | Los 12 agentes de la colonia, con el modelo de cada tier ya resuelto (T1 `haiku`, T2 `sonnet`, T3 `opus`) |
 | `.claude/skills/atta/SKILL.md` | El comando `/atta` |
 | `.claude/commands/atta.md` | Registra `/atta` en Claude Code |
-| `.claude/commands/atta/config.md`, `.claude/commands/atta/models.md` | Los menús `/atta:config` y `/atta:models` (ver «Menús» en la referencia de comandos); corren en T0 como `/atta` y `atta models set T0` mantiene su línea `model:` |
+| `.claude/commands/atta/config.md`, `.claude/commands/atta/models.md`, `.claude/commands/atta/profiles.md` | Los menús `/atta:config`, `/atta:models` y `/atta:profiles` (ver «Menús» en la referencia de comandos); corren en T0 como `/atta` y `atta models set T0` mantiene su línea `model:` |
 | `.claude/settings.json` | El hook PreToolUse `atta guard` para `Write\|Edit\|MultiEdit\|NotebookEdit\|Bash\|PowerShell`. Si ya tienes un `settings.json`, agrega el hook al final **sin borrar ni reordenar** lo tuyo |
 | `atta/config.json` | Configuración por defecto (sección 10), solo si falta, con `"delivery": {"auto_merge_up_to": "none"}`: en un proyecto nuevo Atta nunca mergea solo hasta que lo habilites (sección 8.2). Un `config.json` existente no se toca |
 | `atta/checks.json` | Vacío a propósito, solo si falta: el Filtro falla hasta que pongas checks reales |
@@ -1065,17 +1065,20 @@ guard le pide a esa persona que apruebe el comando exacto; en cualquier otro cas
 
 #### Menús `/atta:config` y `/atta:models` (dentro de Claude Code)
 
-Para cambiar la configuración sin escribir claves ni valores a mano. `atta init` instala los dos
-comandos en `.claude/commands/atta/` (`/atta:config` y `/atta:models`; coexisten con `/atta`) y
+Para cambiar la configuración sin escribir claves ni valores a mano. `atta init` instala los
+comandos en `.claude/commands/atta/` (`/atta:config`, `/atta:models` y `/atta:profiles`; coexisten con `/atta`) y
 `atta init --check` los vigila como al resto.
 
 - **`/atta:config`** es la entrada única: pregunta el área (modelos, perfiles, entrega, rondas,
-  riesgo, labels) y te manda a su menú. Hoy solo `/atta:models` está construido; las otras áreas
-  lo dicen con honestidad y siguen disponibles con `atta settings`.
+  riesgo, labels) y te manda a su menú. Hoy están construidos `/atta:models` y `/atta:profiles`; las
+  otras áreas lo dicen con honestidad y siguen disponibles con `atta settings`.
 - **`/atta:models`** corre `atta models --json`, te muestra «quién corre con qué» y las reglas de
   escalada, y con preguntas seleccionables (opción actual marcada, vista previa del efecto) te deja
   cambiar el modelo de un tier, el de un rol, quitar el de un rol, una cadena de fallback o
   restablecer. Luego corre **un solo** comando simple `atta models ...` y muestra la tabla nueva.
+- **`/atta:profiles`** corre `atta profiles --json`, muestra cada perfil con su efecto sobre la
+  configuración actual (el actual marcado) y, con una pregunta seleccionable, corre **un solo**
+  `atta profiles use <perfil>` (o `atta profiles clear`) y muestra `atta models`.
 
 **Aprobación.** El menú nunca edita `atta/config.json` ni encadena comandos. El guard le pide a
 la persona que apruebe el comando exacto (`ask`) si la sesión es interactiva (`default`,
@@ -1088,13 +1091,57 @@ sigue sin cambiar configuración.
 - `atta settings --json`: `{"root", "settings": [...]}`; cada entrada trae `key`, `type`
   (`str`, `int`, `bool`, `enum`, `list`, `summary`), `value`, `default`, `changed`, `choices`
   (solo `enum`), `editable`, `how` (dónde se cambia una clave de solo lectura) y `description`.
-- `atta models --json`: `runtime`, `tiers` (`model`, `default`, `origin` `fábrica`/`proyecto`),
-  `roles` (por rol: `tier`, `model`, `origin` `tier`/`rol`/`regla ≠ guía`, `override`,
+- `atta models --json`: `runtime`, `profile` (el perfil del proyecto o `null`), `tiers` (`model`,
+  `default`, `origin` `fábrica`/`perfil`/`proyecto`),
+  `roles` (por rol: `tier`, `model`, `origin` `tier`/`perfil`/`rol`/`regla ≠ guía`, `override`,
   `escalates_to`), `routing_matrix` (`enabled` y, si está activa, `stages` con el modelo en riesgo
   `low`, `medium` y `high`), `fallbacks` (cadena efectiva por tier), `ladder_round`, `driver`
   y `valid_models`.
 
+- `atta profiles --json`: `current`, `delivery` (el umbral vigente), `profiles` (por id:
+  `description`, `models`, `delivery`, `current` y `effect` con `tiers`, `agents`, `delivery`,
+  `kept_overrides` y `role_overrides` frente a la configuración actual), `root` y `runtime`.
+
 Con una acción (`atta models --json set ...`) `--json` sale `2` sin escribir nada.
+
+#### `profiles` · `profiles show <perfil>` · `profiles use <perfil>` · `profiles clear`
+
+Perfiles de fábrica (S2, S6 de F2.y): conjuntos guardados que fijan los modelos por tier y el umbral
+de entrega de una vez. Atta los trae (`atta/templates/claude/profiles.json`, validado como
+`models.json`); cada proyecto elige uno con la clave opcional `profile` de `atta/config.json`
+(ausente = sin perfil = modelos de fábrica). El nombre admite acentos y mayúsculas (`Económico` es
+`economico`); lo guardado es el id sin acentos.
+
+| Perfil | T0 | T1 | T2 | T3 | `delivery.auto_merge_up_to` |
+|---|---|---|---|---|---|
+| `economico` | haiku | haiku | haiku | sonnet | `low` |
+| `equilibrado` | haiku | haiku | sonnet | opus | `low` |
+| `calidad` | haiku | sonnet | opus | opus | `none` |
+
+- `equilibrado` usa los modelos de fábrica (`models.json`): elegirlo no cambia ningún modelo. Su
+  entrega es prudente (`low`): Atta solo mergea sola los jobs de riesgo bajo. Ningún perfil
+  mergea solo por encima de `low`.
+- `calidad` nunca mergea sola (todo PR espera tu revisión) y ningún tier usa un modelo más barato
+  que el de fábrica.
+- `economico` baja T2 a haiku, pero **T3 nunca baja de sonnet** (fuerte donde un error es caro:
+  escalada, seguridad, Reina en riesgo alto) y solo mergea sola riesgo `low` o `none`.
+
+`atta profiles` lista los perfiles con el actual marcado (`*`); `show <perfil>` previsualiza qué
+cambiaría frente a la configuración actual (tiers, agentes, entrega, y qué overrides siguen
+ganando); `use <perfil>` guarda el perfil y sincroniza la línea `model:` de los agentes como
+`atta models set`; `clear` quita `profile`. Un perfil inexistente sale `2` sin escribir nada.
+
+**Precedencia (S6).** Fábrica < perfil < tus overrides de `atta models` (por tier y por rol):
+`atta models` muestra el origen `perfil` en el tier que decidió el perfil y `proyecto` o `rol` en
+lo que tú sobrescribiste. **Entrega:** el pipeline solo lee `delivery.auto_merge_up_to`, así que
+`profiles use` lo **escribe explícito** junto a `profile` y su salida dice `antes → después`; un
+perfil nunca pisa en silencio un umbral ya escrito, porque la vista previa (`show`, el menú) lo
+muestra antes y el comando exacto lo aprueba la persona. Después, un `atta settings set
+delivery.auto_merge_up_to ...` posterior gana; `clear` deja la entrega como está.
+
+Como `atta models set`, `profiles use` y `profiles clear` los niega el guard a los agentes y piden
+aprobación en la sesión interactiva (sección 14.2). `atta settings` muestra `profile` como clave de
+solo lectura (se cambia con `atta profiles`).
 
 #### `save-artifact <job> intake --from-reply <archivo>`
 

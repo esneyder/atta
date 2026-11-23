@@ -18,7 +18,8 @@ KEYS = ("integration_branch", "forbidden_branches", "branch_prefix", "max_rounds
         "max_total_rounds", "concurrency", "merge_method", "labels.queue", "labels.needs_info",
         "labels.needs_human", "labels.needs_review", "protected_paths",
         "delivery.auto_merge_up_to", "scope.enforce", "scope.max_files",
-        "guard.deny_commands", "prices_usd_per_mtok", "routing", "risk_rules", "models")
+        "guard.deny_commands", "prices_usd_per_mtok", "routing", "risk_rules", "models",
+        "profile")
 NOT_KEY = "La clave «foo» no existe; mira las claves con `atta settings`."
 FLAG = Setting("experimental.flag", "bool", False, "Bandera de prueba.")
 
@@ -70,8 +71,10 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual((by["scope.enforce"].type, by["scope.enforce"].default), ("bool", False))
         self.assertEqual((by["scope.max_files"].type, by["scope.max_files"].default), ("int", 12))
         self.assertIn("FILES:", by["scope.enforce"].description)
-        for key in ("prices_usd_per_mtok", "routing", "risk_rules", "models"):
+        for key in ("prices_usd_per_mtok", "routing", "risk_rules", "models", "profile"):
             self.assertFalse(by[key].editable, key)
+        self.assertEqual((by["profile"].default, by["profile"].how),
+                         (None, "usa atta profiles"))
         for s in reg:
             self.assertTrue(s.description, s.key)
 
@@ -94,6 +97,7 @@ class TableTest(SettingsBase):
         self.assertRegex(out, r"(?m)^risk_rules\s+de fábrica\s+de fábrica\s+.*edítalo en "
                               r"atta/config\.json")
         self.assertRegex(out, r"(?m)^models\s+.*usa atta models")
+        self.assertRegex(out, r"(?m)^profile\s+ninguno\s+ninguno\s+.*usa atta profiles")
         self.assertNotRegex(out, r" \*( |$)")
         self.assertNotIn("distinto del valor por defecto", out)
         self.assertTrue(out.endswith("— Atta\n"), out)
@@ -273,7 +277,8 @@ class RefusalTest(SettingsBase):
     def test_read_only_keys(self):
         hint = {"prices_usd_per_mtok": "edítalo en atta/config.json",
                 "routing": "edítalo en atta/config.json",
-                "risk_rules": "edítalo en atta/config.json", "models": "usa atta models"}
+                "risk_rules": "edítalo en atta/config.json", "models": "usa atta models",
+                "profile": "usa atta profiles"}
         for key, how in hint.items():
             with self.subTest(key=key):
                 msg = f"La clave «{key}» es de solo lectura en atta settings: {how}."
@@ -358,6 +363,8 @@ class JsonStateTest(SettingsBase):
         self.assertEqual(by["labels.queue"]["value"], "atta")
         self.assertEqual(by["models"]["editable"], False)
         self.assertEqual(by["models"]["how"], "usa atta models")
+        self.assertEqual((by["profile"]["editable"], by["profile"]["how"], by["profile"]["value"]),
+                         (False, "usa atta profiles", None))
         self.assertEqual(by["routing"]["type"], "summary")
 
     def test_changed_values_are_marked(self):

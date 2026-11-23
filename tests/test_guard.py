@@ -930,6 +930,10 @@ class ConfigCommandTests(GuardBase):
             ("atta models --runtime claude-code set T1 opus", "atta models set"),
             ("atta models --runtime=claude-code reset", "atta models reset"),
             ("atta models set --runtime claude-code T3 sonnet", "atta models set"),
+            ("atta profiles use calidad", "atta profiles use"),
+            ("atta profiles use Económico", "atta profiles use"),
+            ("atta profiles clear", "atta profiles clear"),
+            ("atta --project /x profiles use equilibrado", "atta profiles use"),
             ("atta init", "atta init"),
             ("atta init --force", "atta init"),
             ("atta init --force --no-github --runtime claude-code", "atta init"),
@@ -1023,7 +1027,9 @@ class ConfigCommandTests(GuardBase):
         for command in ("atta settings", "atta settings get delivery.auto_merge_up_to",
                         "atta settings get set", "atta settings --help", "atta models",
                         "atta models --runtime claude-code", "atta models --runtime=claude-code",
-                        "atta models -h", "atta --project /x models",
+                        "atta models -h", "atta --project /x models", "atta profiles",
+                        "atta profiles --json", "atta profiles show calidad",
+                        "atta --project /x profiles --json", "atta profiles -h",
                         "atta --project /x --jobs-dir y settings get max_rounds",
                         "atta.exe models", "./atta.sh settings",
                         "python -m atta.spine.cli settings get max_rounds",
@@ -1097,6 +1103,10 @@ class AskConfigCommandTests(GuardBase):
         ("atta models --runtime=claude-code reset", "atta models reset"),
         ("atta init", "atta init"),
         ("atta init --force --no-github --runtime claude-code", "atta init"),
+        ("atta profiles use calidad", "atta profiles use"),
+        ("atta profiles clear", "atta profiles clear"),
+        ("atta.exe profiles use economico", "atta profiles use"),
+        ("python -m atta.spine.cli profiles clear", "atta profiles clear"),
         ("atta.exe settings set max_rounds 9", "atta settings set"),
         ("atta.cmd models reset", "atta models reset"),
         ("ATTA.EXE init", "atta init"),
@@ -1135,7 +1145,12 @@ class AskConfigCommandTests(GuardBase):
         "{ atta init; }", "bash <<'EOF'\natta models reset\nEOF", "cat <<EOF\n$(atta init)\nEOF",
         "atta init > /dev/null", "atta init 2>&1", "atta init < /dev/null", "atta init <<< x",
         "atta models set T2 $MODEL", "atta init\natta models reset", "atta init #x; ls",
+        "atta profiles use calidad; ls", "cd x && atta profiles clear", "sudo atta profiles use calidad",
+        "atta profiles use $P", "atta profiles use calidad | cat",
     )
+    PROFILES = (("atta profiles use calidad", "atta profiles use"),
+                ("atta profiles use Económico", "atta profiles use"),
+                ("atta profiles clear", "atta profiles clear"))
 
     def hook_with(self, command, mode="default", agent_id=None, tool="Bash"):
         h = self.hook(tool, command=command)
@@ -1159,6 +1174,28 @@ class AskConfigCommandTests(GuardBase):
             for command, shown in self.PLAIN:
                 with self.subTest(mode=mode, command=command):
                     self.assertAsk(self.decide(command, mode=mode), shown, command)
+
+    def test_profiles_use_and_clear_ask_when_plain_in_interactive_modes(self):  # F2.y T3
+        for mode in self.INTERACTIVE:
+            for command, shown in self.PROFILES:
+                with self.subTest(mode=mode, command=command):
+                    self.assertAsk(self.decide(command, mode=mode), shown, command)
+
+    def test_profiles_use_and_clear_denied_for_subagents_bypass_and_no_mode(self):
+        for command, shown in self.PROFILES:
+            for mode in self.INTERACTIVE + self.SKIPPING + (None,):
+                with self.subTest(command=command, mode=mode, agent="subagent"):
+                    self.assertDeny(self.decide(command, mode=mode, agent_id="a1"), shown,
+                                    command)
+            for mode in self.SKIPPING + (None,):
+                with self.subTest(command=command, mode=mode):
+                    self.assertDeny(self.decide(command, mode=mode), shown, command)
+
+    def test_profiles_read_only_forms_are_allowed_in_every_mode(self):
+        for command in ("atta profiles", "atta profiles --json", "atta profiles show calidad"):
+            for mode in self.INTERACTIVE + self.SKIPPING + (None,):
+                with self.subTest(command=command, mode=mode):
+                    self.assertIsNone(self.decide(command, mode=mode))
 
     def test_powershell_plain_invocation_asks(self):
         self.assertAsk(self.decide("atta.exe models reset", tool="PowerShell"),

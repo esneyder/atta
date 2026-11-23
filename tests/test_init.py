@@ -577,7 +577,8 @@ class CheckTest(InitBase):
         self.assertEqual(out, self.outdated_text("distinto: .claude/skills/atta/SKILL.md",
                                                  "distinto: .claude/commands/atta.md",
                                                  "distinto: .claude/commands/atta/config.md",
-                                                 "distinto: .claude/commands/atta/models.md"))
+                                                 "distinto: .claude/commands/atta/models.md",
+                                                 "distinto: .claude/commands/atta/profiles.md"))
         self.assertEqual(tree(self.root), before)
 
     def test_hand_edited_driver_model_is_reported(self):
@@ -598,15 +599,16 @@ class CheckTest(InitBase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             code = cli.main(["--project", str(self.root), "init", "--check"])
         self.assertEqual(code, 0, out.getvalue())
-        # 12 agents + SKILL.md + commands/atta.md + 2 menus + settings.json hook
-        self.assertIn(": al día (17 archivos).", out.getvalue())
+        # 12 agents + SKILL.md + commands/atta.md + 3 menus + settings.json hook
+        self.assertIn(": al día (18 archivos).", out.getvalue())
         self.assertEqual(tree(self.root), before)
 
 
 class MenuCommandsTest(InitBase):
     """F2.y T2: `/atta:config` and `/atta:models` live in .claude/commands/atta/."""
 
-    MENUS = (".claude/commands/atta/config.md", ".claude/commands/atta/models.md")
+    MENUS = (".claude/commands/atta/config.md", ".claude/commands/atta/models.md",
+             ".claude/commands/atta/profiles.md")
 
     def run_check(self):
         out, err = io.StringIO(), io.StringIO()

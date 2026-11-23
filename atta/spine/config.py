@@ -75,7 +75,8 @@ DEFAULTS = {
     # the previous round; `enforce` turns those warnings into failures (see scope.py).
     "scope": {"enforce": False, "max_files": 12},
 }
-# Optional keys, never defaulted: `models` (per-runtime tier and role overrides, S12; see
+# Optional keys, never defaulted: `profile` (id of a packaged profile, F2.y T3; absent = no
+# profile = factory models; see profiles.py and `atta profiles`), `models` (per-runtime tier and role overrides, S12; see
 # models.py and `atta models`) and `routing_matrix` (bool; false turns off the stage×risk model
 # matrix of F4 T3 and keeps the routing of before; absent means on, and `atta doctor` tells
 # a project without the key that the default changed) and `stage_timeouts_s` ({stage: seconds}
@@ -207,6 +208,11 @@ def validate(cfg: dict) -> dict:
     if "stage_timeouts_s" in cfg:
         from . import timeouts  # lazy: timeouts.py imports machine
         problem = timeouts.config_error(cfg["stage_timeouts_s"])
+        if problem:
+            raise _err(problem)
+    if "profile" in cfg:
+        from . import profiles  # lazy: profiles.py reads models.py
+        problem = profiles.config_error(cfg["profile"])
         if problem:
             raise _err(problem)
     if "models" in cfg:
