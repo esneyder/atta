@@ -44,6 +44,10 @@ class MenuTemplatesTest(unittest.TestCase):
                                "Cada vez que te invoquen empiezas de cero"):
                     self.assertIn(phrase, head)
 
+    def test_hub_says_the_menu_is_typed_here_in_claude_code(self):  # sandbox L15
+        text = " ".join(self.read("config").split())
+        self.assertIn("Escribe /atta:<área> aquí, en Claude Code (no en la terminal)", text)
+
     def test_atta_command_still_exists_next_to_the_namespace(self):
         self.assertTrue((COMMANDS / "atta.md").is_file())
 
