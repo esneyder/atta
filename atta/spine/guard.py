@@ -425,9 +425,18 @@ def _evaluate(hook, root, explicit, environ) -> None:
     # S4: `ask` only for a person at an interactive prompt: main session (agent_id absent or
     # blank; any other value fails closed) running a single plain Atta invocation.
     main = agent_id is None or (isinstance(agent_id, str) and not agent_id.strip())
-    ctx.ask_ok = (main and hook.get("permission_mode") in ASK_MODES
-                  and isinstance(hook.get("permission_mode"), str)
-                  and _is_plain_atta(command.strip(), tool == "PowerShell"))
+    mode = hook.get("permission_mode")
+    plain = main and _is_plain_atta(command.strip(), tool == "PowerShell")
+    ctx.ask_ok = plain and isinstance(mode, str) and mode in ASK_MODES
+    # Sandbox L13: a plain config command from the main session denied only by the permission
+    # mode says so, so the person knows what to change to get the approval prompt.
+    if plain and not ctx.ask_ok:
+        if isinstance(mode, str) and mode.strip():
+            ctx.mode_hint = (f" Esta sesión corre en modo «{mode}», que no te pide confirmación, "
+                             "así que Atta no puede preguntarte: para aprobarlo desde Claude Code "
+                             "usa el modo default o acceptEdits (por ejemplo \"defaultMode\": "
+                             "\"acceptEdits\" en .claude/settings.local.json del proyecto).")
+
     check_command(command, ctx, powershell=tool == "PowerShell")
 
 
@@ -616,6 +625,7 @@ class _Ctx:
         self.subagent = subagent
         self.command = ""
         self.ask_ok = False
+        self.mode_hint = ""
 
 
 def deny_rules(cfg: dict):
@@ -1216,8 +1226,9 @@ def _check_atta(args: list[str], ctx: "_Ctx | None" = None) -> None:
         raise Ask(f"Atta pide tu aprobación para cambiar la configuración ({shown}). Comando "
                   f"exacto: {command}. Apruébalo solo si lo pediste tú; si no, recházalo y corre "
                   "ese comando en tu terminal.")
+    hint = ctx.mode_hint if ctx is not None else ""
     raise Deny(f"Atta no deja que un agente cambie su propia configuración ({shown}). Corre ese "
-               f"comando tú en tu terminal. Comando: {command}")
+               f"comando tú en tu terminal. Comando: {command}{hint}")
 
 
 def _check_atta_script(args: list[str], ctx: "_Ctx | None" = None) -> None:
