@@ -180,6 +180,26 @@ def render(root: Path, cfg: dict) -> str:
     return "\n".join(out)
 
 
+def state(root: Path, cfg: dict) -> dict:
+    """Read-only, machine-readable state of `atta settings --json` (F2.y T2): every registry
+    key with its current value, default, type, allowed values and Spanish description."""
+    items = []
+    for setting in settings_registry.SETTINGS:
+        value = effective(cfg, setting)
+        items.append({
+            "changed": value != setting.default,
+            "choices": list(setting.choices) if setting.type == "enum" else None,
+            "default": setting.default,
+            "description": setting.description,
+            "editable": setting.editable,
+            "how": setting.how or None,
+            "key": setting.key,
+            "type": setting.type,
+            "value": value,
+        })
+    return {"root": str(root), "settings": items}
+
+
 def _get(cfg: dict, key: str) -> int:
     value = effective(cfg, _setting(key, editing=False))
     if isinstance(value, str):
@@ -223,6 +243,11 @@ def cmd_settings(args, cfg, jobs) -> int:
     root = Path(args.root)
     action = args.settings_action
     try:
+        if getattr(args, "json", False):
+            if action is not None:
+                raise SettingsError("--json solo se usa sin acción (atta settings --json).")
+            print(json.dumps(state(root, cfg), indent=2, sort_keys=True, ensure_ascii=False))
+            return OK
         if action is None:
             print(render(root, cfg))
             return OK
@@ -251,6 +276,10 @@ def register(subparsers) -> None:
                     "desconocida o de solo lectura, o un valor inválido, sale 2 sin escribir "
                     "nada.",
         epilog="Claves: " + keys + ". Listas: a,b o [\"a\", \"b\"]; sí/no: sí, no, true, false.")
+    p.add_argument("--json", action="store_true",
+                   help="solo lectura: imprime en JSON (claves ordenadas) cada clave con su valor, "
+                        "valor por defecto, tipo, valores permitidos y descripción; no escribe "
+                        "nada (lo usan los menús /atta:*)")
     p.set_defaults(func=cmd_settings, settings_action=None)
     sub = p.add_subparsers(dest="settings_action", metavar="<acción>")
     g = sub.add_parser("get", help="Imprime el valor de una clave (JSON para listas).",

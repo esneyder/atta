@@ -328,5 +328,78 @@ class HelpTest(SettingsBase):
             self.assertTrue(re.search(rf"\b{word}\b", out.getvalue()), word)
 
 
+class JsonStateTest(SettingsBase):
+    """`atta settings --json` (F2.y T2): read-only state for the /atta:config menus."""
+
+    def state(self):
+        out = self.ok("settings", "--json")
+        data = json.loads(out)
+        self.assertEqual(out, json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False)
+                         + "\n")
+        return data, {item["key"]: item for item in data["settings"]}
+
+    def test_every_key_with_value_default_type_and_description(self):
+        data, by = self.state()
+        self.assertEqual(sorted(data), ["root", "settings"])
+        self.assertEqual(data["root"], str(self.root))
+        self.assertEqual([i["key"] for i in data["settings"]], list(KEYS))
+        for item in data["settings"]:
+            self.assertEqual(sorted(item), ["changed", "choices", "default", "description",
+                                            "editable", "how", "key", "type", "value"])
+            self.assertTrue(item["description"])
+            self.assertIs(item["changed"], False)
+        self.assertEqual(by["max_rounds"], {
+            "changed": False, "choices": None, "default": 3, "value": 3, "editable": True,
+            "how": None, "key": "max_rounds", "type": "int",
+            "description": "Rondas máximas del Filtro y de revisión por job."})
+        self.assertEqual(by["merge_method"]["choices"], ["merge", "squash", "rebase"])
+        self.assertEqual(by["merge_method"]["type"], "enum")
+        self.assertEqual(by["scope.enforce"]["type"], "bool")
+        self.assertEqual(by["labels.queue"]["value"], "atta")
+        self.assertEqual(by["models"]["editable"], False)
+        self.assertEqual(by["models"]["how"], "usa atta models")
+        self.assertEqual(by["routing"]["type"], "summary")
+
+    def test_changed_values_are_marked(self):
+        self.ok("settings", "set", "max_rounds", "5")
+        self.ok("settings", "set", "scope.enforce", "sí")
+        _, by = self.state()
+        self.assertEqual((by["max_rounds"]["value"], by["max_rounds"]["default"],
+                          by["max_rounds"]["changed"]), (5, 3, True))
+        self.assertEqual((by["scope.enforce"]["value"], by["scope.enforce"]["changed"]),
+                         (True, True))
+        self.assertIs(by["concurrency"]["changed"], False)
+
+    def test_is_read_only(self):
+        before = self.cfg_path.read_bytes()
+        self.state()
+        self.assertEqual(self.cfg_path.read_bytes(), before)
+
+    def test_json_with_an_action_is_refused_without_writing(self):
+        before = self.cfg_path.read_bytes()
+        code, out, err = self.atta("settings", "--json", "set", "max_rounds", "9")
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(err, "--json solo se usa sin acción (atta settings --json). "
+                              "No cambié nada.\n")
+        self.assertEqual(self.cfg_path.read_bytes(), before)
+
+    def test_help_documents_json(self):
+        code, out, err = self.atta("settings", "--help")
+        self.assertEqual(code, 0)
+        self.assertIn("--json", out)
+        self.assertIn("solo lectura", out)
+
+    def test_text_output_is_unchanged(self):
+        # PRESERVE: the table and `get` keep their text with the new flag defined.
+        out = self.ok("settings")
+        self.assertTrue(out.startswith(f"Configuración de Atta en {self.root} "
+                                       "(atta/config.json):\nCLAVE"))
+        self.assertTrue(out.endswith("Consulta con `atta settings get <clave>`; cambia con "
+                                     "`atta settings set <clave> <valor>` o `atta settings "
+                                     "reset <clave>`.\n— Atta\n"))
+        self.assertNotIn('"key"', out)
+        self.assertEqual(self.ok("settings", "get", "max_rounds"), "3\n")
+
+
 if __name__ == "__main__":
     unittest.main()

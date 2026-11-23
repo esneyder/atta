@@ -393,6 +393,7 @@ Qué crea:
 | `.claude/agents/atta-*.md` | Los 12 agentes de la colonia, con el modelo de cada tier ya resuelto (T1 `haiku`, T2 `sonnet`, T3 `opus`) |
 | `.claude/skills/atta/SKILL.md` | El comando `/atta` |
 | `.claude/commands/atta.md` | Registra `/atta` en Claude Code |
+| `.claude/commands/atta/config.md`, `.claude/commands/atta/models.md` | Los menús `/atta:config` y `/atta:models` (ver «Menús» en la referencia de comandos); corren en T0 como `/atta` y `atta models set T0` mantiene su línea `model:` |
 | `.claude/settings.json` | El hook PreToolUse `atta guard` para `Write\|Edit\|MultiEdit\|NotebookEdit\|Bash\|PowerShell`. Si ya tienes un `settings.json`, agrega el hook al final **sin borrar ni reordenar** lo tuyo |
 | `atta/config.json` | Configuración por defecto (sección 10), solo si falta, con `"delivery": {"auto_merge_up_to": "none"}`: en un proyecto nuevo Atta nunca mergea solo hasta que lo habilites (sección 8.2). Un `config.json` existente no se toca |
 | `atta/checks.json` | Vacío a propósito, solo si falta: el Filtro falla hasta que pongas checks reales |
@@ -402,13 +403,13 @@ Y en GitHub (salvo con `--no-github`): verifica que `develop` exista en `origin`
 `git ls-remote` y crea o actualiza las labels de `config.json` con `gh label create --force`. Nunca
 toca `main`.
 
-**Es idempotente**: correrlo otra vez no cambia nada («sin cambios: 18 archivos»). Un archivo que ya
+**Es idempotente**: correrlo otra vez no cambia nada («sin cambios: 20 archivos»). Un archivo que ya
 existe y es distinto se respeta y se reporta como «ya existe, la dejé igual: …».
 
 | Opción | Efecto |
 |---|---|
-| `--force` | Reemplaza los agentes y el skill existentes («reemplacé: …»). **Nunca** `config.json`, `checks.json` ni `settings.json` |
-| `--check` | No escribe nada ni usa la red: compara lo que `atta init` escribiría (agentes con sus modelos resueltos, skill, comando `/atta`, hook del guard) con los archivos del proyecto. Dice «al día» y sale `0`, o lista cada archivo como `falta:` o `distinto:`, sugiere `atta init --force` y sale `1`. No se combina con `--force` |
+| `--force` | Reemplaza los agentes, el skill y los comandos `/atta` y `/atta:*` existentes («reemplacé: …»). **Nunca** `config.json`, `checks.json` ni `settings.json` |
+| `--check` | No escribe nada ni usa la red: compara lo que `atta init` escribiría (agentes con sus modelos resueltos, skill, comando `/atta`, menús `/atta:*`, hook del guard) con los archivos del proyecto. Dice «al día» y sale `0`, o lista cada archivo como `falta:` o `distinto:`, sugiere `atta init --force` y sale `1`. No se combina con `--force` |
 | `--no-github` | No verifica `origin/develop` ni crea labels (sin red) |
 | `--runtime claude-code` | Runtime de los agentes (hoy el único) |
 
@@ -1061,6 +1062,39 @@ Atta cambió delivery.auto_merge_up_to en atta/config.json: none → low.
 Como `atta models set`, el guard no deja a los agentes correr `settings set` ni `settings reset`
 (sección 14.2): la configuración la cambia una persona. En una sesión interactiva de Claude Code, el
 guard le pide a esa persona que apruebe el comando exacto; en cualquier otro caso lo niega.
+
+#### Menús `/atta:config` y `/atta:models` (dentro de Claude Code)
+
+Para cambiar la configuración sin escribir claves ni valores a mano. `atta init` instala los dos
+comandos en `.claude/commands/atta/` (`/atta:config` y `/atta:models`; coexisten con `/atta`) y
+`atta init --check` los vigila como al resto.
+
+- **`/atta:config`** es la entrada única: pregunta el área (modelos, perfiles, entrega, rondas,
+  riesgo, labels) y te manda a su menú. Hoy solo `/atta:models` está construido; las otras áreas
+  lo dicen con honestidad y siguen disponibles con `atta settings`.
+- **`/atta:models`** corre `atta models --json`, te muestra «quién corre con qué» y las reglas de
+  escalada, y con preguntas seleccionables (opción actual marcada, vista previa del efecto) te deja
+  cambiar el modelo de un tier, el de un rol, quitar el de un rol, una cadena de fallback o
+  restablecer. Luego corre **un solo** comando simple `atta models ...` y muestra la tabla nueva.
+
+**Aprobación.** El menú nunca edita `atta/config.json` ni encadena comandos. El guard le pide a
+la persona que apruebe el comando exacto (`ask`) si la sesión es interactiva (`default`,
+`acceptEdits` o `plan`), la corre la sesión principal y es una sola invocación simple de `atta`
+(sección 14.2); en cualquier otro caso lo niega y da el comando para tu terminal. El driver `/atta`
+sigue sin cambiar configuración.
+
+**Salida JSON** (solo lectura, no escribe nada, claves ordenadas), la que leen los menús:
+
+- `atta settings --json`: `{"root", "settings": [...]}`; cada entrada trae `key`, `type`
+  (`str`, `int`, `bool`, `enum`, `list`, `summary`), `value`, `default`, `changed`, `choices`
+  (solo `enum`), `editable`, `how` (dónde se cambia una clave de solo lectura) y `description`.
+- `atta models --json`: `runtime`, `tiers` (`model`, `default`, `origin` `fábrica`/`proyecto`),
+  `roles` (por rol: `tier`, `model`, `origin` `tier`/`rol`/`regla ≠ guía`, `override`,
+  `escalates_to`), `routing_matrix` (`enabled` y, si está activa, `stages` con el modelo en riesgo
+  `low`, `medium` y `high`), `fallbacks` (cadena efectiva por tier), `ladder_round`, `driver`
+  y `valid_models`.
+
+Con una acción (`atta models --json set ...`) `--json` sale `2` sin escribir nada.
 
 #### `save-artifact <job> intake --from-reply <archivo>`
 
