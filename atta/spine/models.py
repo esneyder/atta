@@ -11,11 +11,19 @@ round ≥ 3, the router's T3) always goes to the T3 model; the Vigía never shar
 when another tier allows it, and the Refutador (G4) never shares the model of a reviewer it judges. `atta next`, `atta init` and `atta models` all resolve here.
 
 `atta models [--runtime R]` prints the table; `set <Tn> <modelo>`, `set --role <rol> <modelo>`,
-`unset --role <rol>` and `reset` change `atta/config.json` (atomically, keeping every other key
+`unset --role <rol>`, `fallback <Tn> <modelo>...` / `fallback <Tn> --clear` and `reset` change `atta/config.json` (atomically, keeping every other key
 and its order) and then the `model:` line of each `.claude/agents/atta-<rol>.md` and of the
 `/atta` driver (`.claude/commands/atta.md` and `.claude/skills/atta/SKILL.md`, which run on
 the cheap tier DRIVER_TIER, F4 S5/G8: `atta next` decides the pipeline). Anything invalid
 exits 2 and writes nothing.
+
+Fallback chains (F4 T4, S4): `models.<runtime>.fallbacks` maps a tier to the Claude models that
+replace its model, in order, when an agent fails by quota, rate limit or network (never by
+context). A fallback never costs more than the model it replaces (COST: haiku < sonnet < opus,
+read from the model name): `atta models fallback` refuses it and Table.chain skips an entry that
+became more expensive after a later `set`. No chain by default: absent means no fallback.
+The runtime side (`atta model-failed`, recorded failures, `atta next` relaunching on the next
+model or waiting when the chain is spent) lives in fallback.py and next.py.
 """
 
 from __future__ import annotations
@@ -51,6 +59,11 @@ DRIVER_FILES = (".claude/skills/atta/SKILL.md", ".claude/commands/atta.md")
 PLACEHOLDER = re.compile(r"\{\{model:([A-Za-z0-9]+)\}\}")
 _MODEL_LINE = re.compile(r"^model:[^\r\n]*", re.M)
 SIGN = "— Atta"
+# Relative cost of a Claude model by family, read from its name (F4 T4, L4: never more expensive).
+COST = {"haiku": 0, "sonnet": 1, "opus": 2}
+_FAMILY = re.compile(r"haiku|sonnet|opus")
+USAGE_FALLBACK = ("Uso: atta models fallback <T0|T1|T2|T3> <modelo> [<modelo>...], o atta "
+                  "models fallback <T0|T1|T2|T3> --clear.")
 
 
 class ModelsError(ValueError):
@@ -95,6 +108,32 @@ def role_error(role) -> str | None:
     return f"El rol «{role}» no existe: usa {', '.join(ROLES[:-1])} o {ROLES[-1]}."
 
 
+def cost(model) -> int | None:
+    """COST of `model` by the first family name it contains, or None when unknown."""
+    m = _FAMILY.search(model) if isinstance(model, str) else None
+    return COST[m.group(0)] if m else None
+
+
+def cost_error(model) -> str | None:
+    if cost(model) is not None:
+        return None
+    return (f"No sé el costo de «{model}»: un fallback necesita haiku, sonnet u opus en el "
+            "nombre.")
+
+
+def chain_error(runtime: str, tier: str, chain) -> str | None:
+    """Why `chain` is not a valid fallback list for `tier` (without its config prefix)."""
+    seen = set()
+    for model in chain:
+        problem = model_error(runtime, model) or cost_error(model)
+        if problem:
+            return problem
+        if model in seen:
+            return f"«{model}» se repite en la cadena de {tier}."
+        seen.add(model)
+    return None
+
+
 def config_error(value) -> str | None:
     """Why the `models` value of config.json is invalid (without the «config.json: » prefix)."""
     example = '{"claude-code": {"tiers": {"T2": "haiku"}, "roles": {"soldado": "opus"}}}'
@@ -104,8 +143,9 @@ def config_error(value) -> str | None:
         if runtime not in RUNTIMES:
             return f"models: el runtime «{runtime}» no existe; usa {', '.join(RUNTIMES)}."
         where = f"models.{runtime}"
-        if not isinstance(entry, dict) or set(entry) - {"tiers", "roles"}:
-            return f"{where} debe ser un objeto con «tiers» y/o «roles», p. ej. {example}."
+        if not isinstance(entry, dict) or set(entry) - {"tiers", "roles", "fallbacks"}:
+            return (f"{where} debe ser un objeto con «tiers», «roles» y/o «fallbacks», p. ej. "
+                    f"{example}.")
         for key, check in (("tiers", tier_error), ("roles", role_error)):
             table = entry.get(key, {})
             if not isinstance(table, dict):
@@ -114,6 +154,17 @@ def config_error(value) -> str | None:
                 problem = check(name) or model_error(runtime, model)
                 if problem:
                     return f"{where}.{key}.{name}: {problem}"
+        chains = entry.get("fallbacks", {})
+        if not isinstance(chains, dict):
+            return f"{where}.fallbacks debe ser un objeto."
+        for tier, chain in chains.items():
+            if tier_error(tier):
+                return f"{where}.fallbacks.{tier}: {tier_error(tier)}"
+            if not isinstance(chain, list) or not chain:
+                return f"{where}.fallbacks.{tier} debe ser una lista no vacía de modelos."
+            problem = chain_error(runtime, tier, chain)
+            if problem:
+                return f"{where}.fallbacks.{tier}: {problem}"
     return None
 
 
@@ -160,8 +211,10 @@ class Table:
     """The effective models of one runtime: tier models, role overrides and role default tiers."""
 
     def __init__(self, tiers: dict, roles: dict | None = None, defaults: dict | None = None,
-                 base: dict | None = None, runtime: str = RUNTIME):
+                 base: dict | None = None, runtime: str = RUNTIME,
+                 fallbacks: dict | None = None):
         self.tiers = dict(tiers)
+        self.fallbacks = {t: list(c) for t, c in (fallbacks or {}).items()}
         self.roles = dict(roles or {})
         self.defaults = dict(defaults) if defaults is not None else role_tiers()
         self.base = dict(base) if base is not None else dict(tiers)
@@ -177,6 +230,24 @@ class Table:
         if not isinstance(model, str) or not model:
             raise ModelsError(f"models.json no define {tier} para {self.runtime}.")
         return model
+
+    def chain(self, tier: str, primary: str | None = None) -> list[str]:
+        """The fallback models of `tier` that are not `primary` (the tier model by default)
+        and never cost more than it (S4, L4)."""
+        primary = primary or self.tier_model(tier)
+        top = cost(primary)
+        return [m for m in self.fallbacks.get(tier, ()) if m != primary
+                and top is not None and cost(m) is not None and cost(m) <= top]
+
+    def fallback(self, tier: str, failed, primary: str | None = None,
+                 avoid=None) -> str | None:
+        """The next model of `tier`'s chain after the `failed` ones, or None when exhausted.
+        `avoid` (one model or a collection: the Guía's for the Vigía, the reviewers' for the
+        Refutador) is skipped while another chain model is left, as in `resolve`."""
+        failed = set(failed or ())
+        left = [m for m in self.chain(tier, primary) if m not in failed]
+        avoided = {avoid} if isinstance(avoid, str) else set(avoid or ())
+        return next((m for m in left if m not in avoided), left[0] if left else None)
 
     def resolve(self, role: str, *, tier: str | None = None, escalate: bool = False,
                 avoid=None, floor: str | None = None) -> str:
@@ -230,7 +301,8 @@ def table(cfg: dict | None = None, runtime: str = RUNTIME,
     base = default_tiers(runtime, templates)
     entry = project_models(cfg, runtime)
     tiers = dict(base, **(entry.get("tiers") or {}))
-    return Table(tiers, entry.get("roles") or {}, role_tiers(templates), base, runtime)
+    return Table(tiers, entry.get("roles") or {}, role_tiers(templates), base, runtime,
+                 entry.get("fallbacks") or {})
 
 
 def resolve(role: str, cfg: dict | None, *, escalate: bool = False, avoid=None,
@@ -358,6 +430,14 @@ def _tiers_line(tab: Table) -> str:
     return "Tiers: " + " · ".join(parts)
 
 
+def _fallback_line(tab: Table) -> str:
+    parts = [f"{t} {' → '.join([tab.tier_model(t), *tab.chain(t)])}"
+             for t in reversed(TIERS) if tab.tiers.get(t) and tab.chain(t)]
+    shown = " · ".join(parts) if parts else (
+        "ninguno (`atta models fallback <tier> <modelo>...`)")
+    return f"Fallback por cuota, rate limit o red: {shown}."
+
+
 def render(root: Path, tab: Table) -> str:
     rows = [("ROL", "TIER", "MODELO", "ORIGEN")]
     for role in ROLES:
@@ -372,6 +452,7 @@ def render(root: Path, tab: Table) -> str:
         "un modelo por rol lo reemplaza.",
         f"El orquestador /atta (comando y skill) corre en {DRIVER_TIER} "
         f"({tab.tiers.get(DRIVER_TIER, '-')}).",
+        _fallback_line(tab),
         "Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o "
         "`atta models set --role <rol> <modelo>`.",
         SIGN,
@@ -399,7 +480,7 @@ def _entry(data: dict, runtime: str) -> dict:
 
 def _prune(data: dict, runtime: str) -> None:
     entry = data["models"].get(runtime, {})
-    for key in ("tiers", "roles"):
+    for key in ("tiers", "roles", "fallbacks"):
         if key in entry and not entry[key]:
             del entry[key]
     if not entry:
@@ -415,6 +496,45 @@ def _refuse(message: str) -> int:
 
 USAGE_SET = ("Uso: atta models set <T0|T1|T2|T3> <modelo>, o atta models set --role <rol> "
              "<modelo>.")
+
+
+def _fallback(root: Path, data: dict, runtime: str, cfg, args) -> int:
+    values, clear = args.values, args.clear
+    if not values or (clear and len(values) != 1) or (not clear and len(values) < 2):
+        return _refuse(USAGE_FALLBACK)
+    tier = values[0].upper()
+    if tier_error(tier):
+        return _refuse(tier_error(values[0]))
+    if clear:
+        current = project_models(data, runtime).get("fallbacks") or {}
+        if tier not in current:
+            print(f"Atta: {tier} no tiene fallback en {runtime}; no cambié nada.\n{SIGN}")
+            return OK
+        entry = _entry(data, runtime)
+        del entry["fallbacks"][tier]
+        _prune(data, runtime)
+        return _change(root, data, runtime,
+                       f"Atta: {tier} ya no tiene fallback en {{config}} ({runtime}).")
+    chain = values[1:]
+    for model in chain:
+        problem = model_error(runtime, model)
+        if problem:
+            return _refuse(problem)
+    problem = chain_error(runtime, tier, chain)
+    if problem:
+        return _refuse(problem)
+    primary = table(data, runtime).tier_model(tier)
+    for model in chain:
+        if model == primary:
+            return _refuse(f"«{model}» ya es el modelo de {tier}: el fallback necesita otro "
+                           "modelo.")
+        if cost(primary) is None or cost(model) > cost(primary):
+            return _refuse(f"«{model}» es más caro que el modelo de {tier} ({primary}): un "
+                           "fallback nunca sube de costo.")
+    _entry(data, runtime).setdefault("fallbacks", {})[tier] = chain
+    return _change(root, data, runtime,
+                   f"Atta: si {tier} ({primary}) falla por cuota, rate limit o red, usa "
+                   f"{' → '.join(chain)} en {{config}} ({runtime}).")
 
 
 def cmd_models(args, cfg, jobs) -> int:
@@ -436,6 +556,8 @@ def cmd_models(args, cfg, jobs) -> int:
             return _change(root, data, runtime,
                            f"Atta quitó «models» de {{config}}: vuelven los modelos de fábrica "
                            f"({shown}).")
+        if action == "fallback":
+            return _fallback(root, data, runtime, cfg, args)
         role = role_name(args.role) if args.role is not None else None
         if role is not None and role_error(role):
             return _refuse(role_error(role))
@@ -483,8 +605,8 @@ def register(subparsers) -> None:
     runtime_help = "runtime de los agentes (por defecto: claude-code)"
     p = subparsers.add_parser(
         "models", help="Muestra o cambia qué modelo corre cada rol en este proyecto.",
-        description="Sin acción, imprime la tabla ROL / TIER / MODELO / ORIGEN. set, unset y "
-                    "reset cambian «models» en atta/config.json y la línea model: de "
+        description="Sin acción, imprime la tabla ROL / TIER / MODELO / ORIGEN. set, unset, "
+                    "fallback y reset cambian «models» en atta/config.json y la línea model: de "
                     ".claude/agents/atta-*.md y del comando y skill /atta (que corren en "
                     "T0). Un modelo, rol o tier inválido sale 2 sin "
                     "escribir nada.",
@@ -509,6 +631,19 @@ def register(subparsers) -> None:
                        description="Quita el modelo propio de un rol; vuelve al de su tier.")
     u.add_argument("--role", metavar="<rol>", required=True, help="rol: " + ", ".join(ROLES))
     u.add_argument("--runtime", choices=RUNTIMES, default=argparse.SUPPRESS, help=runtime_help)
+
+    f = sub.add_parser(
+        "fallback", help="Define la cadena de fallback de un tier (cuota, rate limit o red).",
+        usage="atta models fallback <T0|T1|T2|T3> <modelo> [<modelo>...]\n"
+              "       atta models fallback <T0|T1|T2|T3> --clear",
+        description="Si un agente de ese tier falla por cuota, rate limit o red (nunca por "
+                    "contexto), Atta prueba estos modelos en orden y deja el cambio en "
+                    "events.jsonl. Un fallback nunca cuesta más que el modelo del tier "
+                    "(haiku < sonnet < opus). --clear quita la cadena.")
+    f.add_argument("values", nargs="+", metavar="<tier> [<modelo>...]",
+                   help="tier y los modelos de la cadena, en orden")
+    f.add_argument("--clear", action="store_true", help="quita la cadena del tier")
+    f.add_argument("--runtime", choices=RUNTIMES, default=argparse.SUPPRESS, help=runtime_help)
 
     r = sub.add_parser("reset", help="Quita «models» de atta/config.json (modelos de fábrica).",
                        description="Quita la clave «models» de atta/config.json y vuelve a "

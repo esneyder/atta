@@ -195,7 +195,8 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
             ([], f"models debe ser un objeto por runtime, p. ej. {example}."),
             ({"otro": {}}, "models: el runtime «otro» no existe; usa claude-code."),
             ({"claude-code": {"tier": {}}},
-             f"models.claude-code debe ser un objeto con «tiers» y/o «roles», p. ej. {example}."),
+             f"models.claude-code debe ser un objeto con «tiers», «roles» y/o «fallbacks», p. ej. "
+             f"{example}."),
             ({"claude-code": {"tiers": []}}, "models.claude-code.tiers debe ser un objeto."),
             ({"claude-code": {"tiers": {"T9": "haiku"}}},
              "models.claude-code.tiers.T9: El tier «T9» no existe: usa T0, T1, T2 o T3."),

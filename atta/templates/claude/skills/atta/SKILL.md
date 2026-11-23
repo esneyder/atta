@@ -51,6 +51,16 @@ Spanish; relay them as they are.
 - Pass agent prompts verbatim. Do not add context, hints or opinions to them.
 - Models come from `atta next` (its `model` field); never choose, upgrade or downgrade a model
   yourself. Only a human changes them, with `atta models`.
+- When the Agent (Task) tool fails for a subagent because of the usage quota, a rate limit or a
+  network/connection error (the tool returns that error instead of the agent's reply), run
+  `atta model-failed <job> --agent <agent> --reason quota|rate-limit|network` with that agent
+  (for example `atta-cortadora`) and the matching reason, once per failed agent, then call
+  `atta next <job>` again: it relaunches the agent on the next model of its tier's fallback
+  chain (never a more expensive one) or prints a `wait` when the chain is spent. Never run it
+  for any other failure: a context-length or context-window error, a refusal, a guard deny or
+  an agent that finished without writing its artifact are not model failures, and you never
+  pick another model yourself. If `atta model-failed` exits `2`, report its stderr and stop
+  this job.
 - Atta's guard (a PreToolUse hook; its messages end with «Atta») may deny a tool call. When it
   does, stop that job at once and report the exact deny message, word for word. Never work
   around it: no other tool, no rewritten command, no other path, no retry in another form.
@@ -121,7 +131,8 @@ Resuming is the same command: run `/atta run` again. All state lives in the spin
 If `atta next` prints the same `spawn` or `spawn-group` right after those agents finished, they
 did not write their artifact: stop this job and report it instead of launching them again.
 (A Cortadora spawn whose prompt names what its `build.md` is missing is a new action, the one
-retry of the build.md contract: run it.) Prompts may end with lessons from
+retry of the build.md contract: run it. After `atta model-failed`, a spawn of the same agent
+with a different `model` is a new action: run it; the same agent with the same model is not.) Prompts may end with lessons from
 `atta/memory/lessons.md`; pass them unchanged, and never edit that file: the spine harvests it
 after each merge.
 
@@ -133,7 +144,7 @@ mutating forms to every agent session, including yours.
 - `/atta settings` or `/atta settings get <key>`: run exactly `atta settings` (or
   `atta settings get <key>`) and show its output unchanged.
 - `/atta models`: run exactly `atta models` and show its output unchanged.
-- Any change (`set`, `reset`, `unset`, `atta init`): do NOT run it. Reply with the exact
+- Any change (`set`, `reset`, `unset`, `fallback`, `atta init`): do NOT run it. Reply with the exact
   command for the human to run in their terminal, for example
   `atta settings set delivery.auto_merge_up_to none` or `atta models set --role reina haiku`,
   and say that Atta keeps configuration changes for humans.

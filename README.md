@@ -508,6 +508,10 @@ Reglas que aplica la espina:
   `needs-human`.
 - Si `atta next` repite el mismo `spawn` justo después de que el agente terminó, el agente no escribió
   su artefacto: `/atta` detiene ese job y lo reporta en lugar de relanzarlo.
+- Si el Agent tool falla por **cuota, rate limit o red** (nunca por contexto), `/atta` corre
+  `atta model-failed <job> --agent <agente> --reason quota|rate-limit|network` y vuelve a
+  `atta next`, que relanza al agente con el siguiente modelo de la cadena de fallback de su tier
+  (sección 5.4) o espera si la cadena se agotó. Ese `spawn` con otro modelo es una acción nueva.
 - Cada comentario en GitHub va firmado por su rol con el marcador `<!-- atta -->`: la Exploradora al
   decidir (`ACCEPT`, `NEEDS-INFO`, `REJECT`), la Cortadora al abrir el PR, la Reina al escalar y al
   mergear (el comentario con el que cierra el issue).
@@ -584,6 +588,26 @@ valores de fábrica; cada proyecto puede cambiarlos en la clave `models` de `att
   así que la línea `model:` de `.claude/agents/atta-*.md` y el `model` que imprime `atta next`
   coinciden. `/atta` nunca elige un modelo: usa el que trae `atta next`.
 - `atta/config.json` es ruta protegida: solo una persona lo cambia, con `atta models`.
+
+**Cadenas de fallback** (F4, solo modelos Claude). Si un agente falla por **cuota, rate limit o
+red** (nunca por contexto), Atta prueba otros modelos del mismo tier, en el orden que tú defines:
+
+```bash
+atta models fallback T3 sonnet haiku   # opus → sonnet → haiku
+atta models fallback T3 --clear        # sin cadena (el valor de fábrica)
+```
+
+- Un fallback **nunca cuesta más** que el modelo que reemplaza (`haiku` < `sonnet` < `opus`, leído
+  del nombre): `atta models fallback` rechaza uno más caro y una cadena que quedó más cara después de
+  un `set` se saltea esa entrada.
+- `/atta` corre `atta model-failed <job> --agent <agente> --reason quota|rate-limit|network`
+  cuando el Agent tool devuelve ese error. Queda un evento `model_fallback` en `events.jsonl`
+  (sección 11) y `atta next` relanza al agente con el siguiente modelo de la cadena de **su** tier
+  (la de T3 cuando escala). La Vigía y el Refutador siguen sin repetir el modelo de la Guía o de
+  los revisores mientras la cadena tenga otro.
+- Cadena agotada (o sin cadena): el job **no sube de modelo**. `atta next` espera (`wait`) con el
+  motivo y olvida esas fallas, así que el próximo `/atta run` vuelve a intentar con el modelo de
+  siempre cuando vuelva la cuota o la red.
 
 ---
 
@@ -874,7 +898,9 @@ no hace nada. Ver sección 8.
 Decide, sin red, la siguiente acción del job e imprime una línea JSON (sección 5.2). Sale `0`. Lo
 único que escribe es `pending_agent` en `job.json` cuando la acción lanza agentes (sección 11),
 `build_retry` cuando pide a la Cortadora rehacer un `build.md` que no cumple el contrato (sección
-2.5) y el evento `refute` del Refutador. Los prompts de la Guía, la Cortadora y los reviewers
+2.5), el evento `refute` del Refutador y, al imprimir el `wait` de una cadena de fallback agotada,
+borra las fallas de ese agente (`model_fallback`, sección 5.4). Si `atta model-failed` registró
+que un agente pendiente falló, lo relanza con el siguiente modelo de la cadena. Los prompts de la Guía, la Cortadora y los reviewers
 (Rastreador incluido) terminan con las lecciones relevantes de `atta/memory/lessons.md` para los
 archivos del diff (o los de `FILES:` del spec), dentro del presupuesto de 1.500 caracteres.
 Ejemplo recién creado el job:
@@ -883,7 +909,26 @@ Ejemplo recién creado el job:
 {"action": "spawn", "agent": "atta-exploradora", "model": "haiku", "prompt": "Job: 7-agregar-la-funcion-de. Job folder: …"}
 ```
 
-#### `models [--runtime claude-code]` · `models set <T0|T1|T2|T3> <modelo>` · `models set --role <rol> <modelo>` · `models unset --role <rol>` · `models reset`
+#### `model-failed <job> --agent atta-<rol> --reason quota|rate-limit|network`
+
+Lo corre `/atta` (nunca un subagente: el guard lo deniega dentro de un subagente) cuando el Agent
+tool falla por cuota, rate limit o red; **nunca** por contexto. Bajo el lock del job verifica que
+el agente esté en `pending_agent` de la etapa actual, guarda el modelo que falló en `job.json`
+(`model_failures`) y agrega un evento `model_fallback`. Sale `0`:
+
+```text
+atta-cortadora falló en opus por cuota en 12-agregar-exportacion-a-csv: el próximo intento usa sonnet (cadena de fallback de T3).
+```
+
+Con la cadena agotada dice «la cadena de fallback de T3 se agotó; Atta no sube a un modelo más
+caro y `atta next` espera.». Repetir la misma falla no escribe nada. Un motivo inválido (por
+ejemplo `context`) o un agente que no está pendiente sale `2` sin escribir nada:
+
+```text
+El motivo «context» no vale: usa quota, rate-limit o network. Un error de contexto nunca cambia de modelo. No registré nada.
+```
+
+#### `models [--runtime claude-code]` · `models set <T0|T1|T2|T3> <modelo>` · `models set --role <rol> <modelo>` · `models unset --role <rol>` · `models fallback <T0|T1|T2|T3> <modelo>... | --clear` · `models reset`
 
 Muestra o calibra qué modelo corre cada rol en este proyecto (sección 5.4). Sin acción imprime la
 tabla; en un proyecto recién preparado:
@@ -926,8 +971,10 @@ Revisa la tabla con `atta models`.
 ```
 
 `atta models set T2 haiku` cambia todos los roles de T2 (y la Vigía sube a `opus`, porque T2 y T1
-quedan en `haiku` como la Guía). `unset --role <rol>` devuelve el rol a su tier; `reset` quita la
-clave `models` y vuelve a los modelos de fábrica. Si falta un agente, lo dice («falta:
+quedan en `haiku` como la Guía). `unset --role <rol>` devuelve el rol a su tier; `fallback <tier>
+<modelo>...` define la cadena de fallback del tier por cuota, rate limit o red (nunca más cara que
+el modelo del tier; `--clear` la quita; sección 5.4) y la tabla la muestra en la línea «Fallback
+por cuota, rate limit o red»; `reset` quita la clave `models` y vuelve a los modelos de fábrica. Si falta un agente, lo dice («falta:
 .claude/agents/atta-reina.md; corre `atta init` para crearlo.»). Un modelo, rol o tier inválido
 sale `2` sin escribir nada, por ejemplo:
 
@@ -1360,6 +1407,7 @@ muestran el dashboard y el PR.
 | `gate_failure` | `{kind: "config", reason}` mientras el Filtro está detenido por configuración (sección 9); otro resultado lo borra |
 | `build_retry` | El reintento del contrato de `build.md`: `{round, since, mtime}` (sección 2.5) |
 | `pending_agent` | Lo que `atta next` decidió al lanzar agentes en la etapa actual: `{stage, role, agent, model, tier, at}`, o una lista de esos para los reviewers en paralelo. Lo consume y borra la siguiente transición |
+| `model_failures` | Los modelos en que cada agente falló por cuota, rate limit o red (`atta model-failed`): `{stage, since, agents: {agente: [modelos]}}`. Solo cuenta en la entrada a la etapa que nombra (sección 5.4) |
 
 ### `events.jsonl`
 
@@ -1392,6 +1440,16 @@ cuando `atta next` actúa sobre el veredicto del Refutador:
 ```json
 {"ts": "2025-06-05T08:18:00Z", "job": "1-agregar-la-funcion-de", "event": "refute", "stage": "review",
  "round": 1, "refute": "REFUTED"}
+```
+
+`model_fallback` tampoco es una transición: lo escribe `atta model-failed` (sección 7.3) cuando un
+agente falla por cuota, rate limit o red. Lleva `from_model` y `to_model` (no `from`/`to`), y
+`to_model` es `null` cuando la cadena se agotó; `round` solo en build, gate, review y approve:
+
+```json
+{"ts": "2025-06-05T08:10:00Z", "job": "1-agregar-la-funcion-de", "event": "model_fallback",
+ "stage": "build", "round": 3, "agent": "atta-cortadora", "tier": "T3", "from_model": "opus",
+ "to_model": "sonnet", "reason": "quota"}
 ```
 
 ---
@@ -1509,8 +1567,10 @@ espacios finales, rutas relativas a una unidad (`C:src/a.py`) y rutas de disposi
   `--mirror`, `--all`, `--tags`, `--delete`, `+refspec` y similares; `git -c alias.*|remote.*|url.*…`,
   escribir esas claves con `git config`, `git send-pack`, `git update-ref -d`, borrar ramas;
 - los comandos de Atta que cambian la configuración: `atta settings set|reset`,
-  `atta models set|unset|reset` y `atta init` (con cualquier opción). Las formas de solo lectura
-  (`atta settings`, `atta settings get`, `atta models`) y `atta doctor` sí se permiten;
+  `atta models set|unset|reset|fallback` y `atta init` (con cualquier opción). Las formas de solo
+  lectura (`atta settings`, `atta settings get`, `atta models`) y `atta doctor` sí se permiten;
+- `atta model-failed` dentro de un subagente (el hook trae `agent_id`): solo lo corre el
+  orquestador `/atta`;
 - `gh pr merge`, `gh repo delete|archive`, `gh release …`, `gh alias set|import`, `gh api` con
   `DELETE` o con escritura a endpoints de merge, refs, protección de ramas o releases, las mutaciones
   GraphQL de merge y refs, y `gh pr create|edit` con una base distinta de `develop`;
@@ -1574,6 +1634,7 @@ atta/
 │   ├── initcmd.py     atta init
 │   ├── doctor.py      atta doctor
 │   ├── models.py      resolución de modelos y atta models
+│   ├── fallback.py    atta model-failed (fallback por cuota, rate limit o red)
 │   ├── settings.py    atta settings (con settings_registry.py)
 │   ├── memory.py      la Cultivadora: atta memory y lessons.md
 │   ├── github.py      adaptador de gh

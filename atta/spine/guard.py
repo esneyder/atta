@@ -83,12 +83,16 @@ Denied:
   --post-data` implying one);
 - Atta's configuration-mutating subcommands (L29), which change atta/config.json and .claude/
   through the CLI where the write rules cannot see them: `atta settings set|reset`,
-  `atta models set|unset|reset` and `atta init` (any flags). Detected as `atta`, `atta.exe`,
+  `atta models set|unset|reset|fallback` and `atta init` (any flags). Detected as `atta`, `atta.exe`,
   `atta.cmd`, `atta.bat`, `./atta.sh` (also `sh atta.sh`), `python|python3|python3.N|py [-3.N]
   -m atta.spine.cli` and `python .../atta.py`, with global options (`--project X`,
   `--jobs-dir Y`, `=` forms and argparse prefixes) and `models --runtime X` before the action.
   Read-only forms (`atta settings`, `atta settings get <k>`, `atta models [--runtime X]`) and
   every other subcommand stay allowed;
+- orchestrator-only Atta commands (F4 T4): `atta model-failed` (any detected form, see above)
+  when the hook payload carries a non-empty `agent_id`, which Claude Code sets only for tool
+  calls inside a subagent. The /atta driver (main session, no `agent_id`) runs it; a payload
+  without `agent_id` is treated as the main session;
 - deploy commands: `guard.deny_commands` in config.json (a list of command prefixes; it REPLACES
   `DEFAULT_DENY_COMMANDS`). A rule matches when the command name is equal and the remaining words
   appear in order among the arguments (`kubectl apply` matches `kubectl -n prod apply -f x`);
@@ -251,8 +255,10 @@ ATTA_SCRIPT = "atta.py"
 ATTA_MODULES = {"atta.spine.cli"}
 _ATTA_GLOBAL_VALUED = ("--project", "--jobs-dir")
 _ATTA_MUTATING = {"init": None, "settings": {"set", "reset"},
-                  "models": {"set", "unset", "reset"}}
+                  "models": {"set", "unset", "reset", "fallback"}}
 _ATTA_SUB_VALUED = {"models": ("--runtime",)}
+# Orchestrator actions only the /atta driver runs; denied inside a subagent (F4 T4).
+_ATTA_DRIVER_ONLY = {"model-failed"}
 _PY_VALUED = {"-X", "-W"}
 
 
@@ -331,7 +337,9 @@ def _evaluate(hook, root, explicit, environ) -> None:
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
         raise Deny(f"Entrada del hook inválida: falta el comando de {tool}.")
-    ctx = _Ctx(root, cfg, rules, base, environ)
+    agent_id = hook.get("agent_id")
+    ctx = _Ctx(root, cfg, rules, base, environ,
+               subagent=isinstance(agent_id, str) and bool(agent_id.strip()))
     check_command(command, ctx, powershell=tool == "PowerShell")
 
 
@@ -511,9 +519,11 @@ def _check_worktree_rel(rel, root: Path, cfg: dict) -> None:
 # ---------------------------------------------------------------- shell commands
 
 class _Ctx:
-    def __init__(self, root: Path, cfg: dict, rules, cwd: Path | None, environ=None):
+    def __init__(self, root: Path, cfg: dict, rules, cwd: Path | None, environ=None,
+                 subagent: bool = False):
         self.root, self.cfg, self.rules, self.cwd = root, cfg, rules, cwd
         self.environ = environ
+        self.subagent = subagent
 
 
 def deny_rules(cfg: dict):
@@ -1022,7 +1032,8 @@ def _check_words(words: list[str], ctx: _Ctx, powershell: bool, depth: int) -> N
     if name in ("npm", "pnpm", "yarn") and args and args[0] in ("exec", "dlx", "x"):
         return _check_words(_skip_flags(args[1:]), ctx, powershell, depth)
     if name in POSIX_SHELLS:
-        return _check_posix_shell_args(name, args, sub, on_script=_check_atta_script)
+        return _check_posix_shell_args(name, args, sub,
+                                       on_script=lambda rest: _check_atta_script(rest, ctx))
     if name in PS_SHELLS:
         return _check_powershell_args(name, args, sub)
     if name == "cmd":
@@ -1058,11 +1069,11 @@ def _check_words(words: list[str], ctx: _Ctx, powershell: bool, depth: int) -> N
     elif name in HTTP_CLIENTS:
         _check_http(name, args)
     elif name in ATTA_NAMES:
-        _check_atta(args)
+        _check_atta(args, ctx)
     elif _is_interpreter(name):
         atta_args = _atta_via_interpreter(args)
         if atta_args is not None:
-            _check_atta(atta_args)
+            _check_atta(atta_args, ctx)
     _check_deny_rules(name, args, ctx)
 
 
@@ -1085,10 +1096,15 @@ def _first_positional(args: list[str], valued=()) -> tuple[str | None, list[str]
     return None, []
 
 
-def _check_atta(args: list[str]) -> None:
-    """Deny Atta's configuration-mutating subcommands (see module docstring)."""
+def _check_atta(args: list[str], ctx: "_Ctx | None" = None) -> None:
+    """Deny Atta's configuration-mutating subcommands, and the driver-only ones inside a
+    subagent (see module docstring)."""
     subcmd, rest = _first_positional(args, _ATTA_GLOBAL_VALUED)
     subcmd = (subcmd or "").lower()
+    if subcmd in _ATTA_DRIVER_ONLY and ctx is not None and ctx.subagent:
+        raise Deny(f"Solo el orquestador /atta registra la falla de modelo de un agente (atta "
+                   f"{subcmd}); un subagente no puede. Termina tu trabajo o informa el error "
+                   "en tu respuesta.")
     if subcmd not in _ATTA_MUTATING:
         return
     actions = _ATTA_MUTATING[subcmd]
@@ -1103,10 +1119,10 @@ def _check_atta(args: list[str]) -> None:
                "comando tú en tu terminal.")
 
 
-def _check_atta_script(args: list[str]) -> None:
+def _check_atta_script(args: list[str], ctx: "_Ctx | None" = None) -> None:
     """`sh atta.sh ...`: `args[0]` is the script a shell runs."""
     if args and _cmd_name(args[0]) == "atta.sh":
-        _check_atta(args[1:])
+        _check_atta(args[1:], ctx)
 
 
 def _atta_via_interpreter(args: list[str]) -> list[str] | None:

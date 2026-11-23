@@ -23,8 +23,19 @@ spawn ({stage, role, agent, model, tier, at}) or a spawn-group (a list of those,
 so a reviewer retry keeps the ones that already finished; a single spawn in a stage that already
 holds such a list, the Refutador in review, joins it). `machine.advance` moves it to the event
 that leaves the stage and clears it. Its only other writes are the `refute` event (below),
-job.json `build_retry` (build.md contract, below) and, on low risk, the rule's decision.md and
-`reina_rule` event (Reina determinista, below).
+job.json `build_retry` (build.md contract, below), on low risk the rule's decision.md and
+`reina_rule` event (Reina determinista, below) and clearing an agent's `model_failures` when
+its fallback chain is spent (below).
+
+Model fallback (F4 T4, S4): when `atta model-failed` (fallback.py) recorded that the agent of a
+spawn failed on the model it resolves to by quota, rate limit or network in this stage entry,
+the spawn uses Table.fallback(tier, failed, primary=<last failed>): the next model of the
+spawn's tier chain (the T3 chain when it escalates), never more expensive than the model that
+failed, skipping the models the spawn avoids (the Guía's for the Vigía, the reviewers' for the
+Refutador, counting a reviewer's own fallback) while another chain model is left. A spent chain
+never moves to a more expensive model (L4): `atta next` prints a `wait` with the reason (legal
+in every stage, unlike needs-human from intake or spec) and clears that agent's failures, so the
+next `/atta run` tries the routed model again once the quota or the network is back.
 
 Refutador (G4, S5): when every review of the round is in and a valid CHANGES has at least one
 blocker or major finding, `round-N/refute.md` decides before another round opens. It is spawned
@@ -110,7 +121,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import branches, config, decide as rule, gate, intake, machine, memory, scope
+from . import branches, config, decide as rule, fallback, gate, intake, machine, memory, scope
 from . import models as mdl
 from .events import append_event, read_events
 from .lock import job_lock
@@ -180,9 +191,13 @@ def _run(*argv: str, then: list[list[str]] | None = None) -> dict:
     return action
 
 
-def _spawn(agent: str, model: str, prompt: str, tier: str) -> dict:
-    # `tier` is internal (telemetry); `decide` strips it from the printed action.
-    return {"action": "spawn", "agent": agent, "model": model, "prompt": prompt, "tier": tier}
+def _spawn(agent: str, model: str, prompt: str, tier: str, avoid=None) -> dict:
+    # `tier` (telemetry) and `avoid` (the models a fallback must skip) are internal; `decide`
+    # strips them from the printed action.
+    action = {"action": "spawn", "agent": agent, "model": model, "prompt": prompt, "tier": tier}
+    if avoid:
+        action["avoid"] = list(avoid)
+    return action
 
 
 def _risk(job: dict) -> str | None:
@@ -424,18 +439,62 @@ def _table(cfg: dict, models) -> mdl.Table:
     return mdl.Table(models)  # a bare tier map (no role overrides)
 
 
-_INTERNAL = ("tier", "build_retry", "refute", "rule_decision", "rule_fallback")
+_INTERNAL = ("tier", "avoid", "build_retry", "refute", "rule_decision", "rule_fallback",
+             "model_reset")
 
 
 def _public(action: dict) -> dict:
-    """The action as printed: without the internal `tier`, `build_retry` and `rule_fallback`
-    of spawns nor `refute` and `rule_decision` of runs."""
-    if action["action"] in ("run", "spawn"):
+    """The action as printed: without the internal `tier`, `avoid`, `build_retry` and
+    `rule_fallback` of spawns, `refute` and `rule_decision` of runs nor `model_reset` of a
+    wait."""
+    if action["action"] in ("run", "spawn", "wait"):
         return {k: v for k, v in action.items() if k not in _INTERNAL}
     if action["action"] == "spawn-group":
         return {"action": "spawn-group",
-                "agents": [{k: v for k, v in a.items() if k != "tier"}
+                "agents": [{k: v for k, v in a.items() if k not in ("tier", "avoid")}
                            for a in action["agents"]]}
+    return action
+
+
+# ---------------------------------------------------------------- model fallback (F4 T4)
+
+def _failover(c: _Ctx, spawn: dict) -> dict | None:
+    """`spawn` on the next model of its tier's chain when its agent failed on that model by
+    quota, rate limit or network in this stage entry (fallback.py); None when the chain is
+    spent. Never more expensive than the last failed model (L4); skips `avoid` when it can."""
+    failed = fallback.failed_models(c.job, spawn["agent"])
+    if spawn["model"] not in failed:
+        return spawn
+    model = c.table.fallback(spawn["tier"], failed, primary=failed[-1],
+                             avoid=spawn.get("avoid"))
+    return None if model is None else dict(spawn, model=model)
+
+
+def _spent(c: _Ctx, spawn: dict) -> dict:
+    """The wait of a spent chain: never a silent move to a more expensive model (S4, L4)."""
+    agent = spawn["agent"]
+    failed = fallback.failed_models(c.job, agent)
+    return {"action": "wait", "reason": (
+        f"La cadena de fallback de {spawn['tier']} se agotó para {agent} en {c.jid}: falló en "
+        f"{', '.join(failed)} por cuota, rate limit o red y Atta no sube a un modelo más caro. "
+        f"El próximo /atta run lo vuelve a intentar con {spawn['model']}."),
+        # Internal (stripped by _public): `atta next` clears this agent's failures.
+        "model_reset": {"agent": agent, "stage": c.job["stage"],
+                        "since": c.job["stage_since"]}}
+
+
+def _with_fallbacks(c: _Ctx, action: dict) -> dict:
+    if action["action"] == "spawn":
+        moved = _failover(c, action)
+        return moved if moved is not None else _spent(c, action)
+    if action["action"] == "spawn-group":
+        agents = []
+        for spawn in action["agents"]:
+            moved = _failover(c, spawn)
+            if moved is None:
+                return _spent(c, spawn)
+            agents.append(moved)
+        return dict(action, agents=agents)
     return action
 
 
@@ -456,7 +515,7 @@ def plan(job: dict, job_dir: str | Path, root: str | Path, cfg: dict,
     handler = _HANDLERS.get(stage)
     if handler is None:
         return {"action": "wait", "reason": _WAIT.get(stage, f"Etapa {stage}: nada que hacer.")}
-    return handler(c)
+    return _with_fallbacks(c, handler(c))
 
 
 def _intake(c: _Ctx) -> dict:
@@ -510,6 +569,7 @@ def _spec_review(c: _Ctx) -> dict:
     review = c.dir / SPEC_REVIEW_FILE
     if not c.fresh(review):
         model = c.table.agent_model("vigia")
+        guia = c.table.agent_model("guia")
         done = machine.spec_reviews(c.job)
         again = (f" This is review {done + 1} of this spec (your previous review asked for "
                  f"changes {done} time{'' if done == 1 else 's'}): REVISE only for a blocker "
@@ -517,7 +577,7 @@ def _spec_review(c: _Ctx) -> dict:
         return _spawn("atta-vigia", model, (
             f"{c.head()} Repository root: {c.root}. {DATA_NOTE} Check {c.dir / SPEC_FILE} "
             f"against the real code and write your review to {review} and nothing else."
-            f"{again}"), c.tier("vigia", model=model))
+            f"{again}"), c.tier("vigia", model=model), avoid=[guia])
     if _first_line(review) == "VERDICT: READY":
         return _run("advance", c.jid, "build")
     # S9: the MAX_SPEC_REVISE-th REVISE goes to a person instead of back to spec.
@@ -719,7 +779,10 @@ def _refute(c: _Ctx, judged: list) -> dict:
 
 
 def _refutador_spawn(c: _Ctx, judged: list, out: Path, again: Path | None = None) -> dict:
-    spawns = [_reviewer_spawn(c, spec, path) for spec, path, _found in judged]
+    # The models the reviewers really ran on: a reviewer that fell back (F4 T4) counts with
+    # its fallback model.
+    spawns = [_failover(c, s) or s
+              for s in (_reviewer_spawn(c, spec, path) for spec, path, _found in judged)]
     avoid = [s["model"] for s in spawns]
     # Quality first: the Refutador can overturn a finding, so it is never weaker than the
     # strongest reviewer it judges, and runs on T3 when the job is high risk.
@@ -734,7 +797,8 @@ def _refutador_spawn(c: _Ctx, judged: list, out: Path, again: Path | None = None
         f"{c.head()} Round: {c.round}. Round folder: {c.round_dir}. Worktree: {c.worktree}. "
         f"Base: {c.base}. {DATA_NOTE} Check every blocker and major finding of these CHANGES "
         f"reviews against the real diff: {reviews}. Write your verdict to {out} and nothing "
-        f"else.{extra}"), c.tier("refutador", tier=floor, escalate=high, model=model))
+        f"else.{extra}"), c.tier("refutador", tier=floor, escalate=high, model=model),
+        avoid=avoid)
 
 
 def _deliver(c: _Ctx) -> dict:
@@ -1103,6 +1167,8 @@ def cmd_next(args, cfg, jobs) -> int:
         record_rule_decision(jobs, job["id"], job["stage"], raw["rule_decision"])
     if raw["action"] == "spawn" and "rule_fallback" in raw:
         record_rule_fallback(jobs, job["id"], job["stage"], raw["rule_fallback"])
+    if raw["action"] == "wait" and "model_reset" in raw:
+        fallback.clear(jobs, job["id"], raw["model_reset"])
     print(json.dumps(_public(raw), ensure_ascii=False))
     return OK
 
@@ -1118,7 +1184,10 @@ def register(subparsers) -> None:
                     "el evento refute (una vez por ronda) cuando decide con el refute.md del "
                     "Refutador y, en riesgo bajo, el decision.md APPROVE de la Reina por regla "
                     "con su evento reina_rule (o, una vez por etapa, el motivo por el que la "
-                    "regla deja la decisión a la Reina).")
+                    "regla deja la decisión a la Reina). Si atta model-failed registró que "
+                    "un agente pendiente falló por cuota, rate limit o red, lo relanza con el "
+                    "próximo modelo de la cadena de su tier, nunca más caro; con la cadena "
+                    "agotada imprime wait y olvida esas fallas para el próximo /atta run.")
     n.add_argument("job", help="id del job")
     n.set_defaults(func=cmd_next)
 
