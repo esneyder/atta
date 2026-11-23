@@ -1169,6 +1169,12 @@ class AskConfigCommandTests(GuardBase):
     def assertDeny(self, got, shown, command):
         self.assertEqual(got, ("deny", self.DENY.format(shown=shown, command=command)))
 
+    def assertDenyByMode(self, got, shown, command, mode):
+        """Deny of a plain config command from the main session: the reason names the mode."""
+        hint = (self.MODE_HINT.format(mode=mode) if isinstance(mode, str) and mode.strip()
+                else self.NO_MODE_HINT)
+        self.assertEqual(got, ("deny", self.DENY.format(shown=shown, command=command) + hint))
+
     def test_plain_invocation_asks_in_interactive_modes(self):
         for mode in self.INTERACTIVE:
             for command, shown in self.PLAIN:
@@ -1189,7 +1195,7 @@ class AskConfigCommandTests(GuardBase):
                                     command)
             for mode in self.SKIPPING + (None,):
                 with self.subTest(command=command, mode=mode):
-                    self.assertDeny(self.decide(command, mode=mode), shown, command)
+                    self.assertDenyByMode(self.decide(command, mode=mode), shown, command, mode)
 
     def test_profiles_read_only_forms_are_allowed_in_every_mode(self):
         for command in ("atta profiles", "atta profiles --json", "atta profiles show calidad"):
@@ -1211,6 +1217,12 @@ class AskConfigCommandTests(GuardBase):
         self.assertEqual(guard.evaluate(self.hook_with("atta init"), root=self.root),
                          self.ASK.format(shown="atta init", command="atta init"))
 
+    MODE_HINT = (" Esta sesión corre en modo «{mode}», que no te pide confirmación, así que Atta no "
+                 "puede preguntarte: para aprobarlo desde Claude Code usa el modo default o "
+                 "acceptEdits (por ejemplo \"defaultMode\": \"acceptEdits\" en "
+                 ".claude/settings.local.json del proyecto).")
+    NO_MODE_HINT = ""  # without a reported mode the reason stays as before
+
     def test_deny_when_mode_skips_confirmations_or_is_unknown(self):
         for mode in self.SKIPPING + ("acceptEditsPlus", "", "DEFAULT", " default", None, 3, [],
                                      {"a": 1}, True):
@@ -1219,12 +1231,29 @@ class AskConfigCommandTests(GuardBase):
                     h = self.hook_with(command, mode=None)
                     if mode is not None:
                         h["permission_mode"] = mode
-                    self.assertDeny(guard.decide(h, root=self.root), shown, command)
+                    if isinstance(mode, str) and mode.strip():
+                        hint = self.MODE_HINT.format(mode=mode)
+                    else:
+                        hint = self.NO_MODE_HINT
+                    self.assertEqual(guard.decide(h, root=self.root),
+                                     ("deny", self.DENY.format(shown=shown, command=command)
+                                      + hint))
+
+    def test_mode_hint_only_for_a_plain_command_from_the_main_session(self):  # sandbox L13
+        for h in (self.hook_with("atta init", mode="bypassPermissions", agent_id="a1"),
+                  self.hook_with("cd x && atta init", mode="bypassPermissions"),
+                  self.hook_with("./atta.sh init", mode="bypassPermissions")):
+            with self.subTest(hook=h):
+                kind, reason = guard.decide(h, root=self.root)
+                self.assertEqual(kind, "deny")
+                self.assertNotIn("Esta sesión corre en modo", reason)
 
     def test_deny_for_every_plain_form_when_mode_missing(self):
         for command, shown in self.PLAIN:
             with self.subTest(command=command):
-                self.assertDeny(self.decide(command, mode=None), shown, command)
+                self.assertEqual(self.decide(command, mode=None),
+                                 ("deny", self.DENY.format(shown=shown, command=command)
+                                  + self.NO_MODE_HINT))
 
     def test_subagent_is_denied_in_every_mode(self):
         for mode in self.INTERACTIVE + self.SKIPPING + (None,):
@@ -1270,8 +1299,10 @@ class AskConfigCommandTests(GuardBase):
     def test_deny_reason_names_the_exact_command(self):
         command = "cd sub && atta settings set max_rounds 9"
         self.assertDeny(self.decide(command), "atta settings set", command)
-        self.assertDeny(self.decide("atta settings set max_rounds 9", mode="bypassPermissions"),
-                        "atta settings set", "atta settings set max_rounds 9")
+        self.assertDenyByMode(self.decide("atta settings set max_rounds 9",
+                                          mode="bypassPermissions"),
+                              "atta settings set", "atta settings set max_rounds 9",
+                              "bypassPermissions")
 
     def test_long_command_is_denied_not_asked(self):  # A2: the prompt could not show it whole
         command = "atta settings set labels.queue " + "x" * 600
@@ -1360,7 +1391,8 @@ class AskConfigCommandTests(GuardBase):
         spec = json.loads(out.getvalue())["hookSpecificOutput"]
         self.assertEqual(spec["permissionDecision"], "deny")
         self.assertEqual(spec["permissionDecisionReason"],
-                         self.DENY.format(shown="atta init", command="atta init") + " — «Atta»")
+                         self.DENY.format(shown="atta init", command="atta init")
+                         + self.MODE_HINT.format(mode="bypassPermissions") + " — «Atta»")
 
     def test_ask_never_applies_to_non_config_commands(self):  # PRESERVE
         for command in (f"atta next {JID}", "atta queue", "atta settings", "atta models",
