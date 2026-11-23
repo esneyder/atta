@@ -931,7 +931,15 @@ puede escribir, avisa por stderr y imprime igual el lanzamiento de la Reina. Lo
 `build_retry` cuando pide a la Cortadora rehacer un `build.md` que no cumple el contrato (sección
 2.5), el evento `refute` del Refutador y, al imprimir el `wait` de una cadena de fallback agotada,
 borra las fallas de ese agente (`model_fallback`, sección 5.4). Si `atta model-failed` registró
-que un agente pendiente falló, lo relanza con el siguiente modelo de la cadena. Los prompts de la Guía, la Cortadora y los reviewers
+que un agente pendiente falló, lo relanza con el siguiente modelo de la cadena. Si un agente
+pendiente superó el límite de su etapa (`stage_timeouts_s`, sección 10; `at` de `pending_agent`),
+`atta next` lo reporta en vez de colgar el job: la primera vez en la entrada a la etapa lo relanza
+(mismo spawn, el reloj vuelve a empezar) y escribe un evento `stage_timeout`; la segunda lo deja a una
+persona (`label` needs-human, `comment` firmado por el rol de la etapa con el motivo en
+`stage-timeout.md` y `advance needs-human`). `intake` y `spec` no tienen paso a needs-human: ahí
+imprime el label y el comentario una vez y después un `wait` hasta que una persona mueva el job. Un
+timeout no es una falla de cuota, rate limit o red: no toca `model_failures` ni gasta la cadena de
+fallback, y avisa por stderr. Los prompts de la Guía, la Cortadora y los reviewers
 (Rastreador incluido) terminan con las lecciones relevantes de `atta/memory/lessons.md` para los
 archivos del diff (o los de `FILES:` del spec), dentro del presupuesto de 1.500 caracteres.
 Ejemplo recién creado el job:
@@ -1374,6 +1382,7 @@ un Atta anterior) cuenta como `code`.
 | `prices_usd_per_mtok` | `{}` | Precio por millón de tokens por modelo. Sin precio, el costo queda `null` con un aviso (nunca corta) |
 | `routing` | tabla de la sección 2.6 | Reviewers, lentes y tier por riesgo y por superficie |
 | `routing_matrix` | sin clave (opcional) | `true` o `false`: la matriz etapa×riesgo de los modelos (sección 5.4). Sin la clave vale `true` y `atta doctor` avisa del cambio de routing; `false` conserva el routing de antes. Solo una persona la edita |
+| `stage_timeouts_s` | sin clave (opcional) | Segundos que puede tardar un agente en cada etapa antes de que `atta next` lo reintente (y a la segunda lo deje a una persona): `{etapa: segundos}` con `intake`, `spec`, `spec-review`, `build`, `review`, `approve` (enteros > 0). Sin la clave, o sin una etapa: 600, 900, 600, 3600, 1200 y 900 s. Solo una persona la edita (el guard bloquea a los agentes) |
 | `models` | sin clave (opcional) | Modelos por tier y por rol del proyecto, por runtime. Se cambia con `atta models` (sección 5.4) |
 | `merge_method` | `"merge"` (opcional) | Método de `gh pr merge`: `merge`, `squash` o `rebase` |
 | `guard.deny_commands` | lista interna (opcional) | Comandos de despliegue que el guard bloquea. **Reemplaza** la lista por defecto (sección 14.2) |
@@ -1450,6 +1459,7 @@ muestran el dashboard y el PR.
 | `build_retry` | El reintento del contrato de `build.md`: `{round, since, mtime}` (sección 2.5) |
 | `pending_agent` | Lo que `atta next` decidió al lanzar agentes en la etapa actual: `{stage, role, agent, model, tier, at}`, o una lista de esos para los reviewers en paralelo. Lo consume y borra la siguiente transición |
 | `model_failures` | Los modelos en que cada agente falló por cuota, rate limit o red (`atta model-failed`): `{stage, since, agents: {agente: [modelos]}}`. Solo cuenta en la entrada a la etapa que nombra (sección 5.4) |
+| `stage_timeouts` | Los timeouts de etapa ya reportados por agente (`atta next`): `{stage, since, agents: {agente: n}}`. 1 = reintentado, 2 = dejado a una persona; solo cuenta en la entrada a la etapa que nombra |
 
 ### `events.jsonl`
 
@@ -1492,6 +1502,16 @@ agente falla por cuota, rate limit o red. Lleva `from_model` y `to_model` (no `f
 {"ts": "2025-06-05T08:10:00Z", "job": "1-agregar-la-funcion-de", "event": "model_fallback",
  "stage": "build", "round": 3, "agent": "atta-cortadora", "tier": "T3", "from_model": "opus",
  "to_model": "sonnet", "reason": "quota"}
+```
+
+`stage_timeout` tampoco es una transición: lo escribe `atta next` (sección 7.3) una vez por entrada
+pendiente que superó el límite de su etapa. Lleva `limit_s`, `elapsed_s`, el modelo y `outcome`
+(`retry` la primera vez, `needs-human` la segunda); `round` solo en build, review y approve:
+
+```json
+{"ts": "2025-06-05T09:40:00Z", "job": "1-agregar-la-funcion-de", "event": "stage_timeout",
+ "stage": "intake", "agent": "atta-exploradora", "model": "haiku", "limit_s": 600,
+ "elapsed_s": 1359, "outcome": "retry"}
 ```
 
 ---
@@ -1677,6 +1697,7 @@ atta/
 │   ├── doctor.py      atta doctor
 │   ├── models.py      resolución de modelos y atta models
 │   ├── fallback.py    atta model-failed (fallback por cuota, rate limit o red)
+│   ├── timeouts.py    límites de tiempo por etapa de un agente pendiente (atta next)
 │   ├── settings.py    atta settings (con settings_registry.py)
 │   ├── memory.py      la Cultivadora: atta memory y lessons.md
 │   ├── github.py      adaptador de gh

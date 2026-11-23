@@ -184,6 +184,12 @@ cada revisión). `"routing_matrix": false` en `atta/config.json` la apaga y `att
 los proyectos que no fijaron la clave. Lo demás de esta sección (escalera en tres tiers, familia distinta)
 sigue siendo diseño.
 
+**Implementado en F4 (T5):** timeouts por etapa. `atta next` compara el `at` del agente pendiente con el
+límite de su etapa (`timeouts.py`; `stage_timeouts_s` en `atta/config.json`, solo humanos); la primera vez
+reintenta (evento `stage_timeout`), la segunda deja el job a una persona (needs-human; en intake y spec,
+que no tienen ese paso, label, comentario y `wait`). No consume la cadena de fallback: un timeout no es una
+falla de cuota, rate limit o red.
+
 **Escalera por intento:** si la ronda N falla (`GATE: FAIL` o `VERDICT: CHANGES`), la ronda N+1 sube a la
 Cortadora un tier (`T1 → T2 → T3`) y la última ronda siempre usa T3. Lo caro solo se paga cuando lo barato
 demostró no alcanzar. Cada subida queda en `events.jsonl`.

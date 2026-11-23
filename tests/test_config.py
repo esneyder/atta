@@ -202,6 +202,26 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
                 self.assertEqual(str(ctx.exception),
                                  "config.json: routing_matrix debe ser true o false.")
 
+    def test_stage_timeouts_s_is_optional_and_validated(self):
+        # F4 T5 (S6): never defaulted (absent = timeouts.DEFAULT_LIMITS_S), {stage: seconds}.
+        self.assertNotIn("stage_timeouts_s", config.load_config(self.write({})))
+        ok = {"intake": 30, "build": 7200}
+        self.assertEqual(config.load_config(self.write({"stage_timeouts_s": ok}))
+                         ["stage_timeouts_s"], ok)
+        shape = "config.json: stage_timeouts_s debe ser un objeto {etapa: segundos}."
+        bad = [("lento", shape), ([], shape),
+               ({"gate": 5}, "config.json: stage_timeouts_s: «gate» no es una etapa con agente "
+                             "(usa: intake, spec, spec-review, build, review, approve).")]
+        for seconds in (0, -1, 1.5, "60", True, None):
+            bad.append(({"spec": seconds},
+                        "config.json: stage_timeouts_s.spec debe ser un entero de segundos "
+                        "mayor que 0."))
+        for value, message in bad:
+            with self.subTest(value=value):
+                with self.assertRaises(config.ConfigError) as ctx:
+                    config.load_config(self.write({"stage_timeouts_s": value}))
+                self.assertEqual(str(ctx.exception), message)
+
     def test_unordered_fallback_chain_is_invalid(self):
         # F4 T4 review: an entry dearer than the one before it could never be reached.
         models = {"claude-code": {"fallbacks": {"T3": ["haiku", "sonnet"]}}}

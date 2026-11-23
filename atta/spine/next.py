@@ -32,7 +32,7 @@ holds such a list, the Refutador in review, joins it). `machine.advance` moves i
 that leaves the stage and clears it. Its only other writes are the `refute` event (below),
 job.json `build_retry` (build.md contract, below), on low risk the rule's decision.md and
 `reina_rule` event (Reina determinista, below) and clearing an agent's `model_failures` when
-its fallback chain is spent (below).
+its fallback chain is spent (below), and what timeouts.py writes for a stage timeout (above).
 
 Model fallback (F4 T4, S4): when `atta model-failed` (fallback.py) recorded that the agent of a
 spawn failed on the model it resolves to by quota, rate limit or network in this stage entry,
@@ -43,6 +43,16 @@ Refutador, counting a reviewer's own fallback) while another chain model is left
 never moves to a more expensive model (L4): `atta next` prints a `wait` with the reason (legal
 in every stage, unlike needs-human from intake or spec) and clears that agent's failures, so the
 next `/atta run` tries the routed model again once the quota or the network is back.
+
+Stage timeouts (F4 T5, S6): a spawn whose agent is still pending in job.json (`pending_agent[].at`)
+past the limit of its stage (timeouts.py: DEFAULT_LIMITS_S, `stage_timeouts_s` in config.json) is
+reported before it is printed: the first time in the stage entry it is the same spawn again, with its
+clock restarted and a `stage_timeout` event; the second time the job goes to a person (label
+needs-human, comment, advance; intake and spec cannot advance, so they print the label and comment
+once and then a `wait`). It never touches `model_failures`: a timeout is not a quota, rate-limit or
+network failure and does not consume the fallback chain. Asking `atta next` again keeps the clock of an
+agent already running on the same model (`record_pending`), except for a retry of the build.md
+contract, a reviewer or the Refutador, which start their own.
 
 Refutador (G4, S5): when every review of the round is in and a valid CHANGES has at least one
 blocker or major finding, `round-N/refute.md` decides before another round opens. It is spawned
@@ -130,6 +140,7 @@ import tempfile
 from pathlib import Path
 
 from . import branches, config, decide as rule, fallback, gate, intake, machine, memory, scope
+from . import timeouts
 from . import models as mdl
 from .events import append_event, read_events
 from .lock import LockTimeout, job_lock
@@ -462,7 +473,7 @@ def _table(cfg: dict, models) -> mdl.Table:
 
 
 _INTERNAL = ("tier", "avoid", "build_retry", "refute", "rule_decision", "rule_fallback",
-             "model_reset")
+             "model_reset", "restart")
 
 
 def _public(action: dict) -> dict:
@@ -473,7 +484,7 @@ def _public(action: dict) -> dict:
         return {k: v for k, v in action.items() if k not in _INTERNAL}
     if action["action"] == "spawn-group":
         return {"action": "spawn-group",
-                "agents": [{k: v for k, v in a.items() if k not in ("tier", "avoid")}
+                "agents": [{k: v for k, v in a.items() if k not in ("tier", "avoid", "restart")}
                            for a in action["agents"]]}
     return action
 
@@ -729,7 +740,7 @@ def _gate_config_retry(c: _Ctx) -> dict | None:
     return action
 
 
-def _reviewer_spawn(c: _Ctx, spec: dict, out: Path) -> dict:
+def _reviewer_spawn(c: _Ctx, spec: dict, out: Path, again: bool = False) -> dict:
     agent = _reviewer_agent(spec["reviewer"])
     role = agent[len("atta-"):]
     tier, escalate = c.stage(role, tier=spec["tier"], reviewer=spec["reviewer"])
@@ -743,6 +754,8 @@ def _reviewer_spawn(c: _Ctx, spec: dict, out: Path) -> dict:
                         f"to {out} and nothing else.{c.lessons(diff=True)}")}
     if cortadora is not None:
         spawn["avoid"] = [cortadora]  # internal: a T4 fallback skips it too (see _public)
+    if again:
+        spawn["restart"] = True  # internal: a new attempt, its stage clock starts again (T5)
     return spawn
 
 
@@ -759,7 +772,7 @@ def _review(c: _Ctx) -> dict:
         used, verdict = primary, _review_ok(primary)
         if verdict is None:
             if not c.fresh(retry):
-                pending.append(_reviewer_spawn(c, spec, retry))
+                pending.append(_reviewer_spawn(c, spec, retry, again=True))
                 continue
             used, verdict = retry, _review_ok(retry)
             if verdict is None:
@@ -823,12 +836,15 @@ def _refutador_spawn(c: _Ctx, judged: list, out: Path, again: Path | None = None
     reviews = ", ".join(str(path) for _spec, path, _found in judged)
     extra = (f" Your previous file {again} broke the format: write the full file again."
              if again is not None else "")
-    return _spawn("atta-refutador", model, (
+    spawn = _spawn("atta-refutador", model, (
         f"{c.head()} Round: {c.round}. Round folder: {c.round_dir}. Worktree: {c.worktree}. "
         f"Base: {c.base}. {DATA_NOTE} Check every blocker and major finding of these CHANGES "
         f"reviews against the real diff: {reviews}. Write your verdict to {out} and nothing "
         f"else.{extra}"), c.tier("refutador", tier=floor, escalate=high, model=model),
         avoid=avoid)
+    if again is not None:
+        spawn["restart"] = True  # internal: the retry starts its stage clock again (T5)
+    return spawn
 
 
 def _deliver(c: _Ctx) -> dict:
@@ -1080,6 +1096,24 @@ def _entry(stage: str, spawn: dict, at: str) -> dict:
             "model": spawn["model"], "tier": spawn["tier"], "at": at}
 
 
+def _clock(previous, job: dict, stage: str, spawn: dict, now: str) -> str:
+    """`at` of a spawn: the clock of the same agent on the same model already running in this
+    stage entry keeps running (T5: asking `atta next` again must not postpone its time limit),
+    unless the spawn is a new attempt (build.md retry, reviewer or Refutador retry)."""
+    if spawn.get("restart") or "build_retry" in spawn:
+        return now
+    entries = previous if isinstance(previous, list) else [previous]
+    for e in entries:
+        if (isinstance(e, dict) and e.get("stage") == stage and e.get("agent") == spawn["agent"]
+                and e.get("model") == spawn["model"] and isinstance(e.get("at"), str)):
+            try:
+                if from_iso(e["at"]) >= from_iso(job["stage_since"]):
+                    return e["at"]
+            except (KeyError, TypeError, ValueError):
+                pass
+    return now
+
+
 def record_pending(jobs, jid: str, stage: str, action: dict) -> None:
     """Store in job.json the agent(s) a spawn action decided for `stage` (T12)."""
     at = to_iso(utcnow())
@@ -1091,12 +1125,12 @@ def record_pending(jobs, jid: str, stage: str, action: dict) -> None:
         if action["action"] == "spawn" and not (
                 isinstance(previous, list)
                 and any(isinstance(p, dict) and p.get("stage") == stage for p in previous)):
-            job["pending_agent"] = _entry(stage, action, at)
+            job["pending_agent"] = _entry(stage, action, _clock(previous, job, stage, action, at))
         else:
             kept = [p for p in previous if isinstance(p, dict) and p.get("stage") == stage] \
                 if isinstance(previous, list) else []
             spawned = action["agents"] if action["action"] == "spawn-group" else [action]
-            fresh = [_entry(stage, a, at) for a in spawned]
+            fresh = [_entry(stage, a, _clock(previous, job, stage, a, at)) for a in spawned]
             new_agents = {e["agent"] for e in fresh}
             job["pending_agent"] = [p for p in kept if p.get("agent") not in new_agents] + fresh
         jobs.save(job)
@@ -1212,6 +1246,14 @@ def cmd_next(args, cfg, jobs) -> int:
         print(str(exc), file=sys.stderr)
         return REFUSED
     if raw["action"] in ("spawn", "spawn-group"):
+        # F4 T5 (S6): an agent over its stage limit is retried once, then goes to a person.
+        spawns = raw["agents"] if raw["action"] == "spawn-group" else [raw]
+        action, note = timeouts.handle(jobs, job["id"], cfg, spawns, utcnow())
+        if note:
+            print(note, file=sys.stderr)
+        if action is not None:
+            print(json.dumps(action, ensure_ascii=False))
+            return OK
         record_pending(jobs, job["id"], job["stage"], raw)
     if raw["action"] == "spawn" and "build_retry" in raw:
         record_build_retry(jobs, job["id"], job["stage"], raw["build_retry"])
@@ -1252,7 +1294,12 @@ def register(subparsers) -> None:
                     "(hold si fue rechazado o hay un ciclo) sin escribir nada, como atta queue. "
                     "Los modelos siguen la matriz etapa×riesgo (bajo baja la Guía; alto sube la "
                     "Cortadora, la Reina y el revisor de seguridad; la Cortadora sube desde la "
-                    "ronda 2) y los reviewers evitan el modelo de la Cortadora.")
+                    "ronda 2) y los reviewers evitan el modelo de la Cortadora. Si un agente pendiente superó "
+                    "el límite de su etapa (stage_timeouts_s en config.json; por defecto intake 600 s, "
+                    "spec 900, spec-review 600, build 3600, review 1200, approve 900) lo reintenta una "
+                    "vez con un evento stage_timeout y, si vuelve a pasarse en la misma etapa, lo "
+                    "deja a una persona (label needs-human, comentario y paso a needs-human; en "
+                    "intake y spec, sin paso, queda en wait); no gasta la cadena de fallback.")
     n.add_argument("job", help="id del job")
     n.set_defaults(func=cmd_next)
 
