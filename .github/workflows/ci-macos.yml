@@ -1,0 +1,39 @@
+name: ci-macos
+
+# macOS runners are often saturated ("not acquired by Runner ... capacity constraints"), so they
+# never gate a pull request: this runs after a merge to develop, weekly and on demand.
+on:
+  push:
+    branches: [develop]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  spine-tests:
+    name: spine tests (macos-latest, py3.12)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Configure git identity for test repositories
+        run: |
+          git config --global user.name "atta-ci"
+          git config --global user.email "atta-ci@example.invalid"
+      - name: Run the spine test suite
+        env:
+          PYTHONUTF8: "1"
+        run: python -m unittest discover -s tests -v
+      - name: Install Atta into a fresh venv and run it outside the checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/atta-venv"
+          "$RUNNER_TEMP/atta-venv/bin/python" -m pip install .
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/atta-venv/bin/atta" --help
+          "$RUNNER_TEMP/atta-venv/bin/atta-board" --help | grep -q "máquina"
