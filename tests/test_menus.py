@@ -32,6 +32,17 @@ class MenuTemplatesTest(unittest.TestCase):
                 self.assertIn("\ndescription: ", front)
                 self.assertIn("\nmodel: {{model:T0}}\n", front)
 
+    def test_every_menu_makes_the_selector_mandatory(self):  # sandbox: «no me deja interactuar»
+        for name in MENUS:
+            with self.subTest(menu=name):
+                text = self.read(name)
+                head = " ".join(text.split("## ", 2)[1].split())  # first section, one line
+                self.assertTrue(head.startswith("Interacción obligatoria"), head[:60])
+                for phrase in ("herramienta `AskUserQuestion`",
+                               "Nunca termines tu respuesta con una pregunta escrita",
+                               "Cada vez que te invoquen empiezas de cero"):
+                    self.assertIn(phrase, head)
+
     def test_atta_command_still_exists_next_to_the_namespace(self):
         self.assertTrue((COMMANDS / "atta.md").is_file())
 
