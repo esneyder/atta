@@ -30,10 +30,19 @@ rastreador            T3    opus    tier
 refutador             T1    haiku   tier
 reina                 T2    sonnet  tier · escala a T3 (opus)
 Tiers: T0 haiku · T1 haiku · T2 sonnet · T3 opus
+Matriz etapa×riesgo (modelo en riesgo bajo · medio · alto):
+  guia          haiku · sonnet · sonnet
+  jardinera-ux  haiku · sonnet · sonnet
+  cortadora     sonnet · sonnet · opus (desde la ronda 2: opus)
+  reina         sonnet · sonnet · opus
+  soldado       sonnet · sonnet · opus (revisor de seguridad)
 Las Jardineras, el Soldado y el Rastreador corren en el tier que les asigna el router; un modelo por rol lo reemplaza.
+El orquestador /atta (comando y skill) corre en T0 (haiku).
+Fallback por cuota, rate limit o red: ninguno (`atta models fallback <tier> <modelo>...`).
 Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o `atta models set --role <rol> <modelo>`.
 — Atta
 """
+DRIVER = (".claude/commands/atta.md", ".claude/skills/atta/SKILL.md")
 BAD_MODEL = ("«gpt-4» no es un modelo válido para claude-code: usa haiku, sonnet u opus, o un id "
              "completo que cumpla claude-[a-z0-9.-]+ (p. ej. claude-sonnet-4-5). No cambié nada.\n")
 
@@ -179,6 +188,56 @@ class SetTest(ModelsBase):
         self.assertEqual(path.read_bytes(), before.replace(b"model: sonnet\r\n",
                                                            b"model: haiku\r\n"))
 
+    def driver_model(self, rel):
+        text = (self.root / rel).read_text(encoding="utf-8")
+        front = text.split("---\n", 2)[1]
+        return [ln.split(":", 1)[1].strip() for ln in front.splitlines()
+                if ln.startswith("model:")]
+
+    def test_set_t0_moves_the_atta_driver_and_no_agent(self):
+        # F4 S5 (G8): /atta runs on T0; `models set T0` keeps command and skill in sync.
+        agents = {k: v for k, v in self.files().items() if k != "config"}
+        code, out, err = self.atta("models", "set", "T0", "sonnet")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, "Atta: T0 ahora es sonnet en atta/config.json (claude-code).\n"
+                              "  sin cambios: 12 agentes\n"
+                              "  actualicé: .claude/skills/atta/SKILL.md → sonnet\n"
+                              "  actualicé: .claude/commands/atta.md → sonnet\n"
+                              "Revisa la tabla con `atta models`.\n— Atta\n")
+        for rel in DRIVER:
+            self.assertEqual(self.driver_model(rel), ["sonnet"], rel)
+        self.assertEqual({k: v for k, v in self.files().items() if k != "config"}, agents)
+        self.assertIn("El orquestador /atta (comando y skill) corre en T0 (sonnet).\n",
+                      self.atta("models")[1])
+        # what `models set` writes is exactly what `atta init` would write: no drift
+        code, out, _ = self.atta("init", "--check")
+        self.assertEqual(code, 0, out)
+        code, out, err = self.atta("models", "reset")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("  actualicé: .claude/commands/atta.md → haiku\n", out)
+        for rel in DRIVER:
+            self.assertEqual(self.driver_model(rel), ["haiku"], rel)
+
+    def test_driver_without_model_line_is_reported_and_kept(self):
+        # a command from before F4 has no `model:` line: left as is, init --force fixes it
+        command = self.root / ".claude" / "commands" / "atta.md"
+        old = b"---\ndescription: viejo\n---\n\nCuerpo.\n"
+        command.write_bytes(old)
+        code, out, err = self.atta("models", "set", "T0", "sonnet")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("  sin línea model: en .claude/commands/atta.md; la dejé igual (ponlo al "
+                      "día con `atta init --force`).\n", out)
+        self.assertEqual(command.read_bytes(), old)
+        self.assertEqual(self.driver_model(DRIVER[1]), ["sonnet"])
+
+    def test_missing_driver_file_is_reported(self):
+        (self.root / ".claude" / "skills" / "atta" / "SKILL.md").unlink()
+        code, out, err = self.atta("models", "set", "T0", "sonnet")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("  falta: .claude/skills/atta/SKILL.md; corre `atta init` para crearlo.\n",
+                      out)
+        self.assertFalse((self.root / ".claude" / "skills" / "atta" / "SKILL.md").exists())
+
     def test_missing_agent_file_is_reported(self):
         (self.root / ".claude" / "agents" / "atta-reina.md").unlink()
         code, out, err = self.atta("models", "set", "T2", "haiku")
@@ -307,6 +366,342 @@ class ResolveTest(unittest.TestCase):
         cfg = self.cfg(roles={"refutador": "sonnet"})
         self.assertEqual(models.resolve("refutador", cfg), "sonnet")
         self.assertEqual(models.resolve("refutador", cfg, avoid=["sonnet"]), "haiku")
+
+
+
+class StageTierTest(unittest.TestCase):
+    """F4 T3 (S8, S8a): `Table.stage_tier`, the stage×risk matrix, the single source."""
+
+    def table(self, **kw):
+        base = {"T0": "haiku", "T1": "haiku", "T2": "sonnet", "T3": "opus"}
+        return models.Table(base, kw.pop("roles", {}), models.role_tiers(), base, **kw)
+
+    def test_low_goes_one_tier_down_only_for_guia_and_ux_jardinera(self):
+        tab = self.table()
+        self.assertEqual(tab.stage_tier("guia", risk="low"), ("T1", False))
+        self.assertEqual(tab.stage_tier("jardinera-ux", risk="low"), ("T1", False))
+        for role in ("cortadora", "reina", "refutador", "vigia", "soldado", "rastreador",
+                     "jardinera-code", "jardinera-ui", "jardinera-resilience"):
+            self.assertEqual(tab.stage_tier(role, risk="low"), (tab.tier_of(role), False), role)
+
+    def test_exploradora_is_never_lowered_it_runs_before_the_risk_exists(self):
+        self.assertEqual(self.table().stage_tier("exploradora", risk="low"), ("T1", False))
+
+    def test_a_router_tier_is_not_lowered_again(self):
+        self.assertEqual(self.table().stage_tier("jardinera-ux", tier="T1", risk="low"),
+                         ("T1", False))
+
+    def test_step_down_stops_at_t0(self):
+        tab = self.table()
+        tab.defaults["guia"] = "T0"
+        self.assertEqual(tab.stage_tier("guia", risk="low"), ("T0", False))
+
+    def test_medium_is_todays_routing(self):
+        tab = self.table()
+        for role in models.ROLES:
+            self.assertEqual(tab.stage_tier(role, risk="medium"),
+                             (tab.tier_of(role), False), role)
+        self.assertEqual(tab.stage_tier("jardinera-code", tier="T1", risk="medium"),
+                         ("T1", False))
+
+    def test_high_and_unknown_raise_cortadora_reina_and_the_security_reviewer(self):
+        tab = self.table()
+        for risk in ("high", None, "raro"):
+            self.assertEqual(tab.stage_tier("cortadora", risk=risk), ("T3", True), risk)
+            self.assertEqual(tab.stage_tier("reina", risk=risk), ("T3", True), risk)
+            self.assertEqual(tab.stage_tier("soldado", tier="T2", risk=risk,
+                                            reviewer="security"), ("T3", True), risk)
+            self.assertEqual(tab.stage_tier("jardinera-code", tier="T2", risk=risk),
+                             ("T2", False), risk)
+            self.assertEqual(tab.stage_tier("guia", risk=risk), ("T2", False), risk)
+
+    def test_unknown_risk_never_lowers(self):
+        tab = self.table()
+        for risk in (None, "raro", "none"):
+            self.assertEqual(tab.stage_tier("guia", risk=risk), ("T2", False))
+
+    def test_router_t3_escalates_and_the_refutador_is_not_raised_here(self):
+        tab = self.table()
+        self.assertEqual(tab.stage_tier("rastreador", tier="T3", risk="medium"), ("T3", True))
+        self.assertEqual(tab.stage_tier("refutador", risk="high"), ("T1", False))
+
+    def test_ladder_cortadora_climbs_from_round_two(self):
+        tab = self.table()
+        self.assertEqual(tab.stage_tier("cortadora", risk="medium", round=1), ("T2", False))
+        self.assertEqual(tab.stage_tier("cortadora", risk="medium", round=2), ("T3", True))
+        self.assertEqual(tab.stage_tier("cortadora", risk="low", round=2), ("T3", True))
+        self.assertEqual(tab.stage_tier("jardinera-code", risk="medium", round=5),
+                         ("T2", False))
+
+    def test_matrix_off_is_the_routing_of_before(self):
+        tab = self.table(matrix=False)
+        self.assertEqual(tab.stage_tier("guia", risk="low"), ("T2", False))
+        self.assertEqual(tab.stage_tier("cortadora", risk="medium", round=2), ("T2", False))
+        self.assertEqual(tab.stage_tier("cortadora", risk="medium", round=3), ("T3", True))
+        self.assertEqual(tab.stage_tier("cortadora", risk="high"), ("T3", True))
+        self.assertEqual(tab.stage_tier("cortadora", risk=None), ("T2", False))
+        self.assertEqual(tab.stage_tier("reina", risk="high"), ("T3", True))
+        self.assertEqual(tab.stage_tier("soldado", tier="T2", risk="high", reviewer="security"),
+                         ("T2", False))
+
+    def test_matrix_follows_the_config_switch(self):
+        self.assertTrue(models.table(config.with_defaults({})).matrix)
+        self.assertTrue(models.table(config.with_defaults({"routing_matrix": True})).matrix)
+        self.assertFalse(models.table(config.with_defaults({"routing_matrix": False})).matrix)
+
+    def test_risk_models_shows_the_effect_per_risk(self):
+        tab = self.table(roles={"cortadora": "haiku"})
+        self.assertEqual(tab.risk_models("guia"), ("haiku", "sonnet", "sonnet"))
+        # the override replaces the tier model; escalation to T3 still ignores it
+        self.assertEqual(tab.risk_models("cortadora"), ("haiku", "haiku", "opus"))
+        self.assertEqual(tab.risk_models("soldado", "security"), ("sonnet", "sonnet", "opus"))
+
+    # ---- independence (F2 L8)
+
+    def test_review_model_avoids_a_clash_only_with_a_model_that_is_not_weaker(self):
+        base = {"T0": "haiku", "T1": "opus", "T2": "sonnet", "T3": "opus"}
+        tab = models.Table(base, {}, models.role_tiers(), base)
+        # high risk: T1 reviewer clashes with the Cortadora's opus; T2 is not weaker than T1
+        self.assertEqual(tab.review_model("jardinera-ux", tier="T1", escalate=False,
+                                          risk="high", cortadora="opus"), "sonnet")
+        # medium/low: no model above the reviewer's own tier is allowed
+        for risk in ("medium", "low"):
+            self.assertEqual(tab.review_model("jardinera-ux", tier="T1", escalate=False,
+                                              risk=risk, cortadora="opus"), "opus")
+
+    def test_review_model_keeps_a_role_override_and_an_escalated_reviewer(self):
+        tab = self.table(roles={"jardinera-code": "opus"})
+        self.assertEqual(tab.review_model("jardinera-code", tier="T2", escalate=False,
+                                          risk="high", cortadora="opus"), "opus")
+        self.assertEqual(tab.review_model("rastreador", tier="T3", escalate=True,
+                                          risk="high", cortadora="opus"), "opus")
+
+    def test_review_model_without_a_clash_or_with_the_matrix_off_is_resolve(self):
+        tab = self.table()
+        self.assertEqual(tab.review_model("jardinera-code", tier="T2", escalate=False,
+                                          risk="medium", cortadora="opus"), "sonnet")
+        self.assertEqual(self.table(matrix=False).review_model(
+            "jardinera-ux", tier="T2", escalate=False, risk="high", cortadora="sonnet"),
+            "sonnet")
+
+    def test_resolve_ceiling_bounds_the_avoid_search(self):
+        tab = self.table()
+        self.assertEqual(tab.resolve("refutador", avoid={"haiku"}, floor="T1"), "sonnet")
+        self.assertEqual(tab.resolve("refutador", avoid={"haiku"}, floor="T1", ceiling="T1"),
+                         "haiku")
+
+    def test_matrix_lines_in_atta_models_when_off(self):
+        tab = self.table(matrix=False)
+        self.assertEqual(models._matrix_lines(tab), [
+            'Matriz etapa×riesgo: desactivada ("routing_matrix": false en atta/config.json); '
+            "el routing es el de antes."])
+
+
+class MatrixRenderTest(ModelsBase):
+    def test_table_shows_the_effect_and_the_switch(self):
+        self.cfg_path.write_text(json.dumps({**self.stored(), "routing_matrix": False}),
+                                 encoding="utf-8")
+        code, out, err = self.atta("models")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn('Matriz etapa×riesgo: desactivada ("routing_matrix": false en '
+                      "atta/config.json); el routing es el de antes.\n", out)
+        self.assertNotIn("Matriz etapa×riesgo (modelo", out)
+
+    def test_overrides_show_in_the_matrix_rows(self):
+        self.atta("models", "set", "T2", "haiku")
+        _code, out, _err = self.atta("models")
+        self.assertIn("  cortadora  haiku · haiku · opus (desde la ronda 2: opus)\n", out)
+        # a role that no longer varies by risk leaves the matrix
+        self.assertNotIn("  guia  ", out)
+        self.assertNotIn("  jardinera-ux  haiku", out)
+
+    def test_models_set_and_reset_do_not_write_routing_matrix(self):
+        before = self.stored().get("routing_matrix", "absent")
+        self.atta("models", "set", "T3", "sonnet")
+        self.assertEqual(self.stored().get("routing_matrix", "absent"), before)
+        self.atta("models", "reset")
+        self.assertEqual(self.stored().get("routing_matrix", "absent"), before)
+
+
+class FallbackTest(ModelsBase):
+    """F4 T4 (S4, L4): per-tier Claude fallback chains for quota, rate limit or network
+    errors; a fallback never goes to a more expensive model."""
+
+    def test_set_chain_is_stored_and_shown_without_touching_agents(self):
+        before = self.files()
+        code, out, err = self.atta("models", "fallback", "T3", "sonnet", "haiku")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Atta: si T3 (opus) falla por cuota, rate limit o red, usa sonnet → "
+                      "haiku en atta/config.json (claude-code).", out)
+        self.assertEqual(self.stored()["models"],
+                         {"claude-code": {"fallbacks": {"T3": ["sonnet", "haiku"]}}})
+        after = self.files()
+        self.assertEqual({k: v for k, v in after.items() if k != "config"},
+                         {k: v for k, v in before.items() if k != "config"})
+        _code, table, _err = self.atta("models")
+        self.assertIn("Fallback por cuota, rate limit o red: T3 opus → sonnet → haiku.\n", table)
+
+    def test_tier_name_is_case_insensitive(self):
+        code, _out, _err = self.atta("models", "fallback", "t2", "haiku")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.stored()["models"]["claude-code"]["fallbacks"], {"T2": ["haiku"]})
+
+    def refused(self, argv, message):
+        before = self.files()
+        code, out, err = self.atta("models", "fallback", *argv)
+        self.assertEqual((code, out, err), (2, "", message))
+        self.assertEqual(self.files(), before)
+
+    def test_more_expensive_model_is_refused(self):
+        self.refused(("T2", "opus"), "«opus» es más caro que el modelo de T2 (sonnet): un "
+                     "fallback nunca sube de costo. No cambié nada.\n")
+
+    def test_more_expensive_full_id_is_refused(self):
+        self.refused(("T1", "claude-sonnet-4-5"), "«claude-sonnet-4-5» es más caro que el "
+                     "modelo de T1 (haiku): un fallback nunca sube de costo. No cambié nada.\n")
+
+    def test_same_model_as_the_tier_is_refused(self):
+        self.refused(("T2", "sonnet"), "«sonnet» ya es el modelo de T2: el fallback necesita "
+                     "otro modelo. No cambié nada.\n")
+
+    def test_chain_not_ordered_from_dear_to_cheap_is_refused(self):
+        # F4 T4 review R3: after haiku fails, sonnet (dearer) is never tried: refuse, don't
+        # reorder (the human chose the order; a silent reorder would hide the mistake).
+        message = ("«sonnet» cuesta más que «haiku», que va antes en la cadena de T3, y nunca "
+                   "se alcanzaría: ordénala de la más cara a la más barata (opus > sonnet > "
+                   "haiku). No cambié nada.\n")
+        self.refused(("T3", "haiku", "sonnet"), message)
+        before = self.files()
+        self.assertEqual(self.atta("models", "fallback", "T3", "haiku", "sonnet")[0], 2)
+        self.assertEqual(self.files(), before)
+        self.assertNotIn("models", self.stored())
+
+    def test_full_ids_are_ordered_by_family_cost(self):
+        self.refused(("T3", "claude-3-haiku", "claude-sonnet-4-5"),
+                     "«claude-sonnet-4-5» cuesta más que «claude-3-haiku», que va antes en la "
+                     "cadena de T3, y nunca se alcanzaría: ordénala de la más cara a la más "
+                     "barata (opus > sonnet > haiku). No cambié nada.\n")
+
+    def test_a_chain_ordered_from_dear_to_cheap_is_accepted(self):
+        for chain in (("sonnet", "haiku"), ("claude-sonnet-4-5", "claude-3-haiku")):
+            with self.subTest(chain=chain):
+                self.assertEqual(self.atta("models", "fallback", "T3", *chain)[0], 0)
+                self.assertEqual(self.stored()["models"]["claude-code"]["fallbacks"]["T3"],
+                                 list(chain))
+
+    def test_repeated_model_is_refused(self):
+        self.refused(("T3", "haiku", "haiku"),
+                     "«haiku» se repite en la cadena de T3. No cambié nada.\n")
+
+    def test_model_of_unknown_cost_is_refused(self):
+        self.refused(("T3", "claude-x-1"), "No sé el costo de «claude-x-1»: un fallback "
+                     "necesita haiku, sonnet u opus en el nombre. No cambié nada.\n")
+
+    def test_invalid_model_is_refused(self):
+        self.refused(("T3", "gpt-4"), BAD_MODEL)
+
+    def test_invalid_tier_is_refused(self):
+        self.refused(("T9", "haiku"), "El tier «T9» no existe: usa T0, T1, T2 o T3. "
+                     "No cambié nada.\n")
+
+    def test_missing_model_is_a_usage_refusal(self):
+        self.refused(("T3",), "Uso: atta models fallback <T0|T1|T2|T3> <modelo> "
+                     "[<modelo>...], o atta models fallback <T0|T1|T2|T3> --clear. "
+                     "No cambié nada.\n")
+
+    def test_clear_with_models_is_a_usage_refusal(self):
+        self.refused(("T3", "haiku", "--clear"), "Uso: atta models fallback <T0|T1|T2|T3> "
+                     "<modelo> [<modelo>...], o atta models fallback <T0|T1|T2|T3> --clear. "
+                     "No cambié nada.\n")
+
+    def test_clear_removes_the_chain_and_prunes(self):
+        self.atta("models", "fallback", "T3", "sonnet")
+        code, out, err = self.atta("models", "fallback", "T3", "--clear")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("Atta: T3 ya no tiene fallback en atta/config.json (claude-code).", out)
+        self.assertNotIn("models", self.stored())
+
+    def test_clear_without_chain_changes_nothing(self):
+        before = self.files()
+        code, out, err = self.atta("models", "fallback", "T3", "--clear")
+        self.assertEqual((code, out, err),
+                         (0, "Atta: T3 no tiene fallback en claude-code; no cambié nada.\n"
+                             "— Atta\n", ""))
+        self.assertEqual(self.files(), before)
+
+    def test_set_keeps_tiers_and_roles(self):
+        self.atta("models", "set", "--role", "soldado", "opus")
+        self.atta("models", "fallback", "T3", "sonnet")
+        self.assertEqual(self.stored()["models"]["claude-code"],
+                         {"roles": {"soldado": "opus"}, "fallbacks": {"T3": ["sonnet"]}})
+
+    def test_reset_drops_the_chains(self):
+        self.atta("models", "fallback", "T3", "sonnet")
+        code, _out, _err = self.atta("models", "reset")
+        self.assertEqual(code, 0)
+        self.assertNotIn("models", self.stored())
+
+    def test_config_error_checks_fallbacks(self):
+        cases = {
+            '{"T3": "sonnet"}': "models.claude-code.fallbacks.T3 debe ser una lista no vacía "
+                                "de modelos.",
+            '{"T3": []}': "models.claude-code.fallbacks.T3 debe ser una lista no vacía de "
+                          "modelos.",
+            '{"T7": ["haiku"]}': "models.claude-code.fallbacks.T7: El tier «T7» no existe: usa "
+                                 "T0, T1, T2 o T3.",
+            '{"T3": ["claude-x-1"]}': "models.claude-code.fallbacks.T3: No sé el costo de "
+                                      "«claude-x-1»: un fallback necesita haiku, sonnet u "
+                                      "opus en el nombre.",
+            '{"T3": ["haiku", "haiku"]}': "models.claude-code.fallbacks.T3: «haiku» se repite "
+                                          "en la cadena de T3.",
+            '[]': "models.claude-code.fallbacks debe ser un objeto.",
+        }
+        for raw, message in cases.items():
+            with self.subTest(raw=raw):
+                value = {"claude-code": {"fallbacks": json.loads(raw)}}
+                self.assertEqual(models.config_error(value), message)
+        self.assertIsNone(models.config_error(
+            {"claude-code": {"fallbacks": {"T3": ["sonnet", "claude-3-5-haiku-latest"]}}}))
+
+
+class FallbackResolveTest(unittest.TestCase):
+    def table(self, tiers=None, fallbacks=None):
+        base = {"T0": "haiku", "T1": "haiku", "T2": "sonnet", "T3": "opus"}
+        return models.Table(dict(base, **(tiers or {})), {}, {"reina": "T2"}, base,
+                            fallbacks=fallbacks)
+
+    def test_next_model_walks_the_chain_skipping_failed(self):
+        tab = self.table(fallbacks={"T3": ["sonnet", "haiku"]})
+        self.assertEqual(tab.fallback("T3", {"opus"}), "sonnet")
+        self.assertEqual(tab.fallback("T3", {"opus", "sonnet"}), "haiku")
+        self.assertIsNone(tab.fallback("T3", {"opus", "sonnet", "haiku"}))
+
+    def test_no_chain_means_no_fallback(self):
+        self.assertIsNone(self.table().fallback("T2", {"sonnet"}))
+
+    def test_chain_never_goes_above_the_current_tier_model(self):
+        # The tier was lowered after the chain was written: sonnet now costs more than haiku.
+        tab = self.table(tiers={"T3": "haiku"}, fallbacks={"T3": ["sonnet", "claude-3-haiku"]})
+        self.assertEqual(tab.chain("T3"), ["claude-3-haiku"])
+        self.assertEqual(tab.fallback("T3", {"haiku"}), "claude-3-haiku")
+
+    def test_failed_role_override_falls_back_below_its_own_cost(self):
+        tab = self.table(fallbacks={"T2": ["opus", "haiku"]})
+        self.assertEqual(tab.fallback("T2", {"sonnet"}), "haiku")
+        self.assertEqual(tab.fallback("T2", {"opus"}, primary="opus"), "haiku")
+
+    def test_avoided_model_is_skipped_when_another_chain_model_exists(self):
+        tab = self.table(fallbacks={"T3": ["sonnet", "haiku"]})
+        self.assertEqual(tab.fallback("T3", {"opus"}, avoid=["sonnet"]), "haiku")
+        self.assertEqual(tab.fallback("T3", {"opus"}, avoid="sonnet"), "haiku")
+        # Only the avoided model is left: it is used (as Table.resolve does), never None.
+        self.assertEqual(tab.fallback("T3", {"opus", "haiku"}, avoid=["sonnet"]), "sonnet")
+        self.assertEqual(tab.fallback("T3", {"opus"}, avoid=None), "sonnet")
+
+    def test_table_reads_fallbacks_from_config(self):
+        tab = models.table({"models": {"claude-code": {"fallbacks": {"T3": ["sonnet"]}}}})
+        self.assertEqual(tab.chain("T3"), ["sonnet"])
+        self.assertEqual(models.table({}).chain("T3"), [])
 
 
 if __name__ == "__main__":

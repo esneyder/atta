@@ -68,7 +68,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import branches, config, gate, github, intake, issue, machine, memory, project, voice
+from . import branches, config, deps, gate, github, intake, issue, machine, memory, project, voice
 from .board import summary as artifact_summary
 from .github import GhError
 from .ids import InvalidId
@@ -174,18 +174,45 @@ def _all_jobs(jobs: JobStore) -> list[dict]:
 
 def _job_for_issue(job_list: list[dict], number: int) -> dict | None:
     """The job of an issue: a non-terminal one first, else the most recent."""
-    mine = [j for j in job_list if j.get("issue") == number]
-    if not mine:
-        return None
-    mine.sort(key=lambda j: (j["stage"] not in machine.TERMINAL, j.get("started") or ""))
-    return mine[-1]
+    return deps.job_for_issue(job_list, number)
 
 
 # ---------------------------------------------------------------- queue
 
-def _running(job_list: list[dict]) -> int:
-    """Jobs holding a `concurrency` slot: not terminal and not waiting for a person."""
-    return sum(1 for j in job_list if j["stage"] in RUNNING)
+def _running(job_list: list[dict], blocked=()) -> int:
+    """Jobs holding a `concurrency` slot: not terminal, not waiting for a person and not
+    stopped by BLOCKED-BY (`blocked`: job ids, see `_blocked`)."""
+    return sum(1 for j in job_list if j["stage"] in RUNNING and j["id"] not in blocked)
+
+
+def _blocked(job_list: list[dict], closed=None) -> dict[str, dict]:
+    """{job id: deps verdict} for running jobs whose BLOCKED-BY stops them (F4 S7)."""
+    index = deps.by_issue(job_list)
+    out = {}
+    for j in job_list:
+        if j["stage"] in RUNNING:
+            verdict = deps.check(j, index, closed)
+            if verdict is not None:
+                out[j["id"]] = verdict
+    return out
+
+
+def _issue_closed(open_numbers=()):
+    """closed(number) for deps: open queue issues need no call; others ask gh once each. An
+    issue gh cannot read counts as open, so its dependents keep waiting."""
+    known = {n: False for n in open_numbers}
+
+    def closed(number: int) -> bool:
+        if number not in known:
+            try:
+                data = github.view_issue(number)
+            except GhError:
+                known[number] = False
+            else:
+                known[number] = str(data.get("state", "OPEN")).upper() != "OPEN"
+        return known[number]
+
+    return closed
 
 
 def author_answered(data: dict, operator_login: str | None) -> bool:
@@ -200,17 +227,20 @@ def author_answered(data: dict, operator_login: str | None) -> bool:
 
 
 def plan_queue(issues: list[dict], job_list: list[dict], cfg: dict,
-               answered=None) -> list[dict]:
+               answered=None, closed=None) -> list[dict]:
     """Rows {action, issue, title, job, stage, reason}; action is new|resume|wait|hold|skip.
 
     Jobs in running stages (not terminal, not waiting for a human) hold the `concurrency` slots,
     even when their issue left the queue; each `new` takes one. A needs-info job is `resume`
     (and takes a slot) only when `answered(number)` says the author answered the Exploradora;
     otherwise it is `wait`. needs-human jobs are `hold`. awaiting-merge jobs are `resume` without
-    taking a slot: `atta merge` checks whether the person merged the PR (S13).
+    taking a slot: `atta merge` checks whether the person merged the PR (S13). A running job
+    whose BLOCKED-BY is not merged is `wait` (a rejected blocker or a cycle: `hold`) and frees
+    its slot; `closed(number)` says whether a blocker's issue is closed (F4 S7, `deps`).
     """
     cap = cfg["concurrency"]
-    running = _running(job_list)
+    blocked = _blocked(job_list, closed)
+    running = _running(job_list, blocked)
     hold_labels = [cfg["labels"]["needs_human"], cfg["labels"]["needs_info"]]
     rows = []
     for it in sorted(issues, key=lambda i: i["number"]):
@@ -238,6 +268,9 @@ def plan_queue(issues: list[dict], job_list: list[dict], cfg: dict,
                                                    "toca atta merge.")
             elif stage in WAITING_HUMAN:
                 row.update(action="hold", reason=f"espera a una persona ({stage}).")
+            elif job["id"] in blocked:
+                verdict = blocked[job["id"]]
+                row.update(action=verdict["action"], reason=verdict["reason"])
             else:
                 row.update(action="resume", reason=f"en curso en la etapa {stage}.")
         else:
@@ -264,7 +297,9 @@ def cmd_queue(args, cfg, jobs: JobStore) -> int:
             operator_login.append(github.operator())
         return author_answered(github.view_issue(number), operator_login[0])
 
-    rows = plan_queue(github.list_issues(label), _all_jobs(jobs), cfg, answered)
+    issues = github.list_issues(label)
+    closed = _issue_closed(i["number"] for i in issues)
+    rows = plan_queue(issues, _all_jobs(jobs), cfg, answered, closed)
     if args.json:
         print(json.dumps(rows, ensure_ascii=False))
         return OK
@@ -289,7 +324,7 @@ def cmd_start(args, cfg, jobs: JobStore) -> int:
     if existing is not None:
         # Resume path: the issue already has a job (also while it waits with a hold label).
         raise FlowError(f"El issue #{number} ya tiene el job {existing['id']}.")
-    running, cap = _running(job_list), cfg["concurrency"]
+    running, cap = _running(job_list, _blocked(job_list, _issue_closed())), cfg["concurrency"]
     if running >= cap:
         raise FlowError(f"El issue #{number} espera: sin cupo ({running} de {cap} jobs "
                         "corriendo).")
@@ -1151,7 +1186,10 @@ def register(subparsers) -> None:
                                           "qué hacer con cada uno (new, resume, wait, hold, "
                                           "skip), respetando concurrency. Un job en needs-info "
                                           "sale resume solo cuando el autor comentó después "
-                                          "de la pregunta de la Exploradora.")
+                                          "de la pregunta de la Exploradora. Un job con "
+                                          "BLOCKED-BY sale wait hasta que su bloqueante se "
+                                          "mergee o se cierre, y hold si el bloqueante fue "
+                                          "rechazado o hay un ciclo.")
     q.add_argument("--json", action="store_true", help="salida JSON (una lista de filas)")
     q.set_defaults(func=_guarded(cmd_queue))
 

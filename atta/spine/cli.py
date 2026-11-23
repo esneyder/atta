@@ -84,7 +84,9 @@ def cmd_route(args, cfg, jobs: store.JobStore) -> int:
     with job_lock(directory):
         job = jobs.load(jid)
         job["intake"] = {"risk": header["risk"], "surfaces": list(header["surfaces"]),
-                         "decision": header["decision"]}
+                         "decision": header["decision"],
+                         "blocked_by": list(header["blocked_by"]),
+                         "migration": header["migration"]}
         job["agents"] = plan
         jobs.save(job)
     reviewers = ", ".join(f"{r['reviewer']} {r['tier']}" for r in plan["reviewers"])
@@ -214,8 +216,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="atta",
         description="Atta, tu colonia de agentes: espina determinista y flujo con GitHub (init, "
-                    "doctor, queue, start, refresh, worktree, next, publish, comment, label, guard, "
-                    "models, settings, memory y merge seguro a develop).",
+                    "doctor, queue, start, refresh, worktree, next, model-failed, publish, comment, "
+                    "label, guard, models, settings, memory y merge seguro a develop).",
         epilog="Códigos de salida: 0 ok, 1 veredicto negativo, 2 rechazado o error de uso.",
     )
     p.add_argument("--project", metavar="<carpeta>",
@@ -244,7 +246,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("route", help="Lee intake.md y guarda los reviewers del job.",
                        description="Lee RISK y SURFACES de intake.md y guarda el plan del router "
-                                   "(en riesgo alto suma al Rastreador). Después, si las reglas "
+                                   "(en riesgo alto suma al Rastreador); guarda también "
+                                   "BLOCKED-BY y MIGRATION, y la cola espera a los bloqueantes. "
+                                   "Después, si las reglas "
                                    "sobre el diff suben el riesgo, el Filtro puede volver a "
                                    "planear los reviewers con el riesgo efectivo.")
     r.add_argument("job", help="id del job")
@@ -298,10 +302,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # F2 commands live in their own modules; imported here to keep startup cheap
     # for the F1 commands and to avoid import cycles.
-    from . import doctor, flow, guard, initcmd, memory, models, next as next_cmd, settings
+    from . import (doctor, fallback, flow, guard, initcmd, memory, models, next as next_cmd,
+                   settings)
     initcmd.register(sub)
     doctor.register(sub)
     next_cmd.register(sub)
+    fallback.register(sub)
     flow.register(sub)
     guard.register(sub)
     models.register(sub)

@@ -32,6 +32,13 @@ class WiringTests(unittest.TestCase):
                 self.assertIn(f"atta {name}", out.getvalue())
 
 
+    def test_help_lists_model_failed(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cli.main(["--help"])
+        self.assertEqual(code, 0)
+        self.assertIn("model-failed", out.getvalue())
+
     def test_memory_lists_lessons_through_the_cli(self):
         import tempfile
         from pathlib import Path

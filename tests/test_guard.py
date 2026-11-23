@@ -924,6 +924,8 @@ class ConfigCommandTests(GuardBase):
             ("atta models set --role soldado opus", "atta models set"),
             ("atta models unset --role soldado", "atta models unset"),
             ("atta models reset", "atta models reset"),
+            ("atta models fallback T3 sonnet", "atta models fallback"),
+            ("atta models fallback T3 --clear", "atta models fallback"),
             ("atta models --runtime claude-code set T1 opus", "atta models set"),
             ("atta models --runtime=claude-code reset", "atta models reset"),
             ("atta models set --runtime claude-code T3 sonnet", "atta models set"),
@@ -1052,6 +1054,71 @@ class ConfigCommandTests(GuardBase):
                         "python -m atta.spine.board init"):
             with self.subTest(command=command):
                 self.assertAllowed(self.bash_reason(command))
+
+
+    def test_models_fallback_denied_in_every_form(self):  # S9
+        for command in ("atta.exe models fallback T3 sonnet",
+                        "./atta.sh models fallback T3 --clear",
+                        "python -m atta.spine.cli models fallback T3 sonnet",
+                        "python atta/bin/atta.py models fallback T3 sonnet",
+                        "sh atta.sh models fallback T3 sonnet",
+                        "atta --project /x models --runtime claude-code fallback T3 sonnet",
+                        "atta models fallback --clear T3",
+                        "bash -c 'atta models fallback T3 sonnet'",
+                        "echo $(atta models fallback T3 sonnet)"):
+            with self.subTest(command=command):
+                self.assertDenied(self.bash_reason(command), "su propia configuración",
+                                  "Corre ese comando tú en tu terminal")
+
+class DriverOnlyCommandTests(GuardBase):
+    """F4 T4: `atta model-failed` is an orchestrator action: the /atta driver (main session)
+    runs it; a subagent (hook payload with `agent_id`) may not."""
+
+    MESSAGE = ("Solo el orquestador /atta registra la falla de modelo de un agente (atta "
+               "model-failed); un subagente no puede. Termina tu trabajo o informa el error en "
+               "tu respuesta.")
+
+    def reason(self, command, tool="Bash", agent_id=None):
+        h = self.hook(tool, command=command)
+        if agent_id is not None:
+            h["agent_id"] = agent_id
+        return guard.evaluate(h, root=self.root)
+
+    COMMANDS = (f"atta model-failed {JID} --agent atta-cortadora --reason quota",
+                f"atta --project /x model-failed {JID} --agent atta-reina --reason network",
+                f"python -m atta.spine.cli model-failed {JID} --agent a --reason quota",
+                f"echo ok && atta.exe MODEL-FAILED {JID} --agent a --reason rate-limit",
+                f"bash -c 'atta model-failed {JID} --agent a --reason quota'")
+
+
+    def test_subagent_denied_in_script_and_wrapper_forms(self):  # S9
+        tail = f"model-failed {JID} --agent atta-cortadora --reason quota"
+        for command in (f"./atta.sh {tail}", f"sh atta.sh {tail}",
+                        f"python atta/bin/atta.py {tail}", f"py -3.11 -m atta.spine.cli {tail}",
+                        f"atta --jobs-dir=y {tail}", f"env X=1 atta {tail}",
+                        f"echo $(atta {tail})", f"timeout 5 atta {tail}"):
+            with self.subTest(command=command):
+                self.assertEqual(self.reason(command, agent_id="a1b2"), self.MESSAGE)
+    def test_subagent_is_denied(self):
+        for command in self.COMMANDS:
+            with self.subTest(command=command):
+                self.assertEqual(self.reason(command, agent_id="a1b2"), self.MESSAGE)
+        self.assertEqual(self.reason(self.COMMANDS[0], tool="PowerShell", agent_id="x"),
+                         self.MESSAGE)
+
+    def test_driver_session_is_allowed(self):
+        for command in self.COMMANDS:
+            with self.subTest(command=command):
+                self.assertAllowed(self.reason(command))
+                self.assertAllowed(self.reason(command, agent_id=""))
+
+    def test_subagent_keeps_every_other_atta_command(self):
+        # PRESERVE: only model-failed is driver-only; config commands stay denied for all.
+        for command in (f"atta next {JID}", f"atta advance {JID} spec", "atta models"):
+            with self.subTest(command=command):
+                self.assertAllowed(self.reason(command, agent_id="a1b2"))
+        self.assertEqual(self.reason("atta models fallback T3 sonnet"),
+                         ConfigCommandTests.MESSAGE.format("atta models fallback"))
 
 
 class SettingsTemplateTests(unittest.TestCase):

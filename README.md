@@ -508,6 +508,10 @@ Reglas que aplica la espina:
   `needs-human`.
 - Si `atta next` repite el mismo `spawn` justo después de que el agente terminó, el agente no escribió
   su artefacto: `/atta` detiene ese job y lo reporta en lugar de relanzarlo.
+- Si el Agent tool falla por **cuota, rate limit o red** (nunca por contexto), `/atta` corre
+  `atta model-failed <job> --agent <agente> --reason quota|rate-limit|network` y vuelve a
+  `atta next`, que relanza al agente con el siguiente modelo de la cadena de fallback de su tier
+  (sección 5.4) o espera si la cadena se agotó. Ese `spawn` con otro modelo es una acción nueva.
 - Cada comentario en GitHub va firmado por su rol con el marcador `<!-- atta -->`: la Exploradora al
   decidir (`ACCEPT`, `NEEDS-INFO`, `REJECT`), la Cortadora al abrir el PR, la Reina al escalar y al
   mergear (el comentario con el que cierra el issue).
@@ -553,15 +557,37 @@ independientes y `/atta` avanza uno mientras los agentes de otro trabajan.
 | Exploradora | T1 |
 | Guía | T2 |
 | Vigía | Un modelo distinto al de la Guía: `haiku` por defecto |
-| Cortadora | T2; **T3** desde la tercera ronda (`total_rounds` ≥ 2) o con riesgo efectivo `high` |
-| Jardineras, Soldado y Rastreador | El tier del plan del router (sección 2.6): el Soldado es T3 en riesgo `high`; el Rastreador solo corre en riesgo `high`, en T3 |
+| Cortadora | T2; **T3** desde la ronda 2 (la primera reescritura) o con riesgo efectivo `high` o desconocido |
+| Jardineras, Soldado y Rastreador | El tier del plan del router (sección 2.6): el revisor de seguridad (Soldado) es T3 en riesgo `high`; el Rastreador solo corre en riesgo `high`, en T3 |
 | Refutador | T1 por defecto, pero **nunca más débil que el revisor más fuerte que juzga**; **T3** con riesgo efectivo `high`. Fuera de riesgo alto usa un modelo distinto al de esos revisores si hay uno que no sea más débil; si no, repite modelo con contexto limpio |
-| Reina | T2; **T3** con riesgo efectivo `high` |
+| Reina | T2; **T3** con riesgo efectivo `high` o desconocido |
 
 Opus solo entra donde hace falta: barato donde un error es barato, potente donde un error es caro
-(el Refutador puede anular un hallazgo, por eso nunca va con un modelo más débil). La regla «el
-revisor nunca usa el modelo de la Cortadora» llega con el ruteo de F4; el tope del ciclo
+(el Refutador puede anular un hallazgo, por eso nunca va con un modelo más débil). El tope del ciclo
 spec ⇄ spec-review ya está (sección 2.5).
+
+**Matriz etapa × riesgo** (F4; `Table.stage_tier` en `atta/spine/models.py` es la única fuente, y
+`atta next` y `atta models` la usan):
+
+| Riesgo | Modelo de la etapa |
+|---|---|
+| `low` | La Guía y la Jardinera UX bajan **un tier** (sin pasar de T0). La Exploradora no baja (corre antes de que exista el riesgo), y la Reina y el Refutador **nunca bajan**. Los reviewers ya corren un tier más abajo por la tabla `routing` (sección 2.6): la matriz no los baja dos veces |
+| `medium` | Igual que antes de F4 |
+| `high` | Suben a T3 la Cortadora, la Reina y el revisor de seguridad (y el Refutador, como ya hacía) |
+
+Un riesgo desconocido cuenta como `high` para subir y nunca baja nada. **Escalera por intento:** la
+Cortadora corre en T3 desde la ronda 2 (`Round: 2` en su prompt, o sea cuando una ronda ya terminó).
+**Independencia del revisor:** cada reviewer evita el modelo de la Cortadora de esa ronda cuando
+otro modelo lo permite: uno que no sea más débil que el tier del reviewer y, por debajo de `high`,
+tampoco más caro (en `medium` queda como hoy: no se sube el costo de cada revisión); un modelo
+propio del rol (`models set --role`) no se mueve. Con las cadenas de fallback (más abajo) el
+fallback del reviewer también evita ese modelo mientras la cadena tenga otro.
+
+La matriz se aplica por defecto también a los proyectos que ya existen; `atta doctor` avisa del
+cambio (sección 16) hasta que una persona fije `"routing_matrix"` en `atta/config.json`: `true`
+acepta la matriz y `false` conserva el routing de antes (Cortadora en T3 desde la ronda 3, sin bajar
+la Guía, sin subir al revisor de seguridad ni con riesgo desconocido). `atta models` imprime el
+modelo de cada etapa por riesgo en la sección «Matriz etapa×riesgo».
 
 **Calibrar los modelos de un proyecto** (`atta models`, sección 7.3). Las tablas de arriba son los
 valores de fábrica; cada proyecto puede cambiarlos en la clave `models` de `atta/config.json`:
@@ -573,7 +599,7 @@ valores de fábrica; cada proyecto puede cambiarlos en la clave `models` de `att
 - `atta models set T2 haiku` cambia el modelo de un tier: todos los roles de ese tier lo usan.
 - `atta models set --role soldado opus` fija el modelo de un rol: **reemplaza** su tier (también el
   que le asigna el router a Jardineras y Soldado).
-- La **escalada** no cambia: la Cortadora (ronda 3 o riesgo `high`), la Reina y el Refutador
+- La **escalada** no cambia: la Cortadora (ronda 2 o riesgo `high`), la Reina y el Refutador
   (riesgo `high`) y todo reviewer con tier T3 corren con el modelo de **T3**, aunque su rol tenga un
   modelo propio.
 - La Vigía sigue la regla «distinta de la Guía»: si queda con el mismo modelo, sube a otro tier
@@ -584,6 +610,29 @@ valores de fábrica; cada proyecto puede cambiarlos en la clave `models` de `att
   así que la línea `model:` de `.claude/agents/atta-*.md` y el `model` que imprime `atta next`
   coinciden. `/atta` nunca elige un modelo: usa el que trae `atta next`.
 - `atta/config.json` es ruta protegida: solo una persona lo cambia, con `atta models`.
+
+**Cadenas de fallback** (F4, solo modelos Claude). Si un agente falla por **cuota, rate limit o
+red** (nunca por contexto), Atta prueba otros modelos del mismo tier, en el orden que tú defines:
+
+```bash
+atta models fallback T3 sonnet haiku   # opus → sonnet → haiku
+atta models fallback T3 --clear        # sin cadena (el valor de fábrica)
+```
+
+- Un fallback **nunca cuesta más** que el modelo que reemplaza (`haiku` < `sonnet` < `opus`, leído
+  del nombre): `atta models fallback` rechaza uno más caro y una cadena que quedó más cara después de
+  un `set` se saltea esa entrada. La cadena va **de la más cara a la más barata**: una entrada más
+  cara que la anterior nunca se alcanzaría (tras fallar `haiku` no se prueba `sonnet`), así que
+  `atta models fallback T3 haiku sonnet` sale `2` sin escribir nada, igual que una `config.json` con
+  esa cadena. Se rechaza en vez de reordenar para no esconder el error de quien la escribió.
+- `/atta` corre `atta model-failed <job> --agent <agente> --reason quota|rate-limit|network`
+  cuando el Agent tool devuelve ese error. Queda un evento `model_fallback` en `events.jsonl`
+  (sección 11) y `atta next` relanza al agente con el siguiente modelo de la cadena de **su** tier
+  (la de T3 cuando escala). La Vigía y el Refutador siguen sin repetir el modelo de la Guía o de
+  los revisores mientras la cadena tenga otro.
+- Cadena agotada (o sin cadena): el job **no sube de modelo**. `atta next` espera (`wait`) con el
+  motivo y olvida esas fallas, así que el próximo `/atta run` vuelve a intentar con el modelo de
+  siempre cuando vuelva la cuota o la red.
 
 ---
 
@@ -871,10 +920,18 @@ no hace nada. Ver sección 8.
 
 #### `next <job>`
 
-Decide, sin red, la siguiente acción del job e imprime una línea JSON (sección 5.2). Sale `0`. Lo
+Decide la siguiente acción del job e imprime una línea JSON (sección 5.2). Sale `0`. Si el job está
+en una etapa activa y su `BLOCKED-BY` (el que guarda `atta route`) tiene un bloqueante sin mergear, imprime `wait`
+con el motivo («espera a #7: todavía no está mergeado.»; con un bloqueante rechazado o una
+dependencia circular, «decide una persona») y no escribe nada, igual que `atta queue` y `atta
+start`; solo ahí consulta GitHub (una vez por bloqueante sin job abierto; un issue que `gh` no puede
+leer cuenta como abierto). Si el evento `reina_rule` de «la regla dejó la decisión a la Reina» no se
+puede escribir, avisa por stderr y imprime igual el lanzamiento de la Reina. Lo
 único que escribe es `pending_agent` en `job.json` cuando la acción lanza agentes (sección 11),
 `build_retry` cuando pide a la Cortadora rehacer un `build.md` que no cumple el contrato (sección
-2.5) y el evento `refute` del Refutador. Los prompts de la Guía, la Cortadora y los reviewers
+2.5), el evento `refute` del Refutador y, al imprimir el `wait` de una cadena de fallback agotada,
+borra las fallas de ese agente (`model_fallback`, sección 5.4). Si `atta model-failed` registró
+que un agente pendiente falló, lo relanza con el siguiente modelo de la cadena. Los prompts de la Guía, la Cortadora y los reviewers
 (Rastreador incluido) terminan con las lecciones relevantes de `atta/memory/lessons.md` para los
 archivos del diff (o los de `FILES:` del spec), dentro del presupuesto de 1.500 caracteres.
 Ejemplo recién creado el job:
@@ -883,7 +940,26 @@ Ejemplo recién creado el job:
 {"action": "spawn", "agent": "atta-exploradora", "model": "haiku", "prompt": "Job: 7-agregar-la-funcion-de. Job folder: …"}
 ```
 
-#### `models [--runtime claude-code]` · `models set <T0|T1|T2|T3> <modelo>` · `models set --role <rol> <modelo>` · `models unset --role <rol>` · `models reset`
+#### `model-failed <job> --agent atta-<rol> --reason quota|rate-limit|network`
+
+Lo corre `/atta` (nunca un subagente: el guard lo deniega dentro de un subagente) cuando el Agent
+tool falla por cuota, rate limit o red; **nunca** por contexto. Bajo el lock del job verifica que
+el agente esté en `pending_agent` de la etapa actual, guarda el modelo que falló en `job.json`
+(`model_failures`) y agrega un evento `model_fallback`. Sale `0`:
+
+```text
+atta-cortadora falló en opus por cuota en 12-agregar-exportacion-a-csv: el próximo intento usa sonnet (cadena de fallback de T3).
+```
+
+Con la cadena agotada dice «la cadena de fallback de T3 se agotó; Atta no sube a un modelo más
+caro y `atta next` espera.». Repetir la misma falla no escribe nada. Un motivo inválido (por
+ejemplo `context`) o un agente que no está pendiente sale `2` sin escribir nada:
+
+```text
+El motivo «context» no vale: usa quota, rate-limit o network. Un error de contexto nunca cambia de modelo. No registré nada.
+```
+
+#### `models [--runtime claude-code]` · `models set <T0|T1|T2|T3> <modelo>` · `models set --role <rol> <modelo>` · `models unset --role <rol>` · `models fallback <T0|T1|T2|T3> <modelo>... | --clear` · `models reset`
 
 Muestra o calibra qué modelo corre cada rol en este proyecto (sección 5.4). Sin acción imprime la
 tabla; en un proyecto recién preparado:
@@ -904,14 +980,24 @@ rastreador            T3    opus    tier
 refutador             T1    haiku   tier
 reina                 T2    sonnet  tier · escala a T3 (opus)
 Tiers: T0 haiku · T1 haiku · T2 sonnet · T3 opus
+Matriz etapa×riesgo (modelo en riesgo bajo · medio · alto):
+  guia          haiku · sonnet · sonnet
+  jardinera-ux  haiku · sonnet · sonnet
+  cortadora     sonnet · sonnet · opus (desde la ronda 2: opus)
+  reina         sonnet · sonnet · opus
+  soldado       sonnet · sonnet · opus (revisor de seguridad)
 Las Jardineras, el Soldado y el Rastreador corren en el tier que les asigna el router; un modelo por rol lo reemplaza.
+El orquestador /atta (comando y skill) corre en T0 (haiku).
+Fallback por cuota, rate limit o red: ninguno (`atta models fallback <tier> <modelo>...`).
 Cambia con `atta models set <T0|T1|T2|T3> <modelo>` o `atta models set --role <rol> <modelo>`.
 — Atta
 ```
 
 `ORIGEN`: `tier` (modelo del tier), `rol` (modelo propio del rol), `regla ≠ guía` (la Vigía subió de
 tier para no repetir el modelo de la Guía) y `escala a T3` (Cortadora, Soldado y Reina, cuando
-escalan). Un tier cambiado en el proyecto sale como `T2 haiku (proyecto)` en la línea `Tiers`.
+escalan). Un tier cambiado en el proyecto sale como `T2 haiku (proyecto)` en la línea `Tiers`. La
+sección «Matriz etapa×riesgo» muestra solo los roles cuyo modelo cambia con el riesgo (con
+`"routing_matrix": false` dice que está desactivada).
 
 Cada cambio valida, escribe `atta/config.json` de forma atómica (las demás claves quedan igual y en su
 orden) y luego cambia **solo** la línea `model:` de cada `.claude/agents/atta-<rol>.md`:
@@ -926,8 +1012,10 @@ Revisa la tabla con `atta models`.
 ```
 
 `atta models set T2 haiku` cambia todos los roles de T2 (y la Vigía sube a `opus`, porque T2 y T1
-quedan en `haiku` como la Guía). `unset --role <rol>` devuelve el rol a su tier; `reset` quita la
-clave `models` y vuelve a los modelos de fábrica. Si falta un agente, lo dice («falta:
+quedan en `haiku` como la Guía). `unset --role <rol>` devuelve el rol a su tier; `fallback <tier>
+<modelo>...` define la cadena de fallback del tier por cuota, rate limit o red (nunca más cara que
+el modelo del tier; `--clear` la quita; sección 5.4) y la tabla la muestra en la línea «Fallback
+por cuota, rate limit o red»; `reset` quita la clave `models` y vuelve a los modelos de fábrica. Si falta un agente, lo dice («falta:
 .claude/agents/atta-reina.md; corre `atta init` para crearlo.»). Un modelo, rol o tier inválido
 sale `2` sin escribir nada, por ejemplo:
 
@@ -1285,6 +1373,7 @@ un Atta anterior) cuenta como `code`.
 | `protected_paths` | `atta/**`, `.claude/**`, `.pi/**`, `.github/workflows/**` | Rutas que ningún job puede tocar. No puede estar vacía |
 | `prices_usd_per_mtok` | `{}` | Precio por millón de tokens por modelo. Sin precio, el costo queda `null` con un aviso (nunca corta) |
 | `routing` | tabla de la sección 2.6 | Reviewers, lentes y tier por riesgo y por superficie |
+| `routing_matrix` | sin clave (opcional) | `true` o `false`: la matriz etapa×riesgo de los modelos (sección 5.4). Sin la clave vale `true` y `atta doctor` avisa del cambio de routing; `false` conserva el routing de antes. Solo una persona la edita |
 | `models` | sin clave (opcional) | Modelos por tier y por rol del proyecto, por runtime. Se cambia con `atta models` (sección 5.4) |
 | `merge_method` | `"merge"` (opcional) | Método de `gh pr merge`: `merge`, `squash` o `rebase` |
 | `guard.deny_commands` | lista interna (opcional) | Comandos de despliegue que el guard bloquea. **Reemplaza** la lista por defecto (sección 14.2) |
@@ -1360,6 +1449,7 @@ muestran el dashboard y el PR.
 | `gate_failure` | `{kind: "config", reason}` mientras el Filtro está detenido por configuración (sección 9); otro resultado lo borra |
 | `build_retry` | El reintento del contrato de `build.md`: `{round, since, mtime}` (sección 2.5) |
 | `pending_agent` | Lo que `atta next` decidió al lanzar agentes en la etapa actual: `{stage, role, agent, model, tier, at}`, o una lista de esos para los reviewers en paralelo. Lo consume y borra la siguiente transición |
+| `model_failures` | Los modelos en que cada agente falló por cuota, rate limit o red (`atta model-failed`): `{stage, since, agents: {agente: [modelos]}}`. Solo cuenta en la entrada a la etapa que nombra (sección 5.4) |
 
 ### `events.jsonl`
 
@@ -1392,6 +1482,16 @@ cuando `atta next` actúa sobre el veredicto del Refutador:
 ```json
 {"ts": "2025-06-05T08:18:00Z", "job": "1-agregar-la-funcion-de", "event": "refute", "stage": "review",
  "round": 1, "refute": "REFUTED"}
+```
+
+`model_fallback` tampoco es una transición: lo escribe `atta model-failed` (sección 7.3) cuando un
+agente falla por cuota, rate limit o red. Lleva `from_model` y `to_model` (no `from`/`to`), y
+`to_model` es `null` cuando la cadena se agotó; `round` solo en build, gate, review y approve:
+
+```json
+{"ts": "2025-06-05T08:10:00Z", "job": "1-agregar-la-funcion-de", "event": "model_fallback",
+ "stage": "build", "round": 3, "agent": "atta-cortadora", "tier": "T3", "from_model": "opus",
+ "to_model": "sonnet", "reason": "quota"}
 ```
 
 ---
@@ -1509,8 +1609,10 @@ espacios finales, rutas relativas a una unidad (`C:src/a.py`) y rutas de disposi
   `--mirror`, `--all`, `--tags`, `--delete`, `+refspec` y similares; `git -c alias.*|remote.*|url.*…`,
   escribir esas claves con `git config`, `git send-pack`, `git update-ref -d`, borrar ramas;
 - los comandos de Atta que cambian la configuración: `atta settings set|reset`,
-  `atta models set|unset|reset` y `atta init` (con cualquier opción). Las formas de solo lectura
-  (`atta settings`, `atta settings get`, `atta models`) y `atta doctor` sí se permiten;
+  `atta models set|unset|reset|fallback` y `atta init` (con cualquier opción). Las formas de solo
+  lectura (`atta settings`, `atta settings get`, `atta models`) y `atta doctor` sí se permiten;
+- `atta model-failed` dentro de un subagente (el hook trae `agent_id`): solo lo corre el
+  orquestador `/atta`;
 - `gh pr merge`, `gh repo delete|archive`, `gh release …`, `gh alias set|import`, `gh api` con
   `DELETE` o con escritura a endpoints de merge, refs, protección de ramas o releases, las mutaciones
   GraphQL de merge y refs, y `gh pr create|edit` con una base distinta de `develop`;
@@ -1574,6 +1676,7 @@ atta/
 │   ├── initcmd.py     atta init
 │   ├── doctor.py      atta doctor
 │   ├── models.py      resolución de modelos y atta models
+│   ├── fallback.py    atta model-failed (fallback por cuota, rate limit o red)
 │   ├── settings.py    atta settings (con settings_registry.py)
 │   ├── memory.py      la Cultivadora: atta memory y lessons.md
 │   ├── github.py      adaptador de gh
@@ -1635,6 +1738,7 @@ cambia nada; revisa, en orden:
 | `atta` y `atta-board` en el `PATH` | `✗`: agrega la carpeta `Scripts` de ese Python al `PATH` o `pipx ensurepath` (sin `atta` el hook del guard no bloquea nada) |
 | Python de Atta con pip | `⚠`: para actualizar usa `pipx` o un Python con pip |
 | Repo git, `atta/config.json` válido, `atta/checks.json` con al menos un check | `✗`: sin checks el Filtro siempre falla (sección 4.2) |
+| Si tu `config.json` no define `routing_matrix`: el routing por defecto cambió (modelos por riesgo, F4) | `⚠`: con `"routing_matrix": true` aceptas la matriz y con `false` conservas el routing de antes (solo una persona edita ese archivo); `atta models` muestra el efecto |
 | Si tu `config.json` tiene un `routing` propio, que incluya al Rastreador en riesgo alto | `⚠`: si nunca lo editaste, borra la clave `routing`; si es tuyo, agrega el reviewer `rastreador` (T3) a `high` |
 | Si hay `sgconfig.yml`, el binario `ast-grep` (o `sg`) en el `PATH` | `⚠`: sin él el Filtro falla por configuración; instálalo o quita `sgconfig.yml` del checkout principal |
 | Remoto `origin` y `origin/develop` | `✗`: Atta integra solo en `develop`; créala en `origin` |

@@ -56,6 +56,7 @@ class DoctorBase(TempDirMixin, unittest.TestCase):
             self.assertEqual(initcmd.run(self.root, no_github=True,
                                          templates_dir=project.TEMPLATES_DIR), 0)
         self.write_checks(CHECKS)
+        self.set_matrix(True)  # a project that already took a side on the F4 routing matrix
         git("add", "-A", cwd=self.root)
         git("commit", "-q", "-m", "atta init", cwd=self.root)
         git("remote", "add", "origin", str(self.origin), cwd=self.root)
@@ -64,6 +65,15 @@ class DoctorBase(TempDirMixin, unittest.TestCase):
         self.set_gh({"user": "operador", "repo": {"name": "proj"}, "repo_labels": list(LABELS)})
         self.which = {"atta": str(self.bin / "atta"), "atta-board": str(self.bin / "atta-board")}
         self.claude = CLAUDE
+
+    def set_matrix(self, value):
+        """Put `routing_matrix` in atta/config.json (None: take the key out)."""
+        path = self.root / "atta" / "config.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.pop("routing_matrix", None)
+        if value is not None:
+            data["routing_matrix"] = value
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
     def write_checks(self, data):
         (self.root / "atta" / "checks.json").write_text(json.dumps(data), encoding="utf-8")
@@ -245,6 +255,40 @@ class FailureTest(DoctorBase):
         self.assert_line(out, "⚠ tu routing propio no incluye al Rastreador en riesgo alto",
                          "Si nunca editaste «routing», bórralo de atta/config.json para usar "
                          "el de fábrica; si es tuyo, agrega el reviewer rastreador (T3) a «high».")
+
+    # F4 T3 (S9, F3 L18): the default routing changed; existing projects are told.
+    MATRIX_WARNING = (
+        "⚠ el routing por defecto cambió: los modelos ahora dependen del riesgo del job (bajo: "
+        "la Guía y la Jardinera UX bajan un tier; alto: la Cortadora, la Reina y el revisor de "
+        "seguridad suben a T3; la Cortadora sube a T3 desde la ronda 2)")
+    MATRIX_HINT = ("Mira el efecto con `atta models`. Para aceptarlo, agrega "
+                   "\"routing_matrix\": true a atta/config.json; para volver al routing de "
+                   "antes, agrega \"routing_matrix\": false (solo una persona edita ese "
+                   "archivo).")
+
+    def test_config_without_routing_matrix_warns_and_writes_nothing(self):
+        self.set_matrix(None)
+        before = tree(self.root)
+        code, out = self.run_doctor()
+        self.assertEqual(code, 0, out)
+        self.assert_line(out, self.MATRIX_WARNING, self.MATRIX_HINT)
+        self.assertIn("Resumen: 19 bien, 1 aviso, 0 fallas.", out)
+        self.assertEqual(tree(self.root), before)
+
+    def test_routing_matrix_true_or_false_is_silent(self):
+        for value in (True, False):
+            with self.subTest(value=value):
+                self.set_matrix(value)
+                code, out = self.run_doctor()
+                self.assertEqual(code, 0, out)
+                self.assertNotIn("el routing por defecto cambió", out)
+
+    def test_invalid_routing_matrix_is_a_config_failure(self):
+        self.set_matrix("si")
+        code, out = self.run_doctor()
+        self.assertEqual(code, 1, out)
+        self.assertIn("✗ atta/config.json no es válido: config.json: routing_matrix debe ser "
+                      "true o false.", out)
 
     def test_missing_command_file(self):
         (self.root / ".claude" / "commands" / "atta.md").unlink()

@@ -189,13 +189,39 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
                                    "roles": {"soldado": "opus"}}}
         self.assertEqual(config.load_config(self.write({"models": models}))["models"], models)
 
+    def test_routing_matrix_is_optional_and_boolean(self):
+        # F4 T3: never defaulted (doctor tells a project without it), true or false only.
+        self.assertNotIn("routing_matrix", config.load_config(self.write({})))
+        for value in (True, False):
+            self.assertIs(config.load_config(self.write({"routing_matrix": value}))
+                          ["routing_matrix"], value)
+        for value in ("false", 0, None, []):
+            with self.subTest(value=value):
+                with self.assertRaises(config.ConfigError) as ctx:
+                    config.load_config(self.write({"routing_matrix": value}))
+                self.assertEqual(str(ctx.exception),
+                                 "config.json: routing_matrix debe ser true o false.")
+
+    def test_unordered_fallback_chain_is_invalid(self):
+        # F4 T4 review: an entry dearer than the one before it could never be reached.
+        models = {"claude-code": {"fallbacks": {"T3": ["haiku", "sonnet"]}}}
+        with self.assertRaises(config.ConfigError) as ctx:
+            config.load_config(self.write({"models": models}))
+        self.assertEqual(str(ctx.exception), (
+            "config.json: models.claude-code.fallbacks.T3: «sonnet» cuesta más que «haiku», que "
+            "va antes en la cadena de T3, y nunca se alcanzaría: ordénala de la más cara a la "
+            "más barata (opus > sonnet > haiku)."))
+        ok = {"claude-code": {"fallbacks": {"T3": ["sonnet", "haiku"]}}}
+        self.assertEqual(config.load_config(self.write({"models": ok}))["models"], ok)
+
     def test_rejects_invalid_models(self):
         example = ('{"claude-code": {"tiers": {"T2": "haiku"}, "roles": {"soldado": "opus"}}}')
         cases = [
             ([], f"models debe ser un objeto por runtime, p. ej. {example}."),
             ({"otro": {}}, "models: el runtime «otro» no existe; usa claude-code."),
             ({"claude-code": {"tier": {}}},
-             f"models.claude-code debe ser un objeto con «tiers» y/o «roles», p. ej. {example}."),
+             f"models.claude-code debe ser un objeto con «tiers», «roles» y/o «fallbacks», p. ej. "
+             f"{example}."),
             ({"claude-code": {"tiers": []}}, "models.claude-code.tiers debe ser un objeto."),
             ({"claude-code": {"tiers": {"T9": "haiku"}}},
              "models.claude-code.tiers.T9: El tier «T9» no existe: usa T0, T1, T2 o T3."),

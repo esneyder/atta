@@ -271,23 +271,38 @@ class BuildTest(NextBase):
                          f"Worktree: {self.wt}.", "Base: origin/develop.",
                          self.dir / "round-1" / "build.md")
 
-    def test_escalates_to_t3_from_round_three_or_high_risk(self):
-        self.job["total_rounds"] = 1
+    def test_escalates_to_t3_from_round_two_or_high_risk(self):
+        # S8: `Round: N` is total_rounds + 1; the Cortadora climbs to T3 from round 2 (F3 L9),
+        # i.e. when one round already ended (total_rounds == 1). Round 1 stays on T2.
         self.assertEqual(self.decide()["model"], "sonnet")
+        self.job["total_rounds"] = 1
+        action = self.decide()
+        self.assertEqual(action["model"], "opus")
+        self.assertIn("Round: 2.", action["prompt"])
         self.job["total_rounds"] = 2
         self.assertEqual(self.decide()["model"], "opus")
         self.job["total_rounds"] = 0
         self.routed(risk="high")
         self.assertEqual(self.decide()["model"], "opus")
 
+    def test_medium_risk_keeps_round_one_on_t2(self):
+        self.routed(risk="medium")
+        self.assertEqual(self.decide()["model"], "sonnet")
+
+    def test_unknown_risk_counts_as_high_for_the_cortadora(self):
+        self.routed(risk="low")
+        self.job["intake"]["risk"] = self.job["agents"]["risk"] = None
+        self.assertEqual(self.decide()["model"], "opus")
+
     def test_later_round_lists_previous_checks_reviews_and_feedback(self):
         self.job["total_rounds"] = 1
+        self.routed(risk="medium")
         files = [self.write("round-1/checks.md", "GATE: FAIL\n"),
                  self.write("round-1/checks.log", "boom\n"),
                  self.write("round-1/review-code.md", CHANGES),
                  self.write("feedback-1.md", "Usa la otra API.\n")]
         action = self.decide()
-        self.assertSpawn(action, "atta-cortadora", "sonnet", "Round: 2.",
+        self.assertSpawn(action, "atta-cortadora", "opus", "Round: 2.",
                          self.dir / "round-2" / "build.md", *files)
 
     def test_done_on_first_round_publishes_then_advances(self):
@@ -1383,6 +1398,295 @@ class CommandTest(NextBase):
         self.assertEqual((code, out), (2, ""))
         self.assertEqual(err, f"El job {JID} está en spec; intake.md solo se guarda en intake.\n")
         self.assertFalse((self.dir / "intake.md").exists())
+
+
+class MatrixTest(NextBase):
+    """F4 T3 (S8, S8a, S2): the stage×risk matrix, the attempt ladder and model independence,
+    all resolved through models.Table.stage_tier."""
+
+    def use(self, **entry):
+        self.cfg = config.with_defaults({"models": {"claude-code": entry}})
+
+    def decide_cfg(self):
+        self.jobs.save(self.job)
+        return nxt.decide(self.jobs.load(JID), self.dir, self.root, self.cfg)
+
+    def plan_cfg(self):
+        self.jobs.save(self.job)
+        return nxt.plan(self.jobs.load(JID), self.dir, self.root, self.cfg)
+
+    def stage(self, stage, risk, **fields):
+        self.routed(risk=risk, spec_review=True)
+        self.wt.mkdir(parents=True, exist_ok=True)
+        self.job["worktree"] = str(self.wt)
+        self.job.update(stage=stage, **fields)
+
+    # ---- low: one tier down only where an error is cheap
+
+    def test_low_guia_goes_one_tier_down(self):
+        self.stage("spec", "low")
+        action = self.decide_cfg()
+        self.assertSpawn(action, "atta-guia", "haiku")
+
+    def test_low_guia_tier_is_recorded_as_t1(self):
+        self.stage("spec", "low")
+        plan = self.plan_cfg()
+        self.assertEqual((plan["model"], plan["tier"]), ("haiku", "T1"))
+
+    def test_guia_by_risk(self):
+        for risk, model in (("low", "haiku"), ("medium", "sonnet"), ("high", "sonnet")):
+            with self.subTest(risk=risk):
+                self.stage("spec", risk)
+                self.assertEqual(self.decide_cfg()["model"], model)
+
+    def test_low_guia_tier_one_down_reads_the_tier_map(self):
+        self.stage("spec", "low")
+        self.jobs.save(self.job)
+        tiers = dict(MODELS, T1="claude-haiku-4-5")
+        action = nxt.decide(self.jobs.load(JID), self.dir, self.root, self.cfg, tiers)
+        self.assertEqual(action["model"], "claude-haiku-4-5")
+
+    def test_low_never_lowers_the_reina_the_refutador_or_the_code_reviewer(self):
+        self.stage("approve", "low", pr=7)
+        self.assertSpawn(self.decide_cfg(), "atta-reina", "sonnet")
+        self.stage("review", "low", pr=7)
+        self.job["agents"]["reviewers"] = [dict(CODE, tier="T1")]  # the router's low table
+        self.write("round-1/review-code.md", CHANGES)
+        # as before: never weaker than the reviewer it judges (T1) and not its model (haiku)
+        self.assertSpawn(self.decide_cfg(), "atta-refutador", "sonnet",
+                         self.dir / "round-1" / "refute.md")
+
+    def test_low_ux_reviewer_keeps_the_router_tier(self):
+        # The routing table already runs it on T1 at low; the matrix does not lower it twice.
+        self.routed(risk="low", reviewers=(UX,))
+        self.wt.mkdir(parents=True, exist_ok=True)
+        self.job["worktree"] = str(self.wt)
+        self.job.update(stage="review", pr=7)
+        self.assertEqual(self.decide_cfg()["agents"][0]["model"], "haiku")
+        models = dict(MODELS, T0="claude-haiku-4-5")
+        self.jobs.save(self.job)
+        action = nxt.decide(self.jobs.load(JID), self.dir, self.root, self.cfg, models)
+        self.assertEqual(action["agents"][0]["model"], "haiku")
+
+    def test_exploradora_runs_before_the_risk_is_known(self):
+        # Intake decides the risk: it never runs lowered, even if an old intake said low.
+        self.routed(risk="low")
+        self.jobs.save(self.job)
+        tiers = dict(MODELS, T0="claude-haiku-4-5")
+        action = nxt.decide(self.jobs.load(JID), self.dir, self.root, self.cfg, tiers)
+        self.assertSpawn(action, "atta-exploradora", "haiku")
+
+    def test_role_override_beats_the_low_step_down(self):
+        self.use(roles={"guia": "sonnet"})
+        self.stage("spec", "low")
+        self.assertEqual(self.decide_cfg()["model"], "sonnet")
+
+    # ---- medium: today's routing, unchanged
+
+    def test_medium_routing_is_unchanged(self):
+        self.stage("spec", "medium")
+        self.assertSpawn(self.decide_cfg(), "atta-guia", "sonnet")
+        self.stage("build", "medium")
+        self.assertSpawn(self.decide_cfg(), "atta-cortadora", "sonnet", "Round: 1.")
+        self.stage("approve", "medium", pr=7)
+        self.assertSpawn(self.decide_cfg(), "atta-reina", "sonnet")
+        self.routed(risk="medium", reviewers=(CODE, {**SECURITY, "tier": "T2"}, UX))
+        self.job.update(stage="review", pr=7)
+        got = [(a["agent"], a["model"]) for a in self.decide_cfg()["agents"]]
+        self.assertEqual(got, [("atta-jardinera-code", "sonnet"), ("atta-soldado", "sonnet"),
+                               ("atta-jardinera-ux", "haiku")])
+
+    # ---- high: up where an error is expensive
+
+    def test_high_raises_cortadora_reina_and_security_reviewers_to_t3(self):
+        self.stage("build", "high")
+        self.assertEqual(self.decide_cfg()["model"], "opus")
+        self.stage("approve", "high", pr=7)
+        self.assertEqual(self.decide_cfg()["model"], "opus")
+        # a routing table that left the security reviewer below T3 is raised to it
+        self.routed(risk="high", reviewers=(CODE, {**SECURITY, "tier": "T2"}))
+        self.job.update(stage="review", pr=7)
+        got = [(a["agent"], a["model"]) for a in self.decide_cfg()["agents"]]
+        self.assertEqual(got, [("atta-jardinera-code", "sonnet"), ("atta-soldado", "opus")])
+
+    def test_unknown_risk_raises_but_never_lowers(self):
+        self.stage("approve", "high", pr=7)
+        self.job["intake"]["risk"] = self.job["agents"]["risk"] = "raro"
+        self.assertEqual(self.decide_cfg()["model"], "opus")
+        self.stage("spec", "high")
+        self.job["intake"]["risk"] = self.job["agents"]["risk"] = "raro"
+        self.assertEqual(self.decide_cfg()["model"], "sonnet")
+
+    # ---- the matrix can be switched off by a human: today's routing
+
+    def test_matrix_off_keeps_the_previous_routing(self):
+        self.cfg = config.with_defaults({"routing_matrix": False})
+        self.stage("spec", "low")
+        self.assertEqual(self.decide_cfg()["model"], "sonnet")
+        self.stage("build", "medium")
+        self.job["total_rounds"] = 1
+        self.assertEqual(self.decide_cfg()["model"], "sonnet")
+        self.job["total_rounds"] = 2
+        self.assertEqual(self.decide_cfg()["model"], "opus")
+        self.stage("build", "high")
+        self.job["total_rounds"] = 0
+        self.assertEqual(self.decide_cfg()["model"], "opus")
+        self.job["intake"]["risk"] = self.job["agents"]["risk"] = None
+        self.assertEqual(self.decide_cfg()["model"], "sonnet")
+        self.routed(risk="high", reviewers=(CODE, {**SECURITY, "tier": "T2"}))
+        self.job.update(stage="review", pr=7)
+        got = [a["model"] for a in self.decide_cfg()["agents"]]
+        self.assertEqual(got, ["sonnet", "sonnet"])
+
+    # ---- independence: reviewers avoid the Cortadora's model (F2 L8)
+
+    def test_reviewers_carry_the_cortadora_model_to_avoid(self):
+        self.stage("review", "medium", pr=7)
+        self.job["agents"]["reviewers"] = [dict(CODE)]
+        plan = self.plan_cfg()
+        self.assertEqual(plan["agents"][0]["avoid"], ["sonnet"])
+        self.assertEqual(plan["agents"][0]["model"], "sonnet")  # medium stays as today
+        self.job["total_rounds"] = 1  # round 2: the Cortadora runs on T3
+        self.assertEqual(self.plan_cfg()["agents"][0]["avoid"], ["opus"])
+
+    def test_public_action_does_not_print_avoid(self):
+        self.stage("review", "medium", pr=7)
+        self.job["agents"]["reviewers"] = [dict(CODE)]
+        self.assertNotIn("avoid", self.decide_cfg()["agents"][0])
+
+    def test_reviewer_moves_to_a_distinct_model_when_a_stronger_tier_allows_it(self):
+        # T1 was set to opus by a human: the T1 reviewer would share the Cortadora's T3 model.
+        self.use(tiers={"T1": "opus"})
+        self.stage("review", "high", pr=7)
+        self.job["agents"]["reviewers"] = [dict(UX)]
+        action = self.decide_cfg()["agents"][0]
+        self.assertEqual(action["model"], "sonnet")
+
+    def test_independence_never_weakens_or_raises_cost_below_high(self):
+        # medium: no stronger model is allowed, so a clash is kept (never a weaker reviewer)
+        self.use(tiers={"T1": "sonnet"})
+        self.stage("review", "medium", pr=7)
+        self.job["agents"]["reviewers"] = [dict(UX)]
+        self.assertEqual(self.decide_cfg()["agents"][0]["model"], "sonnet")
+
+    def test_avoid_keeps_working_with_a_spent_fallback_chain(self):
+        self.use(fallbacks={"T3": ["sonnet", "haiku"]})
+        self.stage("review", "medium", pr=7)
+        rastreador = {"reviewer": "rastreador", "lenses": ["adversarial"], "tier": "T3"}
+        self.job["agents"]["reviewers"] = [rastreador]
+        self.job["model_failures"] = {"stage": "review", "since": PAST,
+                                      "agents": {"atta-rastreador": ["opus"]}}
+        # the Cortadora ran on sonnet (medium, round 1): the fallback skips it when it can
+        self.assertEqual(self.decide_cfg()["agents"][0]["model"], "haiku")
+        # haiku failed too: never a dearer model, so the chain is spent
+        self.job["model_failures"]["agents"]["atta-rastreador"] = ["opus", "haiku"]
+        action = self.decide_cfg()
+        self.assertEqual(action["action"], "wait")
+        self.assertIn("La cadena de fallback de T3 se agotó para atta-rastreador", action["reason"])
+
+    def test_independence_never_moves_a_role_override(self):
+        self.use(roles={"jardinera-code": "opus"})
+        self.stage("review", "high", pr=7)
+        self.job["agents"]["reviewers"] = [dict(CODE)]
+        self.assertEqual(self.decide_cfg()["agents"][0]["model"], "opus")
+
+
+class DepsInNextTest(NextBase):
+    """F4 T6 (S7): `atta next` makes a job wait for its unmerged BLOCKED-BY blockers, like
+    `atta queue` and `atta start` do."""
+
+    def setUp(self):
+        super().setUp()
+        self.routed(risk="low")
+        self.job["intake"]["blocked_by"] = [7]
+        self.job["stage"] = "spec"
+
+    def blocker(self, stage, issue=7):
+        job = store.new_job(issue, "Bloqueante", None, self.cfg, support.T0)
+        job["stage"] = stage
+        self.jobs.job_dir(job["id"]).mkdir(parents=True)
+        self.jobs.save(job)
+
+    def call(self, *argv):
+        parser = argparse.ArgumentParser(prog="atta")
+        nxt.register(parser.add_subparsers(dest="command"))
+        args = parser.parse_args(list(argv))
+        args.root = self.root
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = args.func(args, self.cfg, self.jobs)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_unmerged_blocker_waits_and_writes_nothing(self):
+        self.blocker("build")
+        self.jobs.save(self.job)
+        before = (self.dir / "job.json").read_bytes()
+        code, out, err = self.call("next", JID)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out), {
+            "action": "wait", "reason": "espera a #7: todavía no está mergeado."})
+        self.assertEqual((self.dir / "job.json").read_bytes(), before)
+
+    def test_rejected_blocker_holds(self):
+        self.blocker("rejected")
+        self.jobs.save(self.job)
+        code, out, err = self.call("next", JID)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out), {
+            "action": "wait",
+            "reason": "su bloqueante #7 fue rechazado: decide una persona."})
+
+    def test_cycle_holds(self):
+        self.blocker("build")
+        other = self.jobs.load(store.new_job(7, "Bloqueante", None, self.cfg, support.T0)["id"])
+        other["intake"] = {"risk": "low", "surfaces": [], "decision": "ACCEPT",
+                           "blocked_by": [12], "migration": False}
+        self.jobs.save(other)
+        self.jobs.save(self.job)
+        code, out, _ = self.call("next", JID)
+        self.assertEqual(json.loads(out), {
+            "action": "wait",
+            "reason": "dependencia circular (#12 → #7 → #12): decide una persona."})
+
+    def test_merged_blocker_lets_the_job_advance(self):
+        self.blocker("merged")
+        self.jobs.save(self.job)
+        code, out, err = self.call("next", JID)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["agent"], "atta-guia")
+
+    def test_blocker_without_job_resolves_when_its_issue_is_closed(self):
+        from unittest import mock
+        self.jobs.save(self.job)
+        with mock.patch("atta.spine.github.view_issue", return_value={"state": "CLOSED"}):
+            code, out, _ = self.call("next", JID)
+        self.assertEqual(json.loads(out)["agent"], "atta-guia")
+
+    def test_blocker_without_job_waits_when_github_cannot_be_read(self):
+        from unittest import mock
+        from atta.spine.github import GhError
+        self.jobs.save(self.job)
+        with mock.patch("atta.spine.github.view_issue", side_effect=GhError("sin red")):
+            code, out, _ = self.call("next", JID)
+        self.assertEqual((code, json.loads(out)["action"]), (0, "wait"))
+
+    def test_job_without_blocked_by_is_unaffected(self):
+        self.job["intake"].pop("blocked_by")
+        self.jobs.save(self.job)
+        self.assertEqual(json.loads(self.call("next", JID)[1])["agent"], "atta-guia")
+
+    def test_job_that_waits_for_a_person_is_not_gated(self):
+        self.blocker("build")
+        self.job["stage"] = "needs-human"
+        self.jobs.save(self.job)
+        self.assertEqual(json.loads(self.call("next", JID)[1])["action"], "wait")
+        self.assertNotIn("espera a #7", self.call("next", JID)[1])
+
+    def test_decide_stays_pure_and_ignores_blockers(self):
+        self.blocker("build")
+        self.jobs.save(self.job)
+        self.assertEqual(nxt.decide(self.jobs.load(JID), self.dir, self.root, self.cfg)["agent"],
+                         "atta-guia")
 
 
 if __name__ == "__main__":
