@@ -1842,9 +1842,11 @@ python -m unittest discover -s tests -v
 ```
 
 947 tests, sin red, con estado en carpetas temporales; GitHub se simula con
-`tests/fakegh/fakegh.py` vía `ATTA_GH`. El CI (`.github/workflows/ci.yml`) corre la suite en Ubuntu,
-macOS y Windows con Python 3.10 y 3.12 en cada push a `develop`, `feat/**` y `atta/**`, y en cada PR
-contra `develop`; además instala el paquete con `pip install .` en un entorno limpio y prueba `atta` y
+`tests/fakegh/fakegh.py` vía `ATTA_GH`. El CI (`.github/workflows/ci.yml`) corre la suite en Ubuntu
+y Windows con Python 3.10 y 3.12 en cada PR contra `develop` (una vez por commit) y en cada push a
+`develop` y `atta/**`. macOS va aparte (`.github/workflows/ci-macos.yml`, Python 3.12): corre tras
+cada push a `develop`, cada lunes y a mano, porque las máquinas macOS de GitHub suelen estar
+saturadas y un job que nunca arranca no debe frenar un PR; además instala el paquete con `pip install .` en un entorno limpio y prueba `atta` y
 `atta-board` fuera del checkout, incluidos `atta doctor --no-github`, `atta init --check` y
 `atta memory`. Un job aparte en Ubuntu instala ast-grep real y corre
 `tests/test_gate_astgrep_real.py` con `ATTA_REQUIRE_AST_GREP=1`: sin el binario falla en vez de saltearse.
