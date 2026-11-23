@@ -30,6 +30,12 @@ rastreador            T3    opus    tier
 refutador             T1    haiku   tier
 reina                 T2    sonnet  tier · escala a T3 (opus)
 Tiers: T0 haiku · T1 haiku · T2 sonnet · T3 opus
+Matriz etapa×riesgo (modelo en riesgo bajo · medio · alto):
+  guia          haiku · sonnet · sonnet
+  jardinera-ux  haiku · sonnet · sonnet
+  cortadora     sonnet · sonnet · opus (desde la ronda 2: opus)
+  reina         sonnet · sonnet · opus
+  soldado       sonnet · sonnet · opus (revisor de seguridad)
 Las Jardineras, el Soldado y el Rastreador corren en el tier que les asigna el router; un modelo por rol lo reemplaza.
 El orquestador /atta (comando y skill) corre en T0 (haiku).
 Fallback por cuota, rate limit o red: ninguno (`atta models fallback <tier> <modelo>...`).
@@ -363,6 +369,160 @@ class ResolveTest(unittest.TestCase):
 
 
 
+class StageTierTest(unittest.TestCase):
+    """F4 T3 (S8, S8a): `Table.stage_tier`, the stage×risk matrix, the single source."""
+
+    def table(self, **kw):
+        base = {"T0": "haiku", "T1": "haiku", "T2": "sonnet", "T3": "opus"}
+        return models.Table(base, kw.pop("roles", {}), models.role_tiers(), base, **kw)
+
+    def test_low_goes_one_tier_down_only_for_guia_and_ux_jardinera(self):
+        tab = self.table()
+        self.assertEqual(tab.stage_tier("guia", risk="low"), ("T1", False))
+        self.assertEqual(tab.stage_tier("jardinera-ux", risk="low"), ("T1", False))
+        for role in ("cortadora", "reina", "refutador", "vigia", "soldado", "rastreador",
+                     "jardinera-code", "jardinera-ui", "jardinera-resilience"):
+            self.assertEqual(tab.stage_tier(role, risk="low"), (tab.tier_of(role), False), role)
+
+    def test_exploradora_is_never_lowered_it_runs_before_the_risk_exists(self):
+        self.assertEqual(self.table().stage_tier("exploradora", risk="low"), ("T1", False))
+
+    def test_a_router_tier_is_not_lowered_again(self):
+        self.assertEqual(self.table().stage_tier("jardinera-ux", tier="T1", risk="low"),
+                         ("T1", False))
+
+    def test_step_down_stops_at_t0(self):
+        tab = self.table()
+        tab.defaults["guia"] = "T0"
+        self.assertEqual(tab.stage_tier("guia", risk="low"), ("T0", False))
+
+    def test_medium_is_todays_routing(self):
+        tab = self.table()
+        for role in models.ROLES:
+            self.assertEqual(tab.stage_tier(role, risk="medium"),
+                             (tab.tier_of(role), False), role)
+        self.assertEqual(tab.stage_tier("jardinera-code", tier="T1", risk="medium"),
+                         ("T1", False))
+
+    def test_high_and_unknown_raise_cortadora_reina_and_the_security_reviewer(self):
+        tab = self.table()
+        for risk in ("high", None, "raro"):
+            self.assertEqual(tab.stage_tier("cortadora", risk=risk), ("T3", True), risk)
+            self.assertEqual(tab.stage_tier("reina", risk=risk), ("T3", True), risk)
+            self.assertEqual(tab.stage_tier("soldado", tier="T2", risk=risk,
+                                            reviewer="security"), ("T3", True), risk)
+            self.assertEqual(tab.stage_tier("jardinera-code", tier="T2", risk=risk),
+                             ("T2", False), risk)
+            self.assertEqual(tab.stage_tier("guia", risk=risk), ("T2", False), risk)
+
+    def test_unknown_risk_never_lowers(self):
+        tab = self.table()
+        for risk in (None, "raro", "none"):
+            self.assertEqual(tab.stage_tier("guia", risk=risk), ("T2", False))
+
+    def test_router_t3_escalates_and_the_refutador_is_not_raised_here(self):
+        tab = self.table()
+        self.assertEqual(tab.stage_tier("rastreador", tier="T3", risk="medium"), ("T3", True))
+        self.assertEqual(tab.stage_tier("refutador", risk="high"), ("T1", False))
+
+    def test_ladder_cortadora_climbs_from_round_two(self):
+        tab = self.table()
+        self.assertEqual(tab.stage_tier("cortadora", risk="medium", round=1), ("T2", False))
+        self.assertEqual(tab.stage_tier("cortadora", risk="medium", round=2), ("T3", True))
+        self.assertEqual(tab.stage_tier("cortadora", risk="low", round=2), ("T3", True))
+        self.assertEqual(tab.stage_tier("jardinera-code", risk="medium", round=5),
+                         ("T2", False))
+
+    def test_matrix_off_is_the_routing_of_before(self):
+        tab = self.table(matrix=False)
+        self.assertEqual(tab.stage_tier("guia", risk="low"), ("T2", False))
+        self.assertEqual(tab.stage_tier("cortadora", risk="medium", round=2), ("T2", False))
+        self.assertEqual(tab.stage_tier("cortadora", risk="medium", round=3), ("T3", True))
+        self.assertEqual(tab.stage_tier("cortadora", risk="high"), ("T3", True))
+        self.assertEqual(tab.stage_tier("cortadora", risk=None), ("T2", False))
+        self.assertEqual(tab.stage_tier("reina", risk="high"), ("T3", True))
+        self.assertEqual(tab.stage_tier("soldado", tier="T2", risk="high", reviewer="security"),
+                         ("T2", False))
+
+    def test_matrix_follows_the_config_switch(self):
+        self.assertTrue(models.table(config.with_defaults({})).matrix)
+        self.assertTrue(models.table(config.with_defaults({"routing_matrix": True})).matrix)
+        self.assertFalse(models.table(config.with_defaults({"routing_matrix": False})).matrix)
+
+    def test_risk_models_shows_the_effect_per_risk(self):
+        tab = self.table(roles={"cortadora": "haiku"})
+        self.assertEqual(tab.risk_models("guia"), ("haiku", "sonnet", "sonnet"))
+        # the override replaces the tier model; escalation to T3 still ignores it
+        self.assertEqual(tab.risk_models("cortadora"), ("haiku", "haiku", "opus"))
+        self.assertEqual(tab.risk_models("soldado", "security"), ("sonnet", "sonnet", "opus"))
+
+    # ---- independence (F2 L8)
+
+    def test_review_model_avoids_a_clash_only_with_a_model_that_is_not_weaker(self):
+        base = {"T0": "haiku", "T1": "opus", "T2": "sonnet", "T3": "opus"}
+        tab = models.Table(base, {}, models.role_tiers(), base)
+        # high risk: T1 reviewer clashes with the Cortadora's opus; T2 is not weaker than T1
+        self.assertEqual(tab.review_model("jardinera-ux", tier="T1", escalate=False,
+                                          risk="high", cortadora="opus"), "sonnet")
+        # medium/low: no model above the reviewer's own tier is allowed
+        for risk in ("medium", "low"):
+            self.assertEqual(tab.review_model("jardinera-ux", tier="T1", escalate=False,
+                                              risk=risk, cortadora="opus"), "opus")
+
+    def test_review_model_keeps_a_role_override_and_an_escalated_reviewer(self):
+        tab = self.table(roles={"jardinera-code": "opus"})
+        self.assertEqual(tab.review_model("jardinera-code", tier="T2", escalate=False,
+                                          risk="high", cortadora="opus"), "opus")
+        self.assertEqual(tab.review_model("rastreador", tier="T3", escalate=True,
+                                          risk="high", cortadora="opus"), "opus")
+
+    def test_review_model_without_a_clash_or_with_the_matrix_off_is_resolve(self):
+        tab = self.table()
+        self.assertEqual(tab.review_model("jardinera-code", tier="T2", escalate=False,
+                                          risk="medium", cortadora="opus"), "sonnet")
+        self.assertEqual(self.table(matrix=False).review_model(
+            "jardinera-ux", tier="T2", escalate=False, risk="high", cortadora="sonnet"),
+            "sonnet")
+
+    def test_resolve_ceiling_bounds_the_avoid_search(self):
+        tab = self.table()
+        self.assertEqual(tab.resolve("refutador", avoid={"haiku"}, floor="T1"), "sonnet")
+        self.assertEqual(tab.resolve("refutador", avoid={"haiku"}, floor="T1", ceiling="T1"),
+                         "haiku")
+
+    def test_matrix_lines_in_atta_models_when_off(self):
+        tab = self.table(matrix=False)
+        self.assertEqual(models._matrix_lines(tab), [
+            'Matriz etapa×riesgo: desactivada ("routing_matrix": false en atta/config.json); '
+            "el routing es el de antes."])
+
+
+class MatrixRenderTest(ModelsBase):
+    def test_table_shows_the_effect_and_the_switch(self):
+        self.cfg_path.write_text(json.dumps({**self.stored(), "routing_matrix": False}),
+                                 encoding="utf-8")
+        code, out, err = self.atta("models")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn('Matriz etapa×riesgo: desactivada ("routing_matrix": false en '
+                      "atta/config.json); el routing es el de antes.\n", out)
+        self.assertNotIn("Matriz etapa×riesgo (modelo", out)
+
+    def test_overrides_show_in_the_matrix_rows(self):
+        self.atta("models", "set", "T2", "haiku")
+        _code, out, _err = self.atta("models")
+        self.assertIn("  cortadora  haiku · haiku · opus (desde la ronda 2: opus)\n", out)
+        # a role that no longer varies by risk leaves the matrix
+        self.assertNotIn("  guia  ", out)
+        self.assertNotIn("  jardinera-ux  haiku", out)
+
+    def test_models_set_and_reset_do_not_write_routing_matrix(self):
+        before = self.stored().get("routing_matrix", "absent")
+        self.atta("models", "set", "T3", "sonnet")
+        self.assertEqual(self.stored().get("routing_matrix", "absent"), before)
+        self.atta("models", "reset")
+        self.assertEqual(self.stored().get("routing_matrix", "absent"), before)
+
+
 class FallbackTest(ModelsBase):
     """F4 T4 (S4, L4): per-tier Claude fallback chains for quota, rate limit or network
     errors; a fallback never goes to a more expensive model."""
@@ -403,6 +563,31 @@ class FallbackTest(ModelsBase):
     def test_same_model_as_the_tier_is_refused(self):
         self.refused(("T2", "sonnet"), "«sonnet» ya es el modelo de T2: el fallback necesita "
                      "otro modelo. No cambié nada.\n")
+
+    def test_chain_not_ordered_from_dear_to_cheap_is_refused(self):
+        # F4 T4 review R3: after haiku fails, sonnet (dearer) is never tried: refuse, don't
+        # reorder (the human chose the order; a silent reorder would hide the mistake).
+        message = ("«sonnet» cuesta más que «haiku», que va antes en la cadena de T3, y nunca "
+                   "se alcanzaría: ordénala de la más cara a la más barata (opus > sonnet > "
+                   "haiku). No cambié nada.\n")
+        self.refused(("T3", "haiku", "sonnet"), message)
+        before = self.files()
+        self.assertEqual(self.atta("models", "fallback", "T3", "haiku", "sonnet")[0], 2)
+        self.assertEqual(self.files(), before)
+        self.assertNotIn("models", self.stored())
+
+    def test_full_ids_are_ordered_by_family_cost(self):
+        self.refused(("T3", "claude-3-haiku", "claude-sonnet-4-5"),
+                     "«claude-sonnet-4-5» cuesta más que «claude-3-haiku», que va antes en la "
+                     "cadena de T3, y nunca se alcanzaría: ordénala de la más cara a la más "
+                     "barata (opus > sonnet > haiku). No cambié nada.\n")
+
+    def test_a_chain_ordered_from_dear_to_cheap_is_accepted(self):
+        for chain in (("sonnet", "haiku"), ("claude-sonnet-4-5", "claude-3-haiku")):
+            with self.subTest(chain=chain):
+                self.assertEqual(self.atta("models", "fallback", "T3", *chain)[0], 0)
+                self.assertEqual(self.stored()["models"]["claude-code"]["fallbacks"]["T3"],
+                                 list(chain))
 
     def test_repeated_model_is_refused(self):
         self.refused(("T3", "haiku", "haiku"),

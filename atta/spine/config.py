@@ -75,8 +75,10 @@ DEFAULTS = {
     # the previous round; `enforce` turns those warnings into failures (see scope.py).
     "scope": {"enforce": False, "max_files": 12},
 }
-# Optional key, never defaulted: `models` (per-runtime tier and role overrides, S12; see
-# models.py and `atta models`).
+# Optional keys, never defaulted: `models` (per-runtime tier and role overrides, S12; see
+# models.py and `atta models`) and `routing_matrix` (bool; false turns off the stage×risk model
+# matrix of F4 T3 and keeps the routing of before; absent means on, and `atta doctor` tells
+# a project without the key that the default changed).
 
 # Labels that may be absent from `labels` and take these defaults (S13). They are kept out of
 # DEFAULTS["labels"] so a config's `labels` keeps its F1 shape; read them with `label()`.
@@ -198,6 +200,8 @@ def validate(cfg: dict) -> dict:
         problem = risk.rules_error(cfg["risk_rules"])
         if problem:
             raise _err(problem)
+    if "routing_matrix" in cfg and not isinstance(cfg["routing_matrix"], bool):
+        raise _err("routing_matrix debe ser true o false.")
     if "models" in cfg:
         from . import models  # lazy: models.py reads config lazily too
         problem = models.config_error(cfg["models"])

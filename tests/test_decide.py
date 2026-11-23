@@ -573,6 +573,23 @@ class RuleWriteOrderTest(RuleBase):
                 self.call("next", JID)
         self.assertFalse(self.decision().exists())
 
+    def test_fallback_event_failure_still_prints_the_reina_spawn(self):  # review of a94111e
+        self.review("code", PASS + "\n## Findings\n\n- [blocker] src/a.py:1 — rompe.\n")
+        with mock.patch.object(nxt, "append_event", side_effect=OSError("disco lleno")):
+            code, out, err = self.call("next", JID)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["agent"], "atta-reina")
+        self.assertEqual(len(out.splitlines()), 1)
+        self.assertEqual(err, "Atta: no pude registrar por qué la regla dejó la decisión a la "
+                              "Reina (disco lleno); sigo con la Reina.\n")
+        self.assertEqual(self.rule_events(), [])
+        self.assertFalse(self.decision().exists())
+
+    def test_fallback_event_is_still_written_when_the_disk_works(self):  # preserve
+        self.review("code", PASS + "\n## Findings\n\n- [blocker] src/a.py:1 — rompe.\n")
+        self.assertEqual(self.next_action()["agent"], "atta-reina")
+        self.assertEqual([e["outcome"] for e in self.rule_events()], ["fallback"])
+
     def test_event_comes_before_decision(self):  # A7
         seen = []
         real = nxt.append_event

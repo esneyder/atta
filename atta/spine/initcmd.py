@@ -233,12 +233,14 @@ def _plan(root: Path, templates: Path, runtime: str, force: bool,
 
 
 def new_config_bytes() -> bytes:
-    """The packaged config.json plus `delivery` for new projects, keeping its formatting."""
+    """The packaged config.json plus `delivery` and `routing_matrix` (F4 T3, S8a: new projects
+    start on the stage×risk matrix) for new projects, keeping its formatting."""
     text = config.CONFIG_PATH.read_text(encoding="utf-8").rstrip()
     if not text.endswith("}"):
         raise InitError("La plantilla config.json no es un objeto JSON. No cambié nada.")
     entry = json.dumps(NEW_PROJECT_DELIVERY, ensure_ascii=False)
-    text = f'{text[:-1].rstrip()},\n  "delivery": {entry}\n}}\n'
+    text = (f'{text[:-1].rstrip()},\n  "delivery": {entry},\n  "routing_matrix": true\n'
+            '}\n')
     try:
         json.loads(text)
     except json.JSONDecodeError as exc:

@@ -9,6 +9,8 @@ Checks, in order (each one catches a stumble of the real runs, odd/tasks/f2-colo
 - `atta` and `atta-board` on the PATH (L13: Scripts folder of the Python missing from the PATH;
   without `atta` the guard hook blocks nothing) and the Python of Atta has pip (⚠, to update);
 - the project root is a git repo, `atta/config.json` loads and validates (missing: ⚠, defaults),
+  and without `routing_matrix` a ⚠ says the default routing changed (F4 T3, S9; `true` accepts
+  the stage×risk model matrix, `false` keeps the old routing; never edited by doctor),
   `atta/checks.json` has at least one check (without checks the Filtro always fails);
 - with a `sgconfig.yml`, the `ast-grep` (or `sg`) binary on the PATH (⚠: the Filtro fails);
 - remote `origin`, `origin/<integration_branch>` (`git ls-remote --heads`), the main checkout is
@@ -190,6 +192,7 @@ def _project(r: Report, root: Path) -> tuple[bool, dict]:
         else:
             r.ok("atta/config.json es válido")
             _routing(r, cfg)
+            _matrix(r, cfg)
     try:
         checks = gate.load_checks(root)["checks"]
     except gate.GateError as exc:
@@ -215,6 +218,19 @@ def _routing(r: Report, cfg: dict) -> None:
         r.warn("tu routing propio no incluye al Rastreador en riesgo alto",
                "Si nunca editaste «routing», bórralo de atta/config.json para usar el de "
                "fábrica; si es tuyo, agrega el reviewer rastreador (T3) a «high».")
+
+
+def _matrix(r: Report, cfg: dict) -> None:
+    """F4 upgrade (S9, F3 L18): the models of the stages now depend on the job's risk. A config
+    without `routing_matrix` gets the new default (on); say so, never touching the file."""
+    if "routing_matrix" in cfg:
+        return
+    r.warn("el routing por defecto cambió: los modelos ahora dependen del riesgo del job "
+           "(bajo: la Guía y la Jardinera UX bajan un tier; alto: la Cortadora, la Reina y el "
+           "revisor de seguridad suben a T3; la Cortadora sube a T3 desde la ronda 2)",
+           "Mira el efecto con `atta models`. Para aceptarlo, agrega \"routing_matrix\": true "
+           "a atta/config.json; para volver al routing de antes, agrega \"routing_matrix\": "
+           "false (solo una persona edita ese archivo).")
 
 
 def _ast_grep(r: Report, root: Path) -> None:
@@ -435,7 +451,8 @@ def register(subparsers) -> None:
         "doctor", help="Revisa si la máquina y el proyecto están listos para correr Atta.",
         description="Revisa, sin escribir nada: atta y atta-board en el PATH, Python con pip, "
                     "repo git, atta/config.json (avisa si tu routing propio no tiene al "
-                    "Rastreador en riesgo alto), atta/checks.json con checks, ast-grep si hay "
+                    "Rastreador en riesgo alto o si no define routing_matrix: el routing por "
+                    "defecto ahora depende del riesgo), atta/checks.json con checks, ast-grep si hay "
                     "sgconfig.yml, origin y origin/develop, que el checkout principal esté en "
                     "develop (falla si no) y al día, gh (instalado, con "
                     "sesión, con acceso al repo), las labels de Atta, los agentes, el skill, el "

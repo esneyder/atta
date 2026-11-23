@@ -9,7 +9,10 @@ The tables live in `config.json` under `routing`, so routing changes without cod
 The default table adds the adversarial `rastreador` (lens `adversarial`, T3; agent
 `atta-rastreador`, file `review-rastreador.md`) to the `high` risk plan only (G6).
 
-Tiers are logical (resolved to models in F4). A surface reviewer already present
+Tiers are logical (resolved to models in F4). The tier here is the stage's base tier per risk; the
+stage×risk matrix (security reviewer up to T3 at high or unknown risk, the Cortadora ladder) and
+model independence are applied where the model is resolved, in `models.Table.stage_tier` and
+`Table.review_model`, so the router stays a pure review planner. A surface reviewer already present
 from the risk table is not added twice; the risk table's entry wins.
 """
 

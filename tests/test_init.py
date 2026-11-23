@@ -137,7 +137,9 @@ class FreshInitTest(InitBase):
         # S13: new projects start with delivery.auto_merge_up_to = none («pr, más seguro»).
         written = json.loads((self.root / "atta" / "config.json").read_text(encoding="utf-8"))
         packaged = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(written, {**packaged, "delivery": {"auto_merge_up_to": "none"}})
+        # F4 T3 (S8a): new projects start on the stage×risk matrix, so doctor stays quiet.
+        self.assertEqual(written, {**packaged, "delivery": {"auto_merge_up_to": "none"},
+                                   "routing_matrix": True})
         self.assertEqual(config.load_config(self.root / "atta" / "config.json")["delivery"],
                          {"auto_merge_up_to": "none"})
         self.assertEqual((self.root / "atta" / "checks.json").read_bytes(),
