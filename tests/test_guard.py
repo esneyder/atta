@@ -1243,6 +1243,16 @@ class AskConfigCommandTests(GuardBase):
         self.assertIn("…", reason)
         self.assertLess(len(reason), 700)
 
+    def test_glob_and_expansion_characters_are_never_plain(self):  # review R3
+        for command, shown in (("atta settings set labels.queue *", "atta settings set"),
+                               ("atta settings set labels.queue co?a", "atta settings set"),
+                               ("atta settings set labels.queue [ab]", "atta settings set"),
+                               ("atta init --project ~/otro", "atta init"),
+                               ("atta settings set labels.queue !x", "atta settings set"),
+                               ("atta models set T2 haiku # nota", "atta models set")):
+            with self.subTest(command=command):
+                self.assertDeny(self.decide(command), shown, command)
+
     def test_launcher_given_by_path_is_denied(self):  # A1
         for mode in self.INTERACTIVE:
             for command, shown in self.PATHED:

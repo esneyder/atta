@@ -279,9 +279,12 @@ _PY_VALUED = {"-X", "-W"}
 # by a person. Anything else (bypassPermissions, dontAsk, auto, missing, unknown) fails closed.
 ASK_MODES = ("default", "acceptEdits", "plan")
 # A command with any of these is not a single plain invocation (chaining, pipes, subshells,
-# substitutions, heredocs, redirections, backslash escapes, variables, newlines).
-_NOT_PLAIN_BASH = re.compile(r"[;&|<>(){}`$\\\r\n]")
-_NOT_PLAIN_PS = re.compile(r"[;&|<>(){}`$@\r\n]")
+# substitutions, heredocs, redirections, backslash escapes, variables, newlines) nor what the
+# person approves verbatim (globs `* ? [`, `~` and `!` expansion, `#` comments): the shell
+# would run something else (review R3). PowerShell also expands `@` (splatting).
+_NOT_PLAIN_BASH = re.compile(r"[;&|<>(){}`$\\\r\n*?\[~!#]")
+_NOT_PLAIN_PS = re.compile(r"[;&|<>(){}`$@\r\n*?\[~!#]")
+# The `ask` prompt shows the command whole; a longer one is shown cut, so it is denied.
 MAX_SHOWN_COMMAND = 400
 
 
