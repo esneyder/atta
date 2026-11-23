@@ -22,8 +22,9 @@ Telemetry (T12): `atta next` writes `pending_agent` in job.json when the action 
 spawn ({stage, role, agent, model, tier, at}) or a spawn-group (a list of those, merged by agent
 so a reviewer retry keeps the ones that already finished; a single spawn in a stage that already
 holds such a list, the Refutador in review, joins it). `machine.advance` moves it to the event
-that leaves the stage and clears it. Its only other writes are the `refute` event (below) and
-job.json `build_retry` (build.md contract, below).
+that leaves the stage and clears it. Its only other writes are the `refute` event (below),
+job.json `build_retry` (build.md contract, below) and, on low risk, the rule's decision.md and
+`reina_rule` event (Reina determinista, below).
 
 Refutador (G4, S5): when every review of the round is in and a valid CHANGES has at least one
 blocker or major finding, `round-N/refute.md` decides before another round opens. It is spawned
@@ -35,6 +36,14 @@ blocker/major finding, header consistent with those lines) is asked once more in
 `refute-retry.md`, then needs-human. Minor-only CHANGES never open a round: approve, the minors
 stay as notes in the reviews. `atta next` appends one `{"event": "refute", "refute": outcome,
 "round": N}` per round and stage entry when it acts on a valid file."
+
+Reina determinista (F4 T1, S3): when the highest of the intake, routed and effective risks is
+`low`, before spawning the Reina, `atta next` asks decide.evaluate (see decide.py). Every
+signal clean → the APPROVE action of the delivery (merge or handoff), and `atta next` writes
+a `reina_rule` event (outcome approve, by rule, no model) and then decision.md in the Reina's
+format: a failed write leaves no approval. Any signal missing or failing → the Reina is
+spawned as before and `atta next` records the reason once per stage entry (`reina_rule`,
+outcome fallback). Medium and high never ask the rule.
 
 Delivery by risk (S13): an APPROVE runs `atta merge` when the job's risk is at most
 `delivery.auto_merge_up_to` (unknown risk = high), else `atta handoff`. The job's risk is
@@ -101,7 +110,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import branches, config, gate, intake, machine, memory, scope
+from . import branches, config, decide as rule, gate, intake, machine, memory, scope
 from . import models as mdl
 from .events import append_event, read_events
 from .lock import job_lock
@@ -415,13 +424,14 @@ def _table(cfg: dict, models) -> mdl.Table:
     return mdl.Table(models)  # a bare tier map (no role overrides)
 
 
+_INTERNAL = ("tier", "build_retry", "refute", "rule_decision", "rule_fallback")
+
+
 def _public(action: dict) -> dict:
-    """The action as printed: without the internal `tier` and `build_retry` of spawns nor
-    `refute` of runs."""
-    if action["action"] == "run" and "refute" in action:
-        return {k: v for k, v in action.items() if k != "refute"}
-    if action["action"] == "spawn":
-        return {k: v for k, v in action.items() if k not in ("tier", "build_retry")}
+    """The action as printed: without the internal `tier`, `build_retry` and `rule_fallback`
+    of spawns nor `refute` and `rule_decision` of runs."""
+    if action["action"] in ("run", "spawn"):
+        return {k: v for k, v in action.items() if k not in _INTERNAL}
     if action["action"] == "spawn-group":
         return {"action": "spawn-group",
                 "agents": [{k: v for k, v in a.items() if k != "tier"}
@@ -727,18 +737,36 @@ def _refutador_spawn(c: _Ctx, judged: list, out: Path, again: Path | None = None
         f"else.{extra}"), c.tier("refutador", tier=floor, escalate=high, model=model))
 
 
+def _deliver(c: _Ctx) -> dict:
+    # S13: Atta merges by itself up to delivery.auto_merge_up_to; above it the Reina hands
+    # the ready PR to a person (`atta handoff` → awaiting-merge).
+    return _run("merge" if config.auto_merges(c.cfg, _risk(c.job)) else "handoff", c.jid)
+
+
 def _approve(c: _Ctx) -> dict:
     decision = c.dir / DECISION_FILE
     if not c.fresh(decision):
+        verdict = None
+        if rule.rule_risk(c.job) == "low":
+            # F4 T1 (S3): on low risk a rule approves without a model when every signal is clean.
+            signals, reason = rule.evaluate(c.job, c.dir, c.round_dir, c.worktree, c.base,
+                                            c.cfg)
+            if signals is not None:
+                action = _deliver(c)
+                # Internal (stripped by _public): `atta next` writes decision.md and the event.
+                action["rule_decision"] = {"round": c.round, "signals": signals}
+                return action
+            verdict = {"round": c.round, "reason": reason}
         escalate = _risk(c.job) == "high"
-        return _spawn("atta-reina", c.model("reina", escalate=escalate), (
+        action = _spawn("atta-reina", c.model("reina", escalate=escalate), (
             f"{c.head()} Worktree: {c.worktree}. Base: {c.base}. {DATA_NOTE} Read the whole "
             f"job folder and the diff, then write {decision} and nothing else. You never merge."),
             c.tier("reina", escalate=escalate))
+        if verdict is not None:
+            action["rule_fallback"] = verdict
+        return action
     if _first_line(decision) == "APPROVE":
-        # S13: Atta merges by itself up to delivery.auto_merge_up_to; above it the Reina hands
-        # the ready PR to a person (`atta handoff` → awaiting-merge).
-        return _run("merge" if config.auto_merges(c.cfg, _risk(c.job)) else "handoff", c.jid)
+        return _deliver(c)
     return _run("label", c.jid, "add", c.cfg["labels"]["needs_human"], then=[
         ["atta", "comment", c.jid, "--role", "reina", "--file", str(decision)],
         ["atta", "advance", c.jid, "needs-human"]])
@@ -1014,6 +1042,50 @@ def record_refute(jobs, jid: str, stage: str, outcome: dict) -> None:
                                "refute": outcome["refute"]})
 
 
+def _rule_event(job_dir: Path, jid: str, round_n: int, fields: dict) -> None:
+    append_event(job_dir, {"ts": to_iso(utcnow()), "job": jid, "event": rule.EVENT,
+                           "stage": "approve", "round": round_n, **fields})
+
+
+def record_rule_decision(jobs, jid: str, stage: str, verdict: dict) -> None:
+    """Write the rule's decision.md (Reina format) and its `reina_rule` event (F4 T1, S3),
+    under the job lock, unless the stage moved or a decision of this stage already exists."""
+    job_dir = jobs.job_dir(jid)
+    with job_lock(job_dir):
+        job = jobs.load(jid)
+        decision = job_dir / DECISION_FILE
+        if job["stage"] != stage or _fresh(decision, job):
+            return
+        # Event first: if it cannot be written there is no decision.md, so no approval.
+        _rule_event(job_dir, jid, verdict["round"], {
+            "outcome": "approve", "decision": "APPROVE", "by": "rule", "model": None,
+            "signals": list(verdict["signals"])})
+        _write_atomic(decision, rule.decision_text(verdict["signals"]))
+
+
+def record_rule_fallback(jobs, jid: str, stage: str, verdict: dict) -> None:
+    """Record once per stage entry why the rule left the decision to the LLM Reina."""
+    job_dir = jobs.job_dir(jid)
+    with job_lock(job_dir):
+        job = jobs.load(jid)
+        if job["stage"] != stage:
+            return
+        since = from_iso(job["stage_since"])
+        try:
+            evs = read_events(job_dir)
+        except (OSError, ValueError):
+            evs = []
+        for e in evs:
+            if e.get("event") == rule.EVENT and e.get("round") == verdict["round"]:
+                try:
+                    if from_iso(e["ts"]) >= since:
+                        return
+                except (KeyError, TypeError, ValueError):
+                    continue
+        _rule_event(job_dir, jid, verdict["round"], {
+            "outcome": "fallback", "agent": rule.REINA, "reason": verdict["reason"]})
+
+
 def cmd_next(args, cfg, jobs) -> int:
     job = jobs.load(args.job)
     try:
@@ -1027,6 +1099,10 @@ def cmd_next(args, cfg, jobs) -> int:
         record_build_retry(jobs, job["id"], job["stage"], raw["build_retry"])
     if raw["action"] == "run" and "refute" in raw:
         record_refute(jobs, job["id"], job["stage"], raw["refute"])
+    if raw["action"] == "run" and "rule_decision" in raw:
+        record_rule_decision(jobs, job["id"], job["stage"], raw["rule_decision"])
+    if raw["action"] == "spawn" and "rule_fallback" in raw:
+        record_rule_fallback(jobs, job["id"], job["stage"], raw["rule_fallback"])
     print(json.dumps(_public(raw), ensure_ascii=False))
     return OK
 
@@ -1039,8 +1115,10 @@ def register(subparsers) -> None:
                     "wait o done, en una línea JSON. Solo escribe pending_agent (rol, modelo y "
                     "tier decididos) en job.json cuando la acción lanza agentes, build_retry "
                     "cuando pide a la Cortadora rehacer un build.md que no cumple el contrato, "
-                    "y el evento refute (una vez por ronda) cuando decide con el refute.md del "
-                    "Refutador.")
+                    "el evento refute (una vez por ronda) cuando decide con el refute.md del "
+                    "Refutador y, en riesgo bajo, el decision.md APPROVE de la Reina por regla "
+                    "con su evento reina_rule (o, una vez por etapa, el motivo por el que la "
+                    "regla deja la decisión a la Reina).")
     n.add_argument("job", help="id del job")
     n.set_defaults(func=cmd_next)
 
