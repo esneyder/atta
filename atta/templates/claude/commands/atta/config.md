@@ -39,7 +39,8 @@ directa, sin adornos. No cambias nada tú: cada área tiene su propio menú `/at
    (`AskUserQuestion` admite hasta 4 opciones por pregunta: ofrece primero Modelos, Perfiles,
    Entrega y Rondas; si la persona elige «Other» y escribe riesgo o labels, o te lo pide, trátalo
    como esa área y mándala a `/atta:risk` o `/atta:labels`.)
-2. Según la respuesta, dile qué comando escribir (cada área tiene su menú):
+2. Según la respuesta, dile qué menú escribir, con esta forma exacta: «Escribe /atta:<área>
+   aquí, en Claude Code (no en la terminal).» Cada área tiene su menú:
    - **Modelos** → `/atta:models`.
    - **Perfiles** → `/atta:profiles`.
    - **Entrega** → `/atta:delivery`.
