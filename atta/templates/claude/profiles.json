@@ -1,0 +1,17 @@
+{
+  "economico": {
+    "description": "Lo más barato que sigue siendo seguro: T3 baja a sonnet (nunca más débil), T2 a haiku, y Atta solo mergea sola riesgo bajo.",
+    "models": {"claude-code": {"T0": "haiku", "T1": "haiku", "T2": "haiku", "T3": "sonnet"}},
+    "delivery": {"auto_merge_up_to": "low"}
+  },
+  "equilibrado": {
+    "description": "Los modelos de fábrica de Atta y una entrega prudente: Atta solo mergea sola riesgo bajo.",
+    "models": {"claude-code": {"T0": "haiku", "T1": "haiku", "T2": "sonnet", "T3": "opus"}},
+    "delivery": {"auto_merge_up_to": "low"}
+  },
+  "calidad": {
+    "description": "Modelos más fuertes en T1 y T2, y Atta nunca mergea sola: todo PR espera tu revisión.",
+    "models": {"claude-code": {"T0": "haiku", "T1": "sonnet", "T2": "opus", "T3": "opus"}},
+    "delivery": {"auto_merge_up_to": "none"}
+  }
+}

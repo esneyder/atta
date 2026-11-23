@@ -27,6 +27,10 @@ stays as today and a reviewer is never weakened), so the clash of two T2 models 
 A project turns the whole matrix off with `"routing_matrix": false` in atta/config.json (human
 only; absent or true: on); `atta doctor` tells projects without the key that the default changed.
 
+Profiles (F2.y T3, S6; profiles.py): `"profile": "<id>"` layers a packaged profile's tier models
+between the factory and the project's overrides: factory < profile < `models` tiers/roles.
+`atta models` shows origin `perfil` for what the profile decided.
+
 `atta models [--runtime R]` prints the table; `set <Tn> <modelo>`, `set --role <rol> <modelo>`,
 `unset --role <rol>`, `fallback <Tn> <modelo>...` / `fallback <Tn> --clear` and `reset` change `atta/config.json` (atomically, keeping every other key
 and its order) and then the `model:` line of each `.claude/agents/atta-<rol>.md` and of the
@@ -83,7 +87,8 @@ FULL_ID_EXAMPLE = {"claude-code": "claude-sonnet-4-5"}
 DRIVER_TIER = "T0"
 # The `/atta:*` configuration menus (F2.y T2) only run `atta` commands, so they run on it too.
 DRIVER_FILES = (".claude/skills/atta/SKILL.md", ".claude/commands/atta.md",
-                ".claude/commands/atta/config.md", ".claude/commands/atta/models.md")
+                ".claude/commands/atta/config.md", ".claude/commands/atta/models.md",
+                ".claude/commands/atta/profiles.md")
 PLACEHOLDER = re.compile(r"\{\{model:([A-Za-z0-9]+)\}\}")
 _MODEL_LINE = re.compile(r"^model:[^\r\n]*", re.M)
 SIGN = "— Atta"
@@ -248,8 +253,11 @@ class Table:
 
     def __init__(self, tiers: dict, roles: dict | None = None, defaults: dict | None = None,
                  base: dict | None = None, runtime: str = RUNTIME,
-                 fallbacks: dict | None = None, matrix: bool = True):
+                 fallbacks: dict | None = None, matrix: bool = True,
+                 profile: str | None = None, profile_tiers: dict | None = None):
         self.tiers = dict(tiers)
+        self.profile = profile  # F2.y T3: the packaged profile layered over the factory tiers
+        self.profile_tiers = dict(profile_tiers or {})
         self.fallbacks = {t: list(c) for t, c in (fallbacks or {}).items()}
         self.roles = dict(roles or {})
         self.defaults = dict(defaults) if defaults is not None else role_tiers()
@@ -353,6 +361,14 @@ class Table:
         avoid = self.agent_model("guia") if role == "vigia" else None
         return self.resolve(role, avoid=avoid)
 
+    def tier_origin(self, tier: str) -> str:
+        """Who decided the model of `tier`: the project's override (S12), the profile (S6) or
+        the factory (models.json). Overrides win over the profile, which wins over the factory."""
+        layered = self.profile_tiers.get(tier, self.base.get(tier))
+        if self.tiers.get(tier) != layered:
+            return "proyecto"
+        return "perfil" if layered != self.base.get(tier) else "fábrica"
+
     def origin(self, role: str) -> str:
         if role in self.roles:
             origin = "rol"
@@ -360,6 +376,8 @@ class Table:
                 origin = "rol · regla ≠ guía"
         elif role == "vigia" and self.agent_model(role) != self.tier_model(self.tier_of(role)):
             origin = "regla ≠ guía"
+        elif self.tier_origin(self.tier_of(role)) == "perfil":
+            origin = "perfil"
         else:
             origin = "tier"
         if role in ESCALATING:
@@ -375,12 +393,18 @@ def project_models(cfg: dict | None, runtime: str = RUNTIME) -> dict:
 
 def table(cfg: dict | None = None, runtime: str = RUNTIME,
           templates: str | Path | None = None) -> Table:
-    """The effective Table: packaged defaults with the project's `models` merged over them."""
+    """The effective Table: packaged defaults, then the project's profile (F2.y T3, S6), then
+    the project's `models` merged over both."""
     base = default_tiers(runtime, templates)
     entry = project_models(cfg, runtime)
-    tiers = dict(base, **(entry.get("tiers") or {}))
+    name = (cfg or {}).get("profile")
+    chosen = {}
+    if name:
+        from . import profiles  # lazy: profiles.py imports this module
+        chosen = profiles.tiers(name, runtime, templates)
+    tiers = {**base, **chosen, **(entry.get("tiers") or {})}
     return Table(tiers, entry.get("roles") or {}, role_tiers(templates), base, runtime,
-                 entry.get("fallbacks") or {}, matrix_on(cfg))
+                 entry.get("fallbacks") or {}, matrix_on(cfg), name or None, chosen)
 
 
 def matrix_on(cfg: dict | None) -> bool:
@@ -508,7 +532,8 @@ def _save_config(root: Path, data: dict) -> None:
 def _tiers_line(tab: Table) -> str:
     parts = []
     for tier in TIERS:
-        mark = " (proyecto)" if tab.tiers.get(tier) != tab.base.get(tier) else ""
+        origin = tab.tier_origin(tier)
+        mark = f" ({origin})" if origin != "fábrica" else ""
         parts.append(f"{tier} {tab.tiers.get(tier, '-')}{mark}")
     return "Tiers: " + " · ".join(parts)
 
@@ -551,6 +576,8 @@ def render(root: Path, tab: Table) -> str:
     out = [f"Modelos de Atta en {root} (runtime {tab.runtime}):"]
     out += ["  ".join([*(c.ljust(w) for c, w in zip(r, widths)), r[3]]) for r in rows]
     out += [
+        *([f"Perfil: {tab.profile} (`atta profiles`); tus overrides de `atta models` ganan "
+           "sobre el perfil."] if tab.profile else []),
         _tiers_line(tab),
         *_matrix_lines(tab),
         "Las Jardineras, el Soldado y el Rastreador corren en el tier que les asigna el "
@@ -570,7 +597,7 @@ def state(root: Path, tab: Table) -> dict:
     """Read-only, machine-readable state of `atta models --json` (F2.y T2): what the
     `/atta:models` menu shows to mark the current option and preview the effect."""
     tiers = {t: {"model": tab.tiers.get(t), "default": tab.base.get(t),
-                 "origin": "proyecto" if tab.tiers.get(t) != tab.base.get(t) else "fábrica"}
+                 "origin": tab.tier_origin(t)}
              for t in TIERS}
     roles = {}
     for role in ROLES:
@@ -586,6 +613,7 @@ def state(root: Path, tab: Table) -> dict:
             low, medium, high = tab.risk_models(role, reviewer)
             stages[role] = {"low": low, "medium": medium, "high": high}
     return {
+        "profile": tab.profile,
         "driver": {"model": tab.tiers.get(DRIVER_TIER), "tier": DRIVER_TIER},
         "fallbacks": {t: tab.chain(t) if tab.tiers.get(t) else [] for t in TIERS},
         "ladder_round": LADDER_ROUND if tab.matrix else LEGACY_LADDER_ROUND,

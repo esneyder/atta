@@ -9,7 +9,7 @@ from atta.spine import cli
 
 F2_COMMANDS = ("init", "next", "save-artifact", "guard", "queue", "start", "refresh",
                "worktree", "publish", "comment", "label", "merge", "models",
-               "settings", "doctor", "memory")
+               "settings", "doctor", "memory", "profiles")
 
 
 class WiringTests(unittest.TestCase):

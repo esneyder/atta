@@ -217,7 +217,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="atta",
         description="Atta, tu colonia de agentes: espina determinista y flujo con GitHub (init, "
                     "doctor, queue, start, refresh, worktree, next, model-failed, publish, comment, "
-                    "label, guard, models, settings, memory y merge seguro a develop).",
+                    "label, guard, models, profiles, settings, memory y merge seguro a develop).",
         epilog="Códigos de salida: 0 ok, 1 veredicto negativo, 2 rechazado o error de uso.",
     )
     p.add_argument("--project", metavar="<carpeta>",
@@ -303,7 +303,7 @@ def build_parser() -> argparse.ArgumentParser:
     # F2 commands live in their own modules; imported here to keep startup cheap
     # for the F1 commands and to avoid import cycles.
     from . import (doctor, fallback, flow, guard, initcmd, memory, models, next as next_cmd,
-                   settings)
+                   profiles, settings)
     initcmd.register(sub)
     doctor.register(sub)
     next_cmd.register(sub)
@@ -311,6 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
     flow.register(sub)
     guard.register(sub)
     models.register(sub)
+    profiles.register(sub)
     settings.register(sub)
     memory.register(sub)
     return p
