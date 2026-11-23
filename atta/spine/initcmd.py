@@ -5,7 +5,9 @@ What it does, on the project root:
 - `.claude/agents/atta-*.md` from the packaged templates, with `{{model:Tn}}` resolved per role by
   models.py with the project's config (S5 defaults T1 haiku, T2 sonnet, T3 opus; S12 overrides
   from `models` in atta/config.json survive `--force`; the Vigía avoids the Guía's model), and
-  `.claude/skills/atta/SKILL.md` when that template exists.
+  `.claude/skills/atta/SKILL.md` and `.claude/commands/atta.md` when those templates exist, with
+  their `{{model:T0}}` resolved to the project's T0 model (F4 S5: the `/atta` orchestrator runs
+  on the cheap tier; `atta models` keeps that line in sync).
 - `.claude/settings.json`: created from the template, or the template hooks are appended to the
   user's file when missing (idempotent; user entries are never removed or reordered).
 - `atta/config.json` and `atta/checks.json` from the packaged defaults, only when missing. A new
@@ -194,16 +196,14 @@ def _plan(root: Path, templates: Path, runtime: str, force: bool,
     for src in sorted((claude_t / "agents").glob("atta-*.md")):
         text = _resolve(_read_text(src), table, src.name)
         plan.file(agents_dst / src.name, text.encode("utf-8"), replaceable=True)
-    skill = claude_t / "skills" / "atta" / "SKILL.md"
-    if skill.is_file():
-        plan.file(root / ".claude" / "skills" / "atta" / "SKILL.md", skill.read_bytes(),
-                  replaceable=True)
-    # A slash command that points to the skill, so `/atta` works even on Claude Code
-    # versions where skills are not registered as slash commands.
-    command = claude_t / "commands" / "atta.md"
-    if command.is_file():
-        plan.file(root / ".claude" / "commands" / "atta.md", command.read_bytes(),
-                  replaceable=True)
+    # The /atta driver: the skill, plus a slash command that points to it so `/atta` works
+    # even on Claude Code versions where skills are not registered as slash commands. Both
+    # carry `{{model:T0}}` (F4 S5), resolved like the agents' placeholders.
+    for rel in models.DRIVER_FILES:
+        src = claude_t / Path(rel).relative_to(".claude")
+        if src.is_file():
+            text = _resolve(_read_text(src), table, src.name)
+            plan.file(root / rel, text.encode("utf-8"), replaceable=True)
 
     settings_t = claude_t / "settings.json"
     if settings_t.is_file():
@@ -233,12 +233,14 @@ def _plan(root: Path, templates: Path, runtime: str, force: bool,
 
 
 def new_config_bytes() -> bytes:
-    """The packaged config.json plus `delivery` for new projects, keeping its formatting."""
+    """The packaged config.json plus `delivery` and `routing_matrix` (F4 T3, S8a: new projects
+    start on the stage×risk matrix) for new projects, keeping its formatting."""
     text = config.CONFIG_PATH.read_text(encoding="utf-8").rstrip()
     if not text.endswith("}"):
         raise InitError("La plantilla config.json no es un objeto JSON. No cambié nada.")
     entry = json.dumps(NEW_PROJECT_DELIVERY, ensure_ascii=False)
-    text = f'{text[:-1].rstrip()},\n  "delivery": {entry}\n}}\n'
+    text = (f'{text[:-1].rstrip()},\n  "delivery": {entry},\n  "routing_matrix": true\n'
+            '}\n')
     try:
         json.loads(text)
     except json.JSONDecodeError as exc:

@@ -295,7 +295,19 @@ class RouteTest(CliBase):
         job = self.job()
         expected = router.plan("high", ["ui"], config.load_config())
         self.assertEqual(job["agents"], expected)
-        self.assertEqual(job["intake"], {"risk": "high", "surfaces": ["ui"], "decision": "ACCEPT"})
+        self.assertEqual(job["intake"], {"risk": "high", "surfaces": ["ui"], "decision": "ACCEPT",
+                                         "blocked_by": [], "migration": False})
+
+    def test_route_persists_blocked_by_and_migration(self):
+        # F4 S7 (K5): the queue reads BLOCKED-BY from the job.
+        self.write_intake("DECISION: ACCEPT\nRISK: low\nSURFACES: none\nBLOCKED-BY: #7, #9\n"
+                          "MIGRATION: yes\n\nResumen.\n")
+        code, out, err = self.atta("route", JID)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, f"El router asignó 1 reviewer a {JID} (riesgo bajo, spec-review no): "
+                              "code T1.\n")
+        self.assertEqual(self.job()["intake"], {"risk": "low", "surfaces": [], "decision": "ACCEPT",
+                                                "blocked_by": [7, 9], "migration": True})
 
     def test_route_with_one_reviewer_uses_singular(self):
         self.write_intake("DECISION: ACCEPT\nRISK: low\nSURFACES: none\n\nResumen.\n")

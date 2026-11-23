@@ -175,6 +175,15 @@ UI, `security` agrega al Soldado. El riesgo que cuenta es el efectivo: si el Fil
 **Refutador:** nunca corre con un modelo más débil que el del revisor más fuerte que juzga, evita
 repetir el modelo de esos revisores cuando hay otro y en riesgo alto sube a T3.
 
+**Implementado en F4 (T3):** la matriz conservadora (`low`: la Guía y la Jardinera UX bajan un tier;
+`medium`: igual que antes; `high`: la Cortadora, la Reina y el revisor de seguridad suben a T3;
+Reina y Refutador nunca bajan; riesgo desconocido cuenta como `high` para subir y nunca baja) vive en
+`models.Table.stage_tier`; la Cortadora sube a T3 desde la ronda 2; los reviewers evitan el modelo de la
+Cortadora solo hacia un modelo que no sea más débil y, bajo `high`, no más caro (así `medium` no encarece
+cada revisión). `"routing_matrix": false` en `atta/config.json` la apaga y `atta doctor` avisa del cambio a
+los proyectos que no fijaron la clave. Lo demás de esta sección (escalera en tres tiers, familia distinta)
+sigue siendo diseño.
+
 **Escalera por intento:** si la ronda N falla (`GATE: FAIL` o `VERDICT: CHANGES`), la ronda N+1 sube a la
 Cortadora un tier (`T1 → T2 → T3`) y la última ronda siempre usa T3. Lo caro solo se paga cuando lo barato
 demostró no alcanzar. Cada subida queda en `events.jsonl`.

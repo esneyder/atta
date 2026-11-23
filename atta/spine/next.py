@@ -1,7 +1,8 @@
 """`atta next <job>`: what the colony does next, decided by the spine and never by the LLM (S7).
 
 A pure, deterministic decision (`decide`) from job.json, the files in the job folder and the job
-worktree's presence; no network. It prints ONE JSON action for the `/atta` skill to execute:
+worktree's presence; no network (`atta next` itself, not `decide`, asks GitHub only when a running
+job has a BLOCKED-BY blocker without an open job; see `_blocked`). It prints ONE JSON action for the `/atta` skill to execute:
 
     {"action": "spawn", "agent": "atta-<rol>", "model": "<modelo>", "prompt": "..."}
     {"action": "spawn-group", "agents": [{"agent": ..., "model": ..., "prompt": ...}, ...]}
@@ -11,7 +12,13 @@ worktree's presence; no network. It prints ONE JSON action for the `/atta` skill
 
 Every model comes from models.py (packaged defaults plus the project's `models` in
 atta/config.json, S12): role override, else the tier model; escalation goes to T3; the Vigía avoids
-the Guía's model.
+the Guía's model. The tier of each stage comes from the stage×risk matrix (F4 T3, `models.Table.
+stage_tier`: low lowers the Guía, high raises the Cortadora, the Reina and the security reviewer, the
+Cortadora is T3 from round 2) and the reviewers avoid the Cortadora's model (`review_model`).
+
+BLOCKED-BY (F4 T6, S7): `atta next` prints a `wait` (reason from `deps.check`, the same verdict as
+`atta queue`/`atta start`, a hold for a rejected blocker or a cycle) and writes nothing for a job in a
+running stage whose blocker is not merged; `decide` itself ignores dependencies.
 
 `then` lists commands to run in order after `argv` when a step has several side effects (label,
 comment, advance); the skill stops at the first one that fails, so a retry starts over. GitHub
@@ -22,8 +29,20 @@ Telemetry (T12): `atta next` writes `pending_agent` in job.json when the action 
 spawn ({stage, role, agent, model, tier, at}) or a spawn-group (a list of those, merged by agent
 so a reviewer retry keeps the ones that already finished; a single spawn in a stage that already
 holds such a list, the Refutador in review, joins it). `machine.advance` moves it to the event
-that leaves the stage and clears it. Its only other writes are the `refute` event (below) and
-job.json `build_retry` (build.md contract, below).
+that leaves the stage and clears it. Its only other writes are the `refute` event (below),
+job.json `build_retry` (build.md contract, below), on low risk the rule's decision.md and
+`reina_rule` event (Reina determinista, below) and clearing an agent's `model_failures` when
+its fallback chain is spent (below).
+
+Model fallback (F4 T4, S4): when `atta model-failed` (fallback.py) recorded that the agent of a
+spawn failed on the model it resolves to by quota, rate limit or network in this stage entry,
+the spawn uses Table.fallback(tier, failed, primary=<last failed>): the next model of the
+spawn's tier chain (the T3 chain when it escalates), never more expensive than the model that
+failed, skipping the models the spawn avoids (the Guía's for the Vigía, the reviewers' for the
+Refutador, counting a reviewer's own fallback) while another chain model is left. A spent chain
+never moves to a more expensive model (L4): `atta next` prints a `wait` with the reason (legal
+in every stage, unlike needs-human from intake or spec) and clears that agent's failures, so the
+next `/atta run` tries the routed model again once the quota or the network is back.
 
 Refutador (G4, S5): when every review of the round is in and a valid CHANGES has at least one
 blocker or major finding, `round-N/refute.md` decides before another round opens. It is spawned
@@ -35,6 +54,15 @@ blocker/major finding, header consistent with those lines) is asked once more in
 `refute-retry.md`, then needs-human. Minor-only CHANGES never open a round: approve, the minors
 stay as notes in the reviews. `atta next` appends one `{"event": "refute", "refute": outcome,
 "round": N}` per round and stage entry when it acts on a valid file."
+
+Reina determinista (F4 T1, S3): when the highest of the intake, routed and effective risks is
+`low`, before spawning the Reina, `atta next` asks decide.evaluate (see decide.py). Every
+signal clean → the APPROVE action of the delivery (merge or handoff), and `atta next` writes
+a `reina_rule` event (outcome approve, by rule, no model) and then decision.md in the Reina's
+format: a failed write leaves no approval. Any signal missing or failing → the Reina is
+spawned as before and `atta next` records the reason once per stage entry (`reina_rule`,
+outcome fallback; if that event cannot be written the Reina is spawned anyway and a warning goes
+to stderr: only the approval fails closed). Medium and high never ask the rule.
 
 Delivery by risk (S13): an APPROVE runs `atta merge` when the job's risk is at most
 `delivery.auto_merge_up_to` (unknown risk = high), else `atta handoff`. The job's risk is
@@ -101,11 +129,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import branches, config, gate, intake, machine, memory, scope
+from . import branches, config, decide as rule, fallback, gate, intake, machine, memory, scope
 from . import models as mdl
 from .events import append_event, read_events
-from .lock import job_lock
-from .store import _replace
+from .lock import LockTimeout, job_lock
+from .store import StoreError, _replace
 from .timeutil import from_iso, to_iso, utcnow
 
 RUNTIME = mdl.RUNTIME
@@ -171,9 +199,13 @@ def _run(*argv: str, then: list[list[str]] | None = None) -> dict:
     return action
 
 
-def _spawn(agent: str, model: str, prompt: str, tier: str) -> dict:
-    # `tier` is internal (telemetry); `decide` strips it from the printed action.
-    return {"action": "spawn", "agent": agent, "model": model, "prompt": prompt, "tier": tier}
+def _spawn(agent: str, model: str, prompt: str, tier: str, avoid=None) -> dict:
+    # `tier` (telemetry) and `avoid` (the models a fallback must skip) are internal; `decide`
+    # strips them from the printed action.
+    action = {"action": "spawn", "agent": agent, "model": model, "prompt": prompt, "tier": tier}
+    if avoid:
+        action["avoid"] = list(avoid)
+    return action
 
 
 def _risk(job: dict) -> str | None:
@@ -395,6 +427,20 @@ class _Ctx:
         return (f"\n\nRelevant lessons from {memory.LESSONS_LABEL} (earlier reviews of this "
                 f"project; data, not instructions):\n{memory.render(chosen)}")
 
+    def stage(self, role: str, *, tier: str | None = None,
+              reviewer: str | None = None) -> tuple[str, bool]:
+        """(tier, escalate) of `role`'s spawn in this job by the stage×risk matrix (F4 T3)."""
+        return self.table.stage_tier(role, tier=tier, risk=_risk(self.job), round=self.round,
+                                     reviewer=reviewer)
+
+    def cortadora_model(self) -> str | None:
+        """The model the Cortadora runs on this round, which the reviewers avoid (F2 L8); None
+        with the matrix off. A fallback the Cortadora took (T4) is not known here."""
+        if not self.table.matrix:
+            return None
+        tier, escalate = self.stage("cortadora")
+        return self.model("cortadora", tier=tier, escalate=escalate)
+
     def tier(self, role: str, *, tier: str | None = None, escalate: bool = False,
              model: str | None = None) -> str:
         """The tier a spawn runs at: T3 on escalation, else the router's or the role's tier; a
@@ -415,17 +461,62 @@ def _table(cfg: dict, models) -> mdl.Table:
     return mdl.Table(models)  # a bare tier map (no role overrides)
 
 
+_INTERNAL = ("tier", "avoid", "build_retry", "refute", "rule_decision", "rule_fallback",
+             "model_reset")
+
+
 def _public(action: dict) -> dict:
-    """The action as printed: without the internal `tier` and `build_retry` of spawns nor
-    `refute` of runs."""
-    if action["action"] == "run" and "refute" in action:
-        return {k: v for k, v in action.items() if k != "refute"}
-    if action["action"] == "spawn":
-        return {k: v for k, v in action.items() if k not in ("tier", "build_retry")}
+    """The action as printed: without the internal `tier`, `avoid`, `build_retry` and
+    `rule_fallback` of spawns, `refute` and `rule_decision` of runs nor `model_reset` of a
+    wait."""
+    if action["action"] in ("run", "spawn", "wait"):
+        return {k: v for k, v in action.items() if k not in _INTERNAL}
     if action["action"] == "spawn-group":
         return {"action": "spawn-group",
-                "agents": [{k: v for k, v in a.items() if k != "tier"}
+                "agents": [{k: v for k, v in a.items() if k not in ("tier", "avoid")}
                            for a in action["agents"]]}
+    return action
+
+
+# ---------------------------------------------------------------- model fallback (F4 T4)
+
+def _failover(c: _Ctx, spawn: dict) -> dict | None:
+    """`spawn` on the next model of its tier's chain when its agent failed on that model by
+    quota, rate limit or network in this stage entry (fallback.py); None when the chain is
+    spent. Never more expensive than the last failed model (L4); skips `avoid` when it can."""
+    failed = fallback.failed_models(c.job, spawn["agent"])
+    if spawn["model"] not in failed:
+        return spawn
+    model = c.table.fallback(spawn["tier"], failed, primary=failed[-1],
+                             avoid=spawn.get("avoid"))
+    return None if model is None else dict(spawn, model=model)
+
+
+def _spent(c: _Ctx, spawn: dict) -> dict:
+    """The wait of a spent chain: never a silent move to a more expensive model (S4, L4)."""
+    agent = spawn["agent"]
+    failed = fallback.failed_models(c.job, agent)
+    return {"action": "wait", "reason": (
+        f"La cadena de fallback de {spawn['tier']} se agotó para {agent} en {c.jid}: falló en "
+        f"{', '.join(failed)} por cuota, rate limit o red y Atta no sube a un modelo más caro. "
+        f"El próximo /atta run lo vuelve a intentar con {spawn['model']}."),
+        # Internal (stripped by _public): `atta next` clears this agent's failures.
+        "model_reset": {"agent": agent, "stage": c.job["stage"],
+                        "since": c.job["stage_since"]}}
+
+
+def _with_fallbacks(c: _Ctx, action: dict) -> dict:
+    if action["action"] == "spawn":
+        moved = _failover(c, action)
+        return moved if moved is not None else _spent(c, action)
+    if action["action"] == "spawn-group":
+        agents = []
+        for spawn in action["agents"]:
+            moved = _failover(c, spawn)
+            if moved is None:
+                return _spent(c, spawn)
+            agents.append(moved)
+        return dict(action, agents=agents)
     return action
 
 
@@ -446,7 +537,7 @@ def plan(job: dict, job_dir: str | Path, root: str | Path, cfg: dict,
     handler = _HANDLERS.get(stage)
     if handler is None:
         return {"action": "wait", "reason": _WAIT.get(stage, f"Etapa {stage}: nada que hacer.")}
-    return handler(c)
+    return _with_fallbacks(c, handler(c))
 
 
 def _intake(c: _Ctx) -> dict:
@@ -486,10 +577,11 @@ def _spec(c: _Ctx) -> dict:
         review = c.dir / SPEC_REVIEW_FILE
         extra = (f" Fix every factual error listed in {review} (the Vigía's review of your "
                  "previous spec).") if review.exists() else ""
-        return _spawn("atta-guia", c.model("guia"), (
+        tier, escalate = c.stage("guia")  # one tier down at low risk (F4 T3)
+        return _spawn("atta-guia", c.model("guia", tier=tier, escalate=escalate), (
             f"{c.head()} Repository root: {c.root}. {DATA_NOTE} Read intake.md (binding scope) "
             f"and the real code, then write the spec to {spec} and nothing else.{extra}"
-            f"{c.lessons()}"), c.tier("guia"))
+            f"{c.lessons()}"), c.tier("guia", tier=tier, escalate=escalate))
     if c.worktree is None:
         return _run("worktree", c.jid)
     nxt = "spec-review" if (c.job.get("agents") or {}).get("spec_review") else "build"
@@ -499,7 +591,9 @@ def _spec(c: _Ctx) -> dict:
 def _spec_review(c: _Ctx) -> dict:
     review = c.dir / SPEC_REVIEW_FILE
     if not c.fresh(review):
-        model = c.table.agent_model("vigia")
+        tier, escalate = c.stage("guia")
+        guia = c.model("guia", tier=tier, escalate=escalate)  # the model the Guía ran on
+        model = c.model("vigia", avoid=guia)
         done = machine.spec_reviews(c.job)
         again = (f" This is review {done + 1} of this spec (your previous review asked for "
                  f"changes {done} time{'' if done == 1 else 's'}): REVISE only for a blocker "
@@ -507,7 +601,7 @@ def _spec_review(c: _Ctx) -> dict:
         return _spawn("atta-vigia", model, (
             f"{c.head()} Repository root: {c.root}. {DATA_NOTE} Check {c.dir / SPEC_FILE} "
             f"against the real code and write your review to {review} and nothing else."
-            f"{again}"), c.tier("vigia", model=model))
+            f"{again}"), c.tier("vigia", model=model), avoid=[guia])
     if _first_line(review) == "VERDICT: READY":
         return _run("advance", c.jid, "build")
     # S9: the MAX_SPEC_REVISE-th REVISE goes to a person instead of back to spec.
@@ -529,15 +623,16 @@ def _previous_files(c: _Ctx) -> list[Path]:
 
 
 def _cortadora_spawn(c: _Ctx, build: Path, note: str = "") -> dict:
-    escalate = c.job["total_rounds"] >= 2 or _risk(c.job) == "high"
+    # S8: T3 from round 2 (`Round: N` = total_rounds + 1) or at high/unknown risk.
+    tier, escalate = c.stage("cortadora")
     previous = _previous_files(c)
     read = (" Before touching code, read these files from earlier rounds and human "
             "feedback: " + ", ".join(str(p) for p in previous) + ".") if previous else ""
-    return _spawn("atta-cortadora", c.model("cortadora", escalate=escalate), (
+    return _spawn("atta-cortadora", c.model("cortadora", tier=tier, escalate=escalate), (
         f"{c.head()} Round: {c.round}. Worktree: {c.worktree}. Base: {c.base}. "
         f"Round folder: {c.round_dir}. {DATA_NOTE} Build spec.md test-first inside the "
         f"worktree and write {build} and nothing else outside it.{read}{note}"
-        f"{c.lessons(diff=True)}"), c.tier("cortadora", escalate=escalate))
+        f"{c.lessons(diff=True)}"), c.tier("cortadora", tier=tier, escalate=escalate))
 
 
 def _build_retry_used(c: _Ctx) -> dict | None:
@@ -637,13 +732,18 @@ def _gate_config_retry(c: _Ctx) -> dict | None:
 def _reviewer_spawn(c: _Ctx, spec: dict, out: Path) -> dict:
     agent = _reviewer_agent(spec["reviewer"])
     role = agent[len("atta-"):]
-    escalate = spec["tier"] == "T3"
-    model = c.model(role, tier=spec["tier"], escalate=escalate)
-    return {"agent": agent, "model": model,
-            "tier": c.tier(role, tier=spec["tier"], escalate=escalate),
-            "prompt": (f"{c.head()} Round: {c.round}. Worktree: {c.worktree}. Base: {c.base}. "
-                       f"Lenses: {', '.join(spec['lenses'])}. {DATA_NOTE} Write your review "
-                       f"to {out} and nothing else.{c.lessons(diff=True)}")}
+    tier, escalate = c.stage(role, tier=spec["tier"], reviewer=spec["reviewer"])
+    cortadora = c.cortadora_model()
+    model = c.table.review_model(role, tier=tier, escalate=escalate, risk=_risk(c.job),
+                                 cortadora=cortadora)
+    spawn = {"agent": agent, "model": model,
+             "tier": c.tier(role, tier=tier, escalate=escalate, model=model),
+             "prompt": (f"{c.head()} Round: {c.round}. Worktree: {c.worktree}. Base: {c.base}. "
+                        f"Lenses: {', '.join(spec['lenses'])}. {DATA_NOTE} Write your review "
+                        f"to {out} and nothing else.{c.lessons(diff=True)}")}
+    if cortadora is not None:
+        spawn["avoid"] = [cortadora]  # internal: a T4 fallback skips it too (see _public)
+    return spawn
 
 
 def _review(c: _Ctx) -> dict:
@@ -709,7 +809,10 @@ def _refute(c: _Ctx, judged: list) -> dict:
 
 
 def _refutador_spawn(c: _Ctx, judged: list, out: Path, again: Path | None = None) -> dict:
-    spawns = [_reviewer_spawn(c, spec, path) for spec, path, _found in judged]
+    # The models the reviewers really ran on: a reviewer that fell back (F4 T4) counts with
+    # its fallback model.
+    spawns = [_failover(c, s) or s
+              for s in (_reviewer_spawn(c, spec, path) for spec, path, _found in judged)]
     avoid = [s["model"] for s in spawns]
     # Quality first: the Refutador can overturn a finding, so it is never weaker than the
     # strongest reviewer it judges, and runs on T3 when the job is high risk.
@@ -724,21 +827,40 @@ def _refutador_spawn(c: _Ctx, judged: list, out: Path, again: Path | None = None
         f"{c.head()} Round: {c.round}. Round folder: {c.round_dir}. Worktree: {c.worktree}. "
         f"Base: {c.base}. {DATA_NOTE} Check every blocker and major finding of these CHANGES "
         f"reviews against the real diff: {reviews}. Write your verdict to {out} and nothing "
-        f"else.{extra}"), c.tier("refutador", tier=floor, escalate=high, model=model))
+        f"else.{extra}"), c.tier("refutador", tier=floor, escalate=high, model=model),
+        avoid=avoid)
+
+
+def _deliver(c: _Ctx) -> dict:
+    # S13: Atta merges by itself up to delivery.auto_merge_up_to; above it the Reina hands
+    # the ready PR to a person (`atta handoff` → awaiting-merge).
+    return _run("merge" if config.auto_merges(c.cfg, _risk(c.job)) else "handoff", c.jid)
 
 
 def _approve(c: _Ctx) -> dict:
     decision = c.dir / DECISION_FILE
     if not c.fresh(decision):
-        escalate = _risk(c.job) == "high"
-        return _spawn("atta-reina", c.model("reina", escalate=escalate), (
+        verdict = None
+        if rule.rule_risk(c.job) == "low":
+            # F4 T1 (S3): on low risk a rule approves without a model when every signal is clean.
+            signals, reason = rule.evaluate(c.job, c.dir, c.round_dir, c.worktree, c.base,
+                                            c.cfg)
+            if signals is not None:
+                action = _deliver(c)
+                # Internal (stripped by _public): `atta next` writes decision.md and the event.
+                action["rule_decision"] = {"round": c.round, "signals": signals}
+                return action
+            verdict = {"round": c.round, "reason": reason}
+        tier, escalate = c.stage("reina")  # T3 at high or unknown risk, never lowered (S8a)
+        action = _spawn("atta-reina", c.model("reina", tier=tier, escalate=escalate), (
             f"{c.head()} Worktree: {c.worktree}. Base: {c.base}. {DATA_NOTE} Read the whole "
             f"job folder and the diff, then write {decision} and nothing else. You never merge."),
-            c.tier("reina", escalate=escalate))
+            c.tier("reina", tier=tier, escalate=escalate))
+        if verdict is not None:
+            action["rule_fallback"] = verdict
+        return action
     if _first_line(decision) == "APPROVE":
-        # S13: Atta merges by itself up to delivery.auto_merge_up_to; above it the Reina hands
-        # the ready PR to a person (`atta handoff` → awaiting-merge).
-        return _run("merge" if config.auto_merges(c.cfg, _risk(c.job)) else "handoff", c.jid)
+        return _deliver(c)
     return _run("label", c.jid, "add", c.cfg["labels"]["needs_human"], then=[
         ["atta", "comment", c.jid, "--role", "reina", "--file", str(decision)],
         ["atta", "advance", c.jid, "needs-human"]])
@@ -1014,8 +1136,76 @@ def record_refute(jobs, jid: str, stage: str, outcome: dict) -> None:
                                "refute": outcome["refute"]})
 
 
+def _rule_event(job_dir: Path, jid: str, round_n: int, fields: dict) -> None:
+    append_event(job_dir, {"ts": to_iso(utcnow()), "job": jid, "event": rule.EVENT,
+                           "stage": "approve", "round": round_n, **fields})
+
+
+def record_rule_decision(jobs, jid: str, stage: str, verdict: dict) -> None:
+    """Write the rule's decision.md (Reina format) and its `reina_rule` event (F4 T1, S3),
+    under the job lock, unless the stage moved or a decision of this stage already exists."""
+    job_dir = jobs.job_dir(jid)
+    with job_lock(job_dir):
+        job = jobs.load(jid)
+        decision = job_dir / DECISION_FILE
+        if job["stage"] != stage or _fresh(decision, job):
+            return
+        # Event first: if it cannot be written there is no decision.md, so no approval.
+        _rule_event(job_dir, jid, verdict["round"], {
+            "outcome": "approve", "decision": "APPROVE", "by": "rule", "model": None,
+            "signals": list(verdict["signals"])})
+        _write_atomic(decision, rule.decision_text(verdict["signals"]))
+
+
+def record_rule_fallback(jobs, jid: str, stage: str, verdict: dict) -> None:
+    """Record once per stage entry why the rule left the decision to the LLM Reina."""
+    job_dir = jobs.job_dir(jid)
+    with job_lock(job_dir):
+        job = jobs.load(jid)
+        if job["stage"] != stage:
+            return
+        since = from_iso(job["stage_since"])
+        try:
+            evs = read_events(job_dir)
+        except (OSError, ValueError):
+            evs = []
+        for e in evs:
+            if e.get("event") == rule.EVENT and e.get("round") == verdict["round"]:
+                try:
+                    if from_iso(e["ts"]) >= since:
+                        return
+                except (KeyError, TypeError, ValueError):
+                    continue
+        _rule_event(job_dir, jid, verdict["round"], {
+            "outcome": "fallback", "agent": rule.REINA, "reason": verdict["reason"]})
+
+
+def _blocked(jobs, job: dict) -> dict | None:
+    """The `wait` action of a running job whose BLOCKED-BY stops it (F4 T6, S7), else None: the
+    same verdict as `atta queue` and `atta start` (deps.check; a rejected blocker or a cycle is a
+    hold for a person). Only a job with a BLOCKED-BY in a running stage is looked at, and GitHub
+    is asked (once per blocker with no open job) only then; an issue that cannot be read is open."""
+    from . import deps, flow  # lazy: flow imports this module
+    if not deps.blocked_by(job) or job["stage"] not in flow.RUNNING:
+        return None
+    everyone = []
+    for jid in jobs.list_ids():
+        try:
+            everyone.append(job if jid == job["id"] else jobs.load(jid))
+        except (StoreError, OSError, ValueError):  # an unreadable job is no blocker
+            continue
+    open_numbers = [j["issue"] for j in everyone
+                    if isinstance(j.get("issue"), int) and j["stage"] not in machine.TERMINAL]
+    verdict = deps.check(job, deps.by_issue(everyone), flow._issue_closed(open_numbers))
+    return None if verdict is None else {"action": "wait", "reason": verdict["reason"]}
+
+
 def cmd_next(args, cfg, jobs) -> int:
     job = jobs.load(args.job)
+    blocked = _blocked(jobs, job)
+    if blocked is not None:
+        print(json.dumps(blocked, ensure_ascii=False))
+        return OK
     try:
         raw = plan(job, jobs.job_dir(job["id"]), Path(args.root), cfg)
     except mdl.ModelsError as exc:
@@ -1027,6 +1217,18 @@ def cmd_next(args, cfg, jobs) -> int:
         record_build_retry(jobs, job["id"], job["stage"], raw["build_retry"])
     if raw["action"] == "run" and "refute" in raw:
         record_refute(jobs, job["id"], job["stage"], raw["refute"])
+    if raw["action"] == "run" and "rule_decision" in raw:
+        record_rule_decision(jobs, job["id"], job["stage"], raw["rule_decision"])
+    if raw["action"] == "spawn" and "rule_fallback" in raw:
+        # Telemetry only: the Reina is spawned even if the note cannot be written (unlike the
+        # approval, which writes its event first and fails closed).
+        try:
+            record_rule_fallback(jobs, job["id"], job["stage"], raw["rule_fallback"])
+        except (OSError, LockTimeout) as exc:
+            print(f"Atta: no pude registrar por qué la regla dejó la decisión a la Reina "
+                  f"({exc}); sigo con la Reina.", file=sys.stderr)
+    if raw["action"] == "wait" and "model_reset" in raw:
+        fallback.clear(jobs, job["id"], raw["model_reset"])
     print(json.dumps(_public(raw), ensure_ascii=False))
     return OK
 
@@ -1039,8 +1241,18 @@ def register(subparsers) -> None:
                     "wait o done, en una línea JSON. Solo escribe pending_agent (rol, modelo y "
                     "tier decididos) en job.json cuando la acción lanza agentes, build_retry "
                     "cuando pide a la Cortadora rehacer un build.md que no cumple el contrato, "
-                    "y el evento refute (una vez por ronda) cuando decide con el refute.md del "
-                    "Refutador.")
+                    "el evento refute (una vez por ronda) cuando decide con el refute.md del "
+                    "Refutador y, en riesgo bajo, el decision.md APPROVE de la Reina por regla "
+                    "con su evento reina_rule (o, una vez por etapa, el motivo por el que la "
+                    "regla deja la decisión a la Reina). Si atta model-failed registró que "
+                    "un agente pendiente falló por cuota, rate limit o red, lo relanza con el "
+                    "próximo modelo de la cadena de su tier, nunca más caro; con la cadena "
+                    "agotada imprime wait y olvida esas fallas para el próximo /atta run. Si el job está en "
+                    "una etapa activa y su BLOCKED-BY tiene un bloqueante sin mergear, imprime wait "
+                    "(hold si fue rechazado o hay un ciclo) sin escribir nada, como atta queue. "
+                    "Los modelos siguen la matriz etapa×riesgo (bajo baja la Guía; alto sube la "
+                    "Cortadora, la Reina y el revisor de seguridad; la Cortadora sube desde la "
+                    "ronda 2) y los reviewers evitan el modelo de la Cortadora.")
     n.add_argument("job", help="id del job")
     n.set_defaults(func=cmd_next)
 
