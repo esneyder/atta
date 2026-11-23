@@ -1,6 +1,6 @@
 # Atta: arquitectura y diseño
 
-> Estado: F1, F2 y F3 implementadas; F3.x pendiente (K7 y el issue `atta:ratchet` de K1, §8). Lo que
+> Estado: F1, F2 y F3 implementadas; F3.x en curso (K7 hecho; falta el issue `atta:ratchet` de K1, §8). Lo que
 > describe F4 en adelante (matriz completa de §5, Pi en §6.2) sigue siendo diseño. Este documento
 > define cómo funciona Atta y por qué.
 > El orden de construcción está en [`docs/PLAN.md`](../PLAN.md) y la identidad en [`brand/README.md`](../../brand/README.md).
@@ -280,7 +280,7 @@ determinista de la espina cuando sea mecanizable.**
 | K4 | **ast-grep** como guardarraíl | Nunca bloquea | Reglas del `sgconfig.yml` del checkout principal (nunca las de la rama) + `ast-grep scan` sobre los archivos del diff dentro del Filtro; solo `severity: error` **bloquea**, los warnings informan. Con `testConfigs`, las reglas pasan sus propios tests antes. Sin `sgconfig.yml` el paso se saltea; con reglas y sin binario falla como configuración. Destino natural de K1 | Script |
 | K5 | **Cola con grafo de dependencias**: `blocked_by`, máximo paralelo, migraciones solas, dependientes de un fallo se saltan, ciclos detectados | Orquestado por agentes | La Exploradora extrae `BLOCKED-BY: #n` y `MIGRATION: yes/no`; `atta queue` respeta dependencias y serializa migraciones | Script |
 | K6 | **Merge seguro**: CI verde en el SHA exacto | Lo ejecuta un agente | `job merge` usa `gh pr merge --match-head-commit` con el SHA que pasó el Filtro tras la sincronización | Script |
-| K7 | **Diff antes/después de sincronizar** | Manual | **Pendiente (F3.x), no implementado:** tras sincronizar con `develop`, la espina comparará `origin/develop...HEAD` antes y después; si cambió algo fuera de conflictos triviales, vuelve a revisión | Script |
+| K7 | **Diff antes/después de sincronizar** | Manual | **Implementado (F3.x):** `atta merge`/`atta handoff` calculan el diff propio del job (`origin/develop...HEAD`) antes del `git fetch` y tras el merge limpio; la comparación es por archivo e incluye líneas de contexto (no números de hunk ni ids `index`). Si cambió, el job vuelve a `review` (decisión archivada, commit de sync empujado, evento `sync_diff`); un conflicto vuelve a `build` con `feedback-<k>.md` automático (evento `sync_conflict`), y `awaiting-merge` hace lo mismo si GitHub marca el PR `CONFLICTING`. Acotado por `sync_attempts` | Script |
 | K8 | **Alcance del diff**: nada filtrado ni perdido | Checklist de agente | El spec declara `FILES:` (rutas o globs); el Filtro falla o avisa si el diff sale del alcance o supera el límite de archivos | Script |
 | K9 | **Reglas de planificación**: plan solo si hay varios PR, migración, cambio de contrato o proveedor nuevo; PR de pocos archivos; sección de fallos | Prompt | La Exploradora divide issues grandes en sub-issues enlazados (K5); `spec.md` exige `## Failure paths`; tope de archivos validado por K8 | Prompt + script |
 | K10 | **Revisor del plan con contexto limpio**: verifica contra el código real, corrige errores de hecho, deja preguntas de producto | — | La Vigía, con modelo distinto de la Guía: `VERDICT: READY\|REVISE` antes de construir | Agente |
@@ -342,8 +342,8 @@ paralelismo; cadena larga de roles secuenciales; re-revisión tras cada rebase. 
    `atta:needs-human` en vez de seguir iterando.
 7. **Medir.** El dashboard muestra tiempo por etapa y p50/p90 por riesgo. Meta inicial: un issue `low` de
    punta a punta en minutos, no en horas; el umbral exacto sale del benchmark.
-8. **Re-revisar solo si algo cambió** (K7, pendiente de F3.x): una sincronización limpia no dispara
-   otra ronda.
+8. **Re-revisar solo si algo cambió** (K7, implementado): una sincronización limpia que deja igual el
+   diff del job no dispara otra ronda; si cambió, vuelve a revisión.
 
 ---
 

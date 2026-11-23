@@ -128,6 +128,39 @@ def waiting_review(pr: int) -> str:
     return f"El PR #{pr} sigue esperando tu revisión."
 
 
+def sync_diff_review(pr: int, branch: str, paths: list[str]) -> str:
+    """K7: a clean sync changed the job's own diff; the reviewers look at it again."""
+    return (f"La sincronización con origin/{branch} cambió el diff del PR #{pr} "
+            f"({', '.join(paths)}); los revisores lo miran de nuevo.")
+
+
+def sync_conflict_build(pr: int, branch: str, files: list[str]) -> str:
+    """S4: the sync conflicted; the Cortadora resolves it."""
+    return (f"El PR #{pr} tiene conflicto con origin/{branch} en {', '.join(files)}; "
+            "la Cortadora lo resuelve.")
+
+
+def github_conflict_build(pr: int, branch: str) -> str:
+    """S2: GitHub reports the waiting PR CONFLICTING; the Cortadora resolves it."""
+    return f"El PR #{pr} está en conflicto con {branch} en GitHub; la Cortadora lo resuelve."
+
+
+def sync_conflict_feedback(branch: str, integration: str, files: list[str], pr: int) -> str:
+    """The feedback-<k>.md the spine writes for the Cortadora after a sync conflict (S4, S2):
+    the files (or GitHub's CONFLICTING report) and how to resolve it without forcing a push."""
+    if files:
+        lead = (f"Atta no pudo integrar origin/{integration} en {branch}: hay conflicto en\n\n"
+                + "\n".join(f"- {f}" for f in files))
+    else:
+        lead = f"GitHub marca el PR #{pr} como CONFLICTING con origin/{integration}."
+    return (f"# Conflicto al sincronizar con origin/{integration}\n\n{lead}\n\n"
+            f"Qué hacer: en el worktree de la rama, corre `git fetch origin` y "
+            f"`git merge origin/{integration}` (merge, no rebase: la rama se empuja sin "
+            "forzar), resuelve cada conflicto conservando los dos cambios (el de este job y el "
+            f"que ya está en {integration}), corre los tests, haz commit del merge y escribe "
+            "build.md como siempre.\n")
+
+
 def human_merged(pr: int, branch: str) -> str:
     """merge.md summary when a person merged the PR (S13)."""
     return f"El PR #{pr} quedó integrado en {branch}."

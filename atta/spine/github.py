@@ -26,7 +26,10 @@ ISSUE_FIELDS = "number,title,body,url,state,author,labels,comments"
 QUEUE_FIELDS = "number,title,url,labels"
 PR_FIELDS = "number,url,state,baseRefName,headRefName,isDraft,isCrossRepository"
 # What a resumed merge needs to know: did GitHub merge it, and at which head (L22).
-MERGE_STATE_FIELDS = "number,state,baseRefName,headRefName,headRefOid,isCrossRepository"
+# `mergeable` (MERGEABLE, CONFLICTING or UNKNOWN while GitHub computes it) lets a PR that waits
+# for a person notice a conflict with the integration branch (F3.x, S2).
+MERGE_STATE_FIELDS = ("number,state,baseRefName,headRefName,headRefOid,isCrossRepository,"
+                      "mergeable")
 
 # Role key -> signature, in brand voice (arquitectura §3).
 ROLES = {

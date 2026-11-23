@@ -38,7 +38,10 @@ Spanish; relay them as they are.
   merges it. For such a job `atta next` prints `atta merge <job>`: run it once per `/atta run`
   pass. If it prints «El PR #M sigue esperando tu revisión.» (exit `0`), the job is waiting for
   the person: report it and move on to the next job; do not call `atta next` for it again in
-  this pass. When the person has merged the PR, the same command closes the loop.
+  this pass. When the person has merged the PR, the same command closes the loop. If GitHub
+  reports the PR in conflict, `atta merge` (or `atta handoff`, when its sync conflicts or changes
+  the job's diff) exits `0` and moves the job back to `build` (conflict) or `review` (changed
+  diff): keep driving the job with `atta next`.
 - A Filtro failure of kind `config` (`KIND: config` in `round-N/checks.md`: `atta/checks.json`
   without checks or invalid, a missing shell or `ast-grep`, the main checkout not on the
   integration branch) is for the human, not for the colony. `atta next` sends the job to

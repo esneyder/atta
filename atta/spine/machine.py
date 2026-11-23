@@ -12,6 +12,15 @@ HEAD is still the commit that passed merge-checks (flow.cmd_handoff checks all o
 `gate_failure.kind == "config"`, written by gate.run_gate) and a person fixed it; the gate runs
 again in the same round. Like every move into gate, it changes no counter.
 
+Sync rework (F3.x, K7/S4/S2): `atta merge`/`atta handoff` sync the job branch with the
+integration branch. A clean sync that changed the job's own diff sends the job back to review
+(`approve|merging → review`); a conflict sends it to the Cortadora (`approve|merging|
+awaiting-merge → build`), and so does GitHub reporting the waiting PR CONFLICTING. These are
+not rework rounds (no `total_rounds`, no `gate_rounds`/`review_rounds`): `sync_attempts` is the
+one counter and bounds them. It counts once per attempt: on `→ merging` (the attempt starts
+there) or, when the attempt had no merging stage (handoff from approve, awaiting-merge), on the
+move back to review/build. Leaving `merging` never counts again.
+
 Vigía REVISE cap (T7b, S9): `spec_reviews` in job.json counts the REVISE verdicts the spine acted
 on (each `spec-review → spec` and the final `spec-review → needs-human`; a job without the field
 counts 0). The `MAX_SPEC_REVISE`-th REVISE never goes back to spec: `spec-review → spec` is
@@ -40,9 +49,9 @@ TRANSITIONS = {
     "build": ("gate", "needs-human"),
     "gate": ("review", "build", "needs-human"),
     "review": ("approve", "build", "needs-human"),
-    "approve": ("merging", "awaiting-merge", "needs-human"),
-    "merging": ("merged", "needs-human"),
-    "awaiting-merge": ("merged", "needs-human"),
+    "approve": ("merging", "awaiting-merge", "review", "build", "needs-human"),
+    "merging": ("merged", "review", "build", "needs-human"),
+    "awaiting-merge": ("merged", "build", "needs-human"),
     "needs-human": ("build", "rejected", "awaiting-merge", "gate"),
     "merged": (),
     "rejected": (),
@@ -52,6 +61,9 @@ TERMINAL = frozenset(s for s, exits in TRANSITIONS.items() if not exits)
 
 # Rework rounds: re-entering build from these stages bumps their counter and total_rounds.
 ROUND_COUNTERS = {"gate": "gate_rounds", "review": "review_rounds"}
+
+# Sync rework: stages whose move back to review/build is itself the sync attempt (F3.x).
+SYNC_REWORK_FROM = frozenset({"approve", "awaiting-merge"})
 
 # Vigía REVISE cap (S9): the third REVISE of a job goes to a person, not back to spec.
 SPEC_REVIEWS = "spec_reviews"
@@ -124,7 +136,7 @@ def apply(job: dict, to: str, now: datetime) -> dict:
     if counter:
         new[counter] = job[counter] + 1
         new["total_rounds"] = job["total_rounds"] + 1
-    if to == "merging":
+    if to == "merging" or (frm in SYNC_REWORK_FROM and to in ("review", "build")):
         new["sync_attempts"] = job["sync_attempts"] + 1
     if frm == "spec-review" and to in ("spec", "needs-human"):
         new[SPEC_REVIEWS] = spec_reviews(job) + 1

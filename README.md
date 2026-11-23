@@ -186,7 +186,9 @@ review ──CHANGES──► Refutador ──UPHELD|PARTIAL──► build  (nu
    │ todo PASS (o CHANGES con solo hallazgos minor)
    ▼
 approve ──► merging ──► merged  (gh pr merge contra develop)
+   │            └──► review | build  (el sync cambió el diff del job: review; conflicto: build; sección 8.3)
    ├──► awaiting-merge ──► merged  (riesgo sobre delivery.auto_merge_up_to: tú mergeas; sección 8.2)
+   │            └──► build  (GitHub marca el PR CONFLICTING; sección 8.3)
    └──► needs-human ──► build (con feedback) | rejected
                     └──► awaiting-merge  (atta handoff retoma un handoff escalado; sección 8.2)
 ```
@@ -202,9 +204,9 @@ approve ──► merging ──► merged  (gh pr merge contra develop)
 | `build` | `gate`, `needs-human` |
 | `gate` | `review`, `build`, `needs-human` |
 | `review` | `approve`, `build`, `needs-human` |
-| `approve` | `merging`, `awaiting-merge`, `needs-human` |
-| `merging` | `merged`, `needs-human` |
-| `awaiting-merge` | `merged`, `needs-human` |
+| `approve` | `merging`, `awaiting-merge`, `review` (el sync cambió el diff del job, sección 8.3), `build` (conflicto de sync en `atta handoff`, sección 8.3), `needs-human` |
+| `merging` | `merged`, `review` (el sync cambió el diff del job), `build` (conflicto de sync), `needs-human` |
+| `awaiting-merge` | `merged`, `build` (GitHub marca el PR `CONFLICTING`, sección 8.3), `needs-human` |
 | `needs-human` | `build`, `rejected`, `awaiting-merge` (solo con `atta handoff`, sección 8.2), `gate` (solo si el Filtro se detuvo por configuración, sección 9) |
 | `merged`, `rejected` | — (terminales) |
 
@@ -496,7 +498,7 @@ Qué pide la espina en cada etapa:
 | `review` | Reviewers en paralelo → todos `PASS`, o `CHANGES` con solo hallazgos `minor`: `advance approve`; algún `CHANGES` con `blocker` o `major`: el Refutador (sección 2.5) → `REFUTED`: `advance approve`; `UPHELD` o `PARTIAL`: vuelta a `build` (o `needs-human`) |
 | `approve` | Reina → `APPROVE`: si el riesgo del job es como mucho `delivery.auto_merge_up_to`, `atta merge` (al terminar cierra el issue, quita la label `atta` y borra la rama; sección 8); si lo supera, `atta handoff` (PR listo para ti, comentario de la Reina, label `atta:needs-review`, etapa `awaiting-merge`; sección 8.2); si no es `APPROVE`: label `atta:needs-human` + comentario de la Reina + `advance needs-human` |
 | `merging` | `atta merge` otra vez: termina o retoma un merge que quedó a medias (sección 8.1) |
-| `awaiting-merge` | `atta merge`: si el PR sigue abierto, «El PR #M sigue esperando tu revisión.» (sale `0`, sin cambios; `/atta` pasa al siguiente job); si lo mergeaste en `develop`, cierra el ciclo (sección 8.2) |
+| `awaiting-merge` | `atta merge`: si el PR sigue abierto, «El PR #M sigue esperando tu revisión.» (sale `0`, sin cambios; `/atta` pasa al siguiente job); si GitHub lo marca `mergeable: CONFLICTING`, el job vuelve a `build` con feedback automático (sección 8.3; `UNKNOWN`, mientras GitHub calcula, sigue esperando); si lo mergeaste en `develop`, cierra el ciclo (sección 8.2) |
 | `needs-info`, `needs-human` | `wait`; en `needs-human`, si lo escaló un `atta handoff` que se puede retomar, `atta handoff` (sección 8.2), y si el Filtro se detuvo por configuración y ya está corregida, `advance gate` + `atta gate` en la misma ronda (sección 6) |
 
 Reglas que aplica la espina:
@@ -909,11 +911,12 @@ borrador, comenta en el PR firmado por la Reina, pone `atta:needs-review` (`labe
 el issue y pasa el job a `awaiting-merge`. **Nunca mergea.** Un fallo en la sincronización, el
 Filtro, el push o `gh pr ready` escala a `needs-human`, igual que `merge`; el comentario y la label
 solo avisan (`handoff.md`). Sobre un job en `needs-human` que escaló un handoff, lo retoma si nada
-cambió. Ver sección 8.2.
+cambió. La sincronización se comporta como la de `merge` (sección 8.3). Ver sección 8.2.
 
 #### `merge <job>`
 
-Sincroniza con `develop`, pasa el Filtro otra vez y mergea el PR. Se puede repetir: en `merging`
+Sincroniza con `develop`, pasa el Filtro otra vez y mergea el PR. Si la sincronización cambió el diff
+del job vuelve a `review`, y si hay conflicto, a `build` con feedback automático (sección 8.3). Se puede repetir: en `merging`
 termina o retoma el merge, en `awaiting-merge` revisa si mergeaste el PR (sección 8.2), en `merged`
 no hace nada. Ver sección 8.
 
@@ -1336,6 +1339,40 @@ consulta el PR:
 
 El Filtro decide si una rama está en condiciones de ser revisada (y, antes del merge, de entrar a
 `develop`). Es un script: ningún agente lo puede convencer.
+
+
+### 8.3 Sincronizar sin perder una revisión (K7)
+
+Tanto `atta merge` como `atta handoff` mergean `origin/develop` en la rama del job (nunca rebase,
+nunca force-push). Antes de hacerlo la espina calcula el diff propio del job
+(`git diff origin/develop...HEAD`, desde el merge-base) y lo vuelve a calcular tras un merge limpio.
+La comparación es por archivo y cubre las líneas cambiadas **y las de contexto**, pero no los
+números de línea de los hunks, el nombre de función tras `@@` ni los ids `index` de los blobs
+(se mueven con la base y no dicen qué cambió el job); en binarios sí cuenta el `index`. Se
+descartó `git patch-id` porque ignora el contexto: si `develop` edita junto a un hunk del job, los
+revisores vieron otro código y `patch-id` no lo notaría.
+
+- **Mismo diff**: sigue como siempre (Filtro `merge-checks`, push, merge o handoff), sin otra ronda.
+- **Diff distinto** (por ejemplo `develop` tocó líneas junto a las del job): el job vuelve de
+  `approve`/`merging` a `review`; el `decision.md` se archiva como `decision-<k>.md` (una nueva
+  aprobación necesita uno nuevo); el commit de sync se empuja para que los revisores vean el diff
+  nuevo; y se registra `{"event": "sync_diff", "before", "after", "paths", "via"}` en
+  `events.jsonl` (`before`/`after` son identificadores de 12 hex del diff; `via` es `merge` o
+  `handoff`). El Filtro vuelve a correr al mergear tras la nueva aprobación.
+- **Conflicto**: `merge --abort` y el job pasa a `build` (no a `needs-human`). La espina escribe
+  `feedback-<k>.md` (el siguiente `k` libre) con los archivos en conflicto y la instrucción de
+  mergear `origin/develop` en la rama (merge, no rebase, para que el push siga siendo
+  fast-forward) y resolver conservando los dos cambios; la Cortadora lo lee como cualquier
+  feedback. Se registra `{"event": "sync_conflict", "files", "via"}`.
+- **`awaiting-merge`**: `atta merge` lee también `mergeable` del PR; si GitHub dice `CONFLICTING`,
+  trata el caso como un conflicto de sync (vuelve a `build` con feedback automático, sin lista de
+  archivos, y quita `atta:needs-review`). `UNKNOWN` (GitHub todavía calcula) y `MERGEABLE` siguen
+  esperando.
+
+Estos regresos no gastan rondas (`total_rounds`, `gate_rounds`, `review_rounds`): los acota
+`sync_attempts` (`max_rounds`), que cuenta una vez por intento (al entrar en `merging`, o al volver
+desde `approve` en un handoff o desde `awaiting-merge`). Cuando ya no cabe otro intento, el
+conflicto y el diff cambiado escalan a `needs-human` como cualquier fallo de merge.
 
 ### Qué hace, en orden
 
@@ -1944,7 +1981,7 @@ Corrige lo marcado con ✗ antes de correr /atta.
 | **F2.x** ✅ | Operación: `atta doctor` y `atta init --check` |
 | **F2.y** | Configuración interactiva: menús `/atta:*` dentro de Claude Code para modelos, entrega, rondas, labels, riesgo y alcance |
 | **F3** ✅ | Calidad determinista: riesgo por reglas, Refutador, corrección acotada, Rastreador, memoria con la Cultivadora, ast-grep, alcance del diff y frescura en el Filtro, contrato de `build.md`, plantilla de PR y tope de la Vigía |
-| **F3.x** | Pendiente de F3: diff antes y después del sync (K7) y el issue `atta:ratchet` del ratchet (K1) |
+| **F3.x** | Pendiente de F3: el issue `atta:ratchet` del ratchet (K1). Hecho: diff antes y después del sync (K7), conflictos de sync y `CONFLICTING` en `awaiting-merge` resueltos por la Cortadora (sección 8.3) |
 | **F4** | Ruteo de modelos por etapa, riesgo e intento; revisor con modelo distinto al de la Cortadora; Reina determinista en riesgo bajo |
 | **F5** | Pi como segundo runtime para etapas baratas |
 | **F6-F7** | Benchmark y conductor sin orquestador LLM |

@@ -955,7 +955,8 @@ class MergeBase(FlowBase):
         return self.run_cmd("merge", JID, cfg=cfg)
 
     def stages(self):
-        return [(e["from"], e["to"]) for e in read_events(self.store.job_dir(JID))]
+        return [(e["from"], e["to"]) for e in read_events(self.store.job_dir(JID))
+                if "from" in e]
 
     def merge_md(self):
         return (self.store.job_dir(JID) / "merge.md").read_text(encoding="utf-8")
@@ -1220,16 +1221,148 @@ class MergeTests(MergeBase):
         self.assert_needs_human(BASE_MAIN)
         self.assertEqual(self.stages()[-2:], [("approve", "merging"), ("merging", "needs-human")])
 
-    def test_conflict_with_develop_aborts_and_goes_to_needs_human(self):
+    def events_named(self, name):
+        return [e for e in read_events(self.store.job_dir(JID)) if e.get("event") == name]
+
+    def feedback_files(self):
+        return sorted(p.name for p in self.store.job_dir(JID).glob("feedback-*.md"))
+
+    def test_conflict_with_develop_goes_back_to_build_with_automatic_feedback(self):
+        # S4: a sync conflict goes to the Cortadora, not to a person.
+        self.push_to_develop("src/feature.py", "x = 'develop'\n")
+        pushes_before = len(self.pushes())
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out, "La Reina aprobó el PR #101 (APPROVE).\n"
+                              "El PR #101 tiene conflicto con origin/develop en src/feature.py; "
+                              "la Cortadora lo resuelve.\n")
+        job = self.job()
+        self.assertEqual((job["stage"], job["sync_attempts"], job["total_rounds"]),
+                         ("build", 1, 0))
+        self.assertEqual(self.stages()[-2:], [("approve", "merging"), ("merging", "build")])
+        job_dir = self.store.job_dir(JID)
+        self.assertEqual(self.feedback_files(), ["feedback-1.md"])
+        self.assertEqual((job_dir / "feedback-1.md").read_text(encoding="utf-8"), (
+            "# Conflicto al sincronizar con origin/develop\n\n"
+            f"Atta no pudo integrar origin/develop en {BRANCH}: hay conflicto en\n\n"
+            "- src/feature.py\n\n"
+            "Qué hacer: en el worktree de la rama, corre `git fetch origin` y "
+            "`git merge origin/develop` (merge, no rebase: la rama se empuja sin forzar), "
+            "resuelve cada conflicto conservando los dos cambios (el de este job y el que ya "
+            "está en develop), corre los tests, haz commit del merge y escribe build.md como "
+            "siempre.\n"))
+        self.assertFalse((job_dir / "decision.md").exists())
+        self.assertTrue((job_dir / "decision-1.md").exists())
+        conflicts = self.events_named("sync_conflict")
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual({k: v for k, v in conflicts[0].items() if k != "ts"},
+                         {"job": JID, "event": "sync_conflict", "files": ["src/feature.py"],
+                          "via": "merge"})
+        self.assertEqual(git(self.wt(), "status", "--porcelain"), "")
+        self.assertFalse((Path(git(self.wt(), "rev-parse", "--absolute-git-dir"))
+                          / "MERGE_HEAD").exists())
+        self.assertEqual(len(self.pushes()), pushes_before)
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        self.assertFalse((job_dir / "merge.md").exists())
+        self.assert_never_forced()
+
+    def test_second_conflict_numbers_the_next_feedback_file(self):
+        self.push_to_develop("src/feature.py", "x = 'develop'\n")
+        self.assertEqual(self.merge()[0], 0)
+        for stage in ("gate", "review", "approve"):
+            machine.advance(self.store, JID, stage)
+        write(self.store.job_dir(JID) / "decision.md", "APPROVE\n\n## Summary\n\nOk.\n")
+        self.assertEqual(self.merge()[0], 0)
+        self.assertEqual(self.feedback_files(), ["feedback-1.md", "feedback-2.md"])
+        self.assertEqual(self.job()["sync_attempts"], 2)
+
+    def test_conflict_with_sync_attempts_exhausted_goes_to_needs_human(self):
+        self.set_job(sync_attempts=2)  # max_rounds 3: this attempt is the last one
         self.push_to_develop("src/feature.py", "x = 'develop'\n")
         pushes_before = len(self.pushes())
         code, out, err = self.merge()
         self.assertEqual(code, 1)
-        self.assertTrue(err.startswith("Conflicto al sincronizar con origin/develop"), err)
+        self.assertEqual(err, "Conflicto al sincronizar con origin/develop en src/feature.py.\n")
         self.assert_needs_human("Conflicto al sincronizar con origin/develop")
+        self.assertEqual(self.feedback_files(), [])
+        self.assertEqual(self.events_named("sync_conflict"), [])
         self.assertEqual(git(self.wt(), "status", "--porcelain"), "")
-        self.assertFalse((Path(git(self.wt(), "rev-parse", "--absolute-git-dir")) / "MERGE_HEAD").exists())
         self.assertEqual(len(self.pushes()), pushes_before)
+
+    # ---- K7 (S1): compare the job's own diff before and after the sync
+
+    def edit_app_in_wt(self):
+        self.commit_in_wt("src/app.py", "print('hola')\nprint('job')\n")
+
+    def test_clean_sync_with_unchanged_job_diff_has_no_extra_round(self):
+        self.edit_app_in_wt()
+        self.push_to_develop("src/otro.py", "y = 2\n")
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertEqual(self.job()["sync_attempts"], 1)
+        self.assertEqual([(e["from"], e["to"]) for e in read_events(self.store.job_dir(JID))
+                          if "from" in e][-2:], [("approve", "merging"), ("merging", "merged")])
+        self.assertEqual(self.events_named("sync_diff"), [])
+        self.assertEqual(self.feedback_files(), [])
+        self.assertEqual(out, "La Reina aprobó el PR #101 (APPROVE).\n"
+                              "La Reina integró el PR #101 en develop.\n")
+
+    def test_merge_without_new_develop_commits_has_no_extra_round(self):
+        self.edit_app_in_wt()
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertEqual(self.events_named("sync_diff"), [])
+
+    def change_job_diff_through_develop(self):
+        """A clean merge whose result changes the job's diff (develop edits next to its hunk)."""
+        self.edit_app_in_wt()
+        self.push_to_develop("src/app.py", "print('dev')\nprint('hola')\n")
+
+    def test_clean_sync_that_changes_the_job_diff_goes_back_to_review(self):
+        self.change_job_diff_through_develop()
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out, "La Reina aprobó el PR #101 (APPROVE).\n"
+                              "La sincronización con origin/develop cambió el diff del PR #101 "
+                              "(src/app.py); los revisores lo miran de nuevo.\n")
+        job = self.job()
+        self.assertEqual((job["stage"], job["sync_attempts"], job["total_rounds"]),
+                         ("review", 1, 0))
+        self.assertEqual(self.stages()[-2:], [("approve", "merging"), ("merging", "review")])
+        job_dir = self.store.job_dir(JID)
+        self.assertFalse((job_dir / "decision.md").exists())
+        self.assertTrue((job_dir / "decision-1.md").read_text(encoding="utf-8")
+                        .startswith("APPROVE\n"))
+        events = self.events_named("sync_diff")
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(sorted(event), ["after", "before", "event", "job", "paths", "ts", "via"])
+        self.assertEqual((event["job"], event["via"], event["paths"]), (JID, "merge",
+                                                                       ["src/app.py"]))
+        self.assertRegex(event["before"], r"^[0-9a-f]{12}$")
+        self.assertRegex(event["after"], r"^[0-9a-f]{12}$")
+        self.assertNotEqual(event["before"], event["after"])
+        # The sync commit is pushed so the reviewers see the new diff; nothing is merged or gated.
+        head = git(self.wt(), "rev-parse", "HEAD")
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), head)
+        git(self.root, "merge-base", "--is-ancestor", self.origin_sha("develop"), head)
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        self.assertFalse((job_dir / "round-1" / "merge-checks.md").exists())
+        self.assertFalse((job_dir / "merge.md").exists())
+        self.assertEqual(self.feedback_files(), [])
+        self.assert_never_forced()
+
+    def test_changed_job_diff_with_sync_attempts_exhausted_goes_to_needs_human(self):
+        self.set_job(sync_attempts=2)
+        self.change_job_diff_through_develop()
+        code, out, err = self.merge()
+        reason = ("El diff del PR cambió al sincronizar con origin/develop (src/app.py) y ya no "
+                  "quedan sincronizaciones: sync_attempts llegó a 3 de 3.")
+        self.assertEqual((code, err), (1, reason + "\n"))
+        self.assert_needs_human(reason)
+        self.assertEqual(self.events_named("sync_diff"), [])
 
     def test_gate_failure_after_sync_goes_to_needs_human(self):
         write(self.root / "atta" / "checks.json", json.dumps({"checks": [FAIL_CHECK]}))
@@ -1387,6 +1520,17 @@ class ResumeMergeTests(MergeBase):
         self.assertNotIn(["fetch", "origin"], self.new_git_calls())
         self.assertEqual(report.stat().st_mtime_ns, mtime)
         self.assert_post_merge_done(sha)
+        self.assert_never_forced()
+
+    def test_resync_after_a_conflict_goes_back_to_build(self):
+        # The job is in merging with no merge-checks.md for this stage: the resume re-syncs.
+        machine.advance(self.store, JID, "merging")
+        self.push_to_develop("src/feature.py", "x = 'develop'\n")
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual((self.job()["stage"], self.job()["sync_attempts"]), ("build", 1))
+        self.assertEqual(self.stages()[-1], ("merging", "build"))
+        self.assertTrue((self.store.job_dir(JID) / "feedback-1.md").exists())
         self.assert_never_forced()
 
     def test_second_run_after_resuming_is_a_no_op(self):
@@ -1778,6 +1922,69 @@ class HandoffTests(HandoffBase):
                          self.gh_calls())
 
 
+class HandoffSyncTests(HandoffBase):
+    """F3.x: the sync of a handoff compares the job diff and sends conflicts to the Cortadora."""
+
+    def events_named(self, name):
+        return [e for e in read_events(self.store.job_dir(JID)) if e.get("event") == name]
+
+    def feedback_files(self):
+        return sorted(p.name for p in self.store.job_dir(JID).glob("feedback-*.md"))
+
+    def test_changed_job_diff_goes_back_to_review_and_counts_an_attempt(self):
+        self.commit_in_wt("src/app.py", "print('hola')\nprint('job')\n")
+        self.push_to_develop("src/app.py", "print('dev')\nprint('hola')\n")
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        job = self.job()
+        self.assertEqual((job["stage"], job["sync_attempts"]), ("review", 1))
+        self.assertEqual(self.stages(), [("intake", "spec"), ("spec", "build"),
+                                         ("build", "gate"), ("gate", "review"),
+                                         ("review", "approve"), ("approve", "review")])
+        self.assertFalse((self.store.job_dir(JID) / "decision.md").exists())
+        self.assertEqual([e["via"] for e in self.events_named("sync_diff")], ["handoff"])
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"),
+                         git(self.wt(), "rev-parse", "HEAD"))
+        self.assertEqual(self.gh_by("pr", "ready"), [])
+        self.assertFalse((self.store.job_dir(JID) / "handoff.md").exists())
+        self.assert_never_forced()
+
+    def test_conflict_goes_back_to_build_with_feedback(self):
+        self.push_to_develop("src/feature.py", "x = 'develop'\n")
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        job = self.job()
+        self.assertEqual((job["stage"], job["sync_attempts"]), ("build", 1))
+        self.assertEqual(self.stages()[-1], ("approve", "build"))
+        self.assertEqual(self.feedback_files(), ["feedback-1.md"])
+        self.assertIn("- src/feature.py\n", (self.store.job_dir(JID) / "feedback-1.md")
+                      .read_text(encoding="utf-8"))
+        self.assertEqual([e["via"] for e in self.events_named("sync_conflict")], ["handoff"])
+        self.assertEqual(self.gh_by("pr", "ready"), [])
+        self.assertEqual(git(self.wt(), "status", "--porcelain"), "")
+        self.assert_never_forced()
+
+    def test_conflict_with_sync_attempts_exhausted_goes_to_needs_human(self):
+        self.set_job(sync_attempts=2)
+        self.push_to_develop("src/feature.py", "x = 'develop'\n")
+        code, out, err = self.handoff()
+        reason = "Conflicto al sincronizar con origin/develop en src/feature.py."
+        self.assertEqual((code, err), (1, reason + "\n"))
+        self.assertEqual(self.job()["stage"], "needs-human")
+        self.assertTrue(self.handoff_md().startswith("HANDOFF: FAIL\n"))
+        self.assertIn(reason, self.handoff_md())
+        self.assertEqual(self.feedback_files(), [])
+        self.assert_never_forced()
+
+    def test_clean_sync_with_unchanged_diff_hands_off_as_before(self):
+        self.push_to_develop("src/otro.py", "y = 2\n")
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "awaiting-merge")
+        self.assertEqual(self.job()["sync_attempts"], 0)
+        self.assertEqual(self.events_named("sync_diff"), [])
+
+
 class HandoffRecoveryTests(HandoffBase):
     """L31 (c): `atta handoff` retakes a needs-human job that a handoff escalated, when the
     approval still holds and nothing changed since the Filtro."""
@@ -1982,6 +2189,60 @@ class AwaitingMergeTests(HandoffBase):
         self.assertEqual((self.origin_sha("develop"), self.origin_sha("main")),
                          (self.develop, self.main))
         self.assert_never_forced()
+
+    # ---- F3.x (S2): GitHub reports the PR in conflict with the integration branch
+
+    def test_conflicting_pr_goes_back_to_build_with_automatic_feedback(self):
+        self.set_pr(mergeable="CONFLICTING")
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out, "El PR #101 está en conflicto con develop en GitHub; la Cortadora "
+                              "lo resuelve.\n")
+        job = self.job()
+        self.assertEqual((job["stage"], job["sync_attempts"], job["total_rounds"]),
+                         ("build", 1, 0))
+        self.assertEqual(self.stages()[-1], ("awaiting-merge", "build"))
+        job_dir = self.store.job_dir(JID)
+        self.assertEqual((job_dir / "feedback-1.md").read_text(encoding="utf-8"), (
+            "# Conflicto al sincronizar con origin/develop\n\n"
+            "GitHub marca el PR #101 como CONFLICTING con origin/develop.\n\n"
+            "Qué hacer: en el worktree de la rama, corre `git fetch origin` y "
+            "`git merge origin/develop` (merge, no rebase: la rama se empuja sin forzar), "
+            "resuelve cada conflicto conservando los dos cambios (el de este job y el que ya "
+            "está en develop), corre los tests, haz commit del merge y escribe build.md como "
+            "siempre.\n"))
+        self.assertFalse((job_dir / "decision.md").exists())
+        events = [e for e in read_events(job_dir) if e.get("event") == "sync_conflict"]
+        self.assertEqual([(e["files"], e["via"]) for e in events], [([], "awaiting-merge")])
+        self.assertNotIn(NEEDS_REVIEW, self.labels())
+        self.assertNotIn("atta:needs-human", self.labels())
+        self.assertEqual(self.git_calls[self.git_n:], [])
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        self.assert_never_forced()
+
+    def test_unknown_mergeability_keeps_waiting(self):
+        job_json = (self.store.job_dir(JID) / "job.json").read_bytes()
+        for value in ("UNKNOWN", "MERGEABLE", None):
+            with self.subTest(mergeable=value):
+                self.set_pr(mergeable=value)
+                code, out, err = self.merge()
+                self.assertEqual((code, out, err),
+                                 (0, "El PR #101 sigue esperando tu revisión.\n", ""))
+                self.assertEqual((self.store.job_dir(JID) / "job.json").read_bytes(), job_json)
+
+    def test_conflicting_pr_with_sync_attempts_exhausted_goes_to_needs_human(self):
+        self.set_job(sync_attempts=2)
+        self.set_pr(mergeable="CONFLICTING")
+        reason = ("El PR #101 está en conflicto con origin/develop en GitHub y ya no quedan "
+                  "sincronizaciones: sync_attempts llegó a 3 de 3.")
+        self.assert_escalated(*self.merge(), 1, reason)
+        self.assertFalse(list(self.store.job_dir(JID).glob("feedback-*.md")))
+
+    def test_conflicting_merged_pr_is_still_a_merge(self):
+        self.set_pr(state="MERGED", headRefOid=self.sha, mergeable="CONFLICTING")
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "merged")
 
     def test_closed_unmerged_pr_goes_to_needs_human(self):
         self.set_pr(state="CLOSED")

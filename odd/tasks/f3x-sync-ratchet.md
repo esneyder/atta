@@ -1,0 +1,28 @@
+# F3.x: sync seguro y ratchet a reglas
+
+Pendientes de F3 en `docs/PLAN.md` (K7 y el issue `atta:ratchet` de K1) más los puntos 1-3 del issue #16 (corrida F4), que tocan el mismo flujo de sincronización.
+Rama: `feat/f3x-sync-ratchet` (desde `feat/f2y-config` en 914498a, que lleva el PR #33 todavía abierto).
+
+## Specs
+
+- **S1** K7, textual (`docs/design/arquitectura.md`): «tras sincronizar con `develop`, la espina comparará `origin/develop...HEAD` antes y después; si cambió algo fuera de conflictos triviales, vuelve a revisión». Y §9.8: «Re-revisar solo si algo cambió (K7): una sincronización limpia no dispara otra ronda». Decisión del usuario: «Vuelve a review (Recomendado)»: «Los revisores miran de nuevo el diff nuevo; si no cambió nada, sigue al merge sin otra ronda. Acotado por sync_attempts.»
+- **S2** Issue #16 punto 2, textual: «`atta merge` responde «El PR #N sigue esperando tu revisión.» aunque GitHub reporte `mergeable: CONFLICTING`». Esperado: «que `atta merge` detecte `CONFLICTING` y pase el job a `needs-human` (o a `build`) solo.» Decisión del usuario: incluido («awaiting-merge detecta CONFLICTING»).
+- **S3** Issue #16 punto 3, textual: «Cuando la Cortadora resuelve el conflicto rebaseando, `atta handoff` falla … `! [rejected] atta/<job> -> atta/<job> (non-fast-forward)`». Esperado: «`--force-with-lease` sobre la rama `atta/<job>`, que es propiedad del job.» Decisión del usuario: incluido («handoff con --force-with-lease»): lo hace la espina, nunca un agente, y solo sobre la rama del job.
+- **S4** Issue #16 punto 1 (cascada de conflictos). Decisión del usuario: «Conflicto → la Cortadora lo resuelve»: «Un conflicto de sync vuelve a build con feedback automático en vez de needs-human, acotado por sync_attempts.»
+- **S5** K1, textual: «abrir un issue `atta:ratchet` para convertir una lección mecanizable en regla; hoy no se abre ninguno». Decisiones del usuario: cuándo «Mecanizable y vista 2+ veces (Recomendado)»: «La lección es mecanizable (ast-grep o test) y apareció en 2 o más jobs; un issue por lección, nunca duplicado.»; cola «No, lo decidís vos (Recomendado)»: «Solo lleva `atta:ratchet`; si querés que Atta lo haga, le agregás la label `atta`.»
+- **S6** Reglas vigentes: multiplataforma (D2); Atta solo integra en `develop` (D3); configuración solo por humanos (L29 de F2, guard de F2.y); los agentes nunca hacen force-push (guard); un cambio visible a proyectos existentes se avisa con `atta doctor`/`atta init --check` (F3 L18).
+
+## Tasks
+
+| ID | Specs | Route | Estado | Commit |
+|---|---|---|---|---|
+| T1 | S1, S4, S2, S6 | Sync: diff antes/después (vuelve a review si cambió), conflicto → build con feedback automático, `awaiting-merge` lee `mergeable` y `CONFLICTING` → build; todo acotado por `sync_attempts` | hecho (L3; suite 1294 OK) | ver git log |
+| T2 | S3, S6 | `atta handoff`/merge pushean la rama `atta/<job>` con `--force-with-lease` (sha esperado de `origin/atta/<job>`), solo la espina y solo esa rama | pendiente | — |
+| T3 | S5, S6 | Ratchet: issue `atta:ratchet` por lección mecanizable vista 2+ veces, sin duplicados (número guardado en la lección), label opcional y su estilo, fake gh con `issue create` | pendiente | — |
+| T4 | S6 | README, `docs/PLAN.md`, arquitectura (K1/K7 hechos) y corrida en el sandbox | pendiente | — |
+
+## Log
+
+- **L1** (usuario) «'sigamos con el order» → F3.x. Respuestas: K7 «Vuelve a review (Recomendado)»; issue #16: «awaiting-merge detecta CONFLICTING», «handoff con --force-with-lease», «Conflicto → la Cortadora lo resuelve»; K1 «Mecanizable y vista 2+ veces (Recomendado)» y «No, lo decidís vos (Recomendado)».
+- **L2** Mapa (explorador): la única sincronización es `flow._sync_gate_push` (`git fetch` + `git merge --no-edit origin/<integración>`, nunca rebase); un conflicto hace `merge --abort` y `_escalate` → `needs-human`. La llaman `cmd_merge` (approve → merging, suma `sync_attempts`), `_resume_merge` y `cmd_handoff` (no pasa por merging ni suma `sync_attempts`). No hay transición de `approve`/`merging`/`awaiting-merge` a `review` o `build`. `_await_merge` usa `github.merge_state` con `MERGE_STATE_FIELDS` sin `mergeable`. `_push` nunca fuerza; el guard niega `--force*` a los agentes (no a la espina); `tests/test_flow.py` `assert_never_forced` lo fija en todas las clases de merge/handoff. Cultivadora (`memory.py`): `Lesson` con `times` (jobs distintos) y `mechanizable` (`ast-grep` solo si el texto dice «ast-grep»; `test`/`no` a mano); `harvest` devuelve solo conteos; corre en `flow._finish_merge`. Atta no crea issues hoy (no hay `create_issue`; el fake gh no soporta `issue create`). La cola toma solo la label `atta`.
+- **L3** T1 (worker; RED 12 fallos + 6 errores, GREEN; suite 1294 OK): el diff del job se compara con un digest por archivo del `git diff origin/<int>...HEAD` normalizado (sin números de línea de hunk ni ids de blob, con líneas de contexto): `patch-id --stable` se descartó porque ignora el contexto. Igual → sigue como antes, sin eventos nuevos; distinto → `review`, `decision.md` retirado, push del commit de sync y evento `sync_diff`. Conflicto → `merge --abort`, `feedback-<k>.md` automático (merge, no rebase) y `build` con evento `sync_conflict`. `awaiting-merge` lee `mergeable`: `CONFLICTING` → `build`; `UNKNOWN`/null siguen esperando. Transiciones nuevas: approve/merging → review|build, awaiting-merge → build. `sync_attempts` se suma una vez por intento; estas vueltas no cuentan como rondas; sin intentos restantes → needs-human con mensajes nuevos. Riesgos: `atta advance` manual a esas transiciones también suma `sync_attempts` sin chequeo de presupuesto; los `merge-checks` no corren sobre el commit de sync empujado (corren en el merge siguiente).

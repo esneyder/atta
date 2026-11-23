@@ -81,6 +81,12 @@ else the intake's; the reviewers come from `job.agents`, which the Filtro re-pla
 raises the risk; `awaiting-merge` runs
 `atta merge`, which checks whether a person merged the PR.
 
+Sync rework (F3.x): `atta merge`/`atta handoff` may send an approved job back to `review` (the
+clean sync changed the job's diff, K7) or to `build` (conflict, or GitHub's CONFLICTING on an
+`awaiting-merge` PR). Nothing special is planned for it: `review` and `build` run as usual (stale
+reviews and build.md respawn their agents) and the Cortadora reads the spine's
+`feedback-<k>.md` with the other feedback files (`_previous_files`).
+
 Handoff recovery (L31): a `needs-human` job runs `atta handoff` again only when
 `handoff_recovery` finds that a handoff escalated it, the latest archived decision is a current
 APPROVE and the worktree HEAD is still the commit that passed merge-checks; otherwise it waits.

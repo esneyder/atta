@@ -315,6 +315,18 @@ class BuildTest(NextBase):
         self.write("round-1/build.md", "STATUS: BLOCKED\n")
         self.assertEqual(self.decide(), self.run_action("advance", JID, "needs-human"))
 
+    def test_build_after_a_sync_conflict_reads_the_automatic_feedback(self):
+        # F3.x S4: the spine's feedback-<k>.md (merge conflict) reaches the Cortadora like a
+        # person's, and the build.md of the approved round is stale.
+        self.routed(risk="medium")
+        self.write("round-1/build.md", BUILD_OK)
+        feedback = self.write("feedback-1.md", "# Conflicto al sincronizar con origin/develop\n")
+        self.job["pr"] = 7
+        self.job["stage_since"] = FUTURE
+        action = self.decide()
+        self.assertSpawn(action, "atta-cortadora", "sonnet", "Round: 1.",
+                         self.dir / "round-1" / "build.md", feedback)
+
     def test_stale_build_after_human_feedback_spawns_cortadora(self):
         self.write("round-1/build.md", "STATUS: BLOCKED\n")
         self.job["stage_since"] = FUTURE
