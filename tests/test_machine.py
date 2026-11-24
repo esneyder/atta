@@ -53,9 +53,9 @@ class TableTests(unittest.TestCase):
             "build": ("gate", "needs-human"),
             "gate": ("review", "build", "needs-human"),
             "review": ("approve", "build", "needs-human"),
-            "approve": ("merging", "awaiting-merge", "needs-human"),
-            "merging": ("merged", "needs-human"),
-            "awaiting-merge": ("merged", "needs-human"),
+            "approve": ("merging", "awaiting-merge", "review", "build", "needs-human"),
+            "merging": ("merged", "review", "build", "needs-human"),
+            "awaiting-merge": ("merged", "build", "needs-human"),
             "needs-human": ("build", "rejected", "awaiting-merge", "gate"),
             "merged": (),
             "rejected": (),
@@ -167,7 +167,7 @@ class AdvanceTests(MachineTestBase):
         self.assertRefused(
             "merging",
             "Transición ilegal en 12-exportar-csv: awaiting-merge → merging. "
-            "Desde awaiting-merge solo se puede ir a: merged, needs-human.")
+            "Desde awaiting-merge solo se puede ir a: merged, build, needs-human.")
         job = self.go("merged")
         self.assertEqual(job["stage"], "merged")
         self.assertEqual([(e["from"], e["to"]) for e in events.read_events(self.dir)][-2:],
@@ -243,6 +243,39 @@ class AdvanceTests(MachineTestBase):
     def test_sync_attempts_counter_on_merging_retry(self):
         job = self.walk("spec", "build", "gate", "review", "approve", "merging")
         self.assertEqual(job["sync_attempts"], 1)
+
+    # F3.x K7/S4/S2: a sync that changed the job diff or conflicted sends the job back.
+    def test_sync_rework_from_merging_keeps_the_attempt_already_counted(self):
+        for to in ("review", "build"):
+            with self.subTest(to=to):
+                self.setUp()
+                job = self.walk("spec", "build", "gate", "review", "approve", "merging", to)
+                self.assertEqual((job["stage"], job["sync_attempts"], job["total_rounds"]),
+                                 (to, 1, 0))
+                self.assertEqual([(e["from"], e["to"]) for e in events.read_events(self.dir)][-1],
+                                 ("merging", to))
+
+    def test_sync_rework_from_approve_and_awaiting_merge_counts_one_attempt(self):
+        for walk, to in ((("approve",), "review"), (("approve",), "build"),
+                         (("approve", "awaiting-merge"), "build")):
+            with self.subTest(walk=walk, to=to):
+                self.setUp()
+                job = self.walk("spec", "build", "gate", "review", *walk, to)
+                self.assertEqual((job["stage"], job["sync_attempts"], job["total_rounds"]),
+                                 (to, 1, 0))
+
+    def test_awaiting_merge_cannot_go_to_review(self):
+        self.walk("spec", "build", "gate", "review", "approve", "awaiting-merge")
+        self.assertRefused(
+            "review",
+            "Transición ilegal en 12-exportar-csv: awaiting-merge → review. "
+            "Desde awaiting-merge solo se puede ir a: merged, build, needs-human.")
+
+    def test_rework_into_build_is_not_a_round_even_at_the_global_cap(self):
+        self.walk("spec", "build", "gate", "build", "gate", "review", "approve", "merging")
+        job = self.go("build")
+        self.assertEqual((job["total_rounds"], job["gate_rounds"], job["review_rounds"]),
+                         (1, 1, 0))
 
     # S9: the Vigía's REVISE cap. spec_reviews counts the REVISEs the spine acted on.
     def test_revise_counts_spec_reviews_without_spending_rounds(self):

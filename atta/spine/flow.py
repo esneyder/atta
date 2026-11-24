@@ -7,7 +7,17 @@ Commands are exposed through `register(subparsers)`; cli.py wires them. Each han
 in Spanish to stderr by the handler itself.
 
 Branch policy (arquitectura §12, D3): every push goes through branches.check_push_target with an
-explicit `refs/heads/<b>:refs/heads/<b>` refspec and never `--force`; every PR create/merge goes
+explicit `refs/heads/<b>:refs/heads/<b>` refspec and never `--force` or `+refspec`. The only
+exception (S3) is the spine pushing a job's own work branch `atta/<id>` (`branches.work_branch`)
+from merge, handoff and their resumes when the Cortadora rebased over the spine's own last push:
+origin's tip (freshly fetched) is not an ancestor of the local branch and equals the job's
+`pushed_sha` (job.json, set after every spine push of the branch):
+`--force-with-lease=refs/heads/<b>:<pushed_sha>`, recorded as a `force_push` event (branch, old,
+new). Any commit the spine did not push (origin ahead, a different tip, a job without
+`pushed_sha`) is never overwritten: `push_lease_rejected` event and needs-human, no push. If
+someone pushes after the fetch the lease fails the same way, no retry. The integration
+branch, forbidden branches, any other branch and `publish` keep the plain fast-forward push, and
+agents never force (the guard denies `--force*`). Every PR create/merge goes
 through branches.check_pr_base with the PR's real `baseRefName`; `gh pr merge` uses
 `--match-head-commit` with the sha that passed `merge-checks` after syncing with develop.
 
@@ -30,6 +40,16 @@ previous one-line text. An existing PR is never edited.
 Lessons (T4b, S6): once a job is merged (by Atta or by a person), `_finish_merge` harvests its
 `PREVENTION:` lines into `atta/memory/lessons.md` (memory.Lessons.harvest, idempotent) as the
 last isolated post-merge step: a failure is one more warning, never a block.
+
+Safe sync (F3.x, K7/S4/S2): `_sync_gate_push` captures the job's own diff
+(`git diff origin/<integration>...HEAD`, per file, hunk numbers and `index` ids stripped, context
+lines kept) before the fetch and after a clean merge. Same diff → merge-checks, push, merge or
+handoff as always. Different → the sync commit is pushed, decision.md is retired, a `sync_diff`
+event (before/after ids, paths, via) is appended and the job goes back to `review`. A conflict
+aborts the merge, writes `feedback-<k>.md` for the Cortadora, appends `sync_conflict` and the job
+goes to `build`. In `awaiting-merge`, GitHub's `mergeable: CONFLICTING` does the same (UNKNOWN keeps
+waiting). All of it is bounded by `sync_attempts` (machine.py); with no room left a conflict or a
+changed diff fails like any merge failure (needs-human). Exit 0: it is progress, not a failure.
 
 Resumable merge (L22): `atta merge` on a job in `merging` asks GitHub. MERGED at the sha recorded
 in this stage's merge-checks.md → merge.md, merged and the post-merge steps; OPEN → continue
@@ -60,6 +80,7 @@ no `concurrency` slot; `atta queue` lists it as `resume` so `/atta run` checks i
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -72,10 +93,12 @@ from . import branches, config, deps, gate, github, intake, issue, machine, memo
 from .board import summary as artifact_summary
 from .github import GhError
 from .ids import InvalidId
+from .events import append_event
 from .initcmd import LABEL_STYLE
 from .lock import LockTimeout, job_lock
 from .next import _fresh, build_section_map, handoff_recovery
 from .store import JobStore, StoreError, _replace
+from .timeutil import to_iso, utcnow
 
 OK, NEGATIVE, REFUSED = 0, 1, 2
 GIT_TIMEOUT_S = 600
@@ -134,10 +157,82 @@ def git(cwd, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return proc
 
 
-def _push(worktree: Path, branch: str, cfg: dict) -> None:
-    """Push `branch` to origin under the branch policy: explicit refspec, never forced."""
+def _push(worktree: Path, branch: str, cfg: dict, *, job: dict | None = None,
+          jobs: JobStore | None = None, lease: bool = True) -> None:
+    """Push `branch` to origin under the branch policy: explicit refspec, never `--force`.
+
+    With `job` and `jobs` and the job's own work branch (S3) the spine records `pushed_sha` in
+    job.json after every push and, unless `lease` is False (publish), decides from origin's
+    freshly fetched tip R, the local tip L and the recorded `pushed_sha` P:
+    R == L: nothing to push. R ancestor of L: plain fast-forward push. L ancestor of R, or
+    diverged with R != P (or no P): origin holds commits the spine did not push, so never force,
+    needs-human. Diverged with R == P (the Cortadora rebased over our own last push): leased push
+    on P. Any other branch, or no job, keeps the plain push.
+    """
     branches.check_push_target(branch, cfg)
-    git(worktree, "push", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
+    spec = f"refs/heads/{branch}:refs/heads/{branch}"
+    owned = (job is not None and jobs is not None
+             and branches.owns_work_branch(branch, job["id"], cfg))
+    if owned and lease:
+        remote = git(worktree, "ls-remote", "origin", f"refs/heads/{branch}").stdout.split()
+        if remote:
+            git(worktree, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+            tip = git(worktree, "rev-parse", "--verify",
+                      f"refs/remotes/origin/{branch}").stdout.strip()
+            local = git(worktree, "rev-parse", "--verify", f"refs/heads/{branch}").stdout.strip()
+            if tip == local:
+                return
+            behind = git(worktree, "merge-base", "--is-ancestor", tip, local, check=False)
+            if behind.returncode == 1:  # origin's tip is not an ancestor of the local branch
+                pushed = jobs.load(job["id"]).get("pushed_sha")
+                ahead = git(worktree, "merge-base", "--is-ancestor", local, tip,
+                            check=False).returncode == 0
+                if ahead or not pushed or pushed != tip:
+                    _foreign_commits(branch, pushed, tip, local, job, jobs)
+                _push_leased(worktree, branch, spec, pushed, local, job, jobs)
+                return
+    git(worktree, "push", "origin", spec)
+    if owned:
+        _record_pushed(jobs, job["id"], git(worktree, "rev-parse", "--verify",
+                                            f"refs/heads/{branch}").stdout.strip())
+
+
+def _record_pushed(jobs: JobStore, jid: str, sha: str) -> None:
+    """Remember the sha the spine last pushed to the job's branch (the basis of a later lease)."""
+    _update(jobs, jid, pushed_sha=sha)
+
+
+def _foreign_commits(branch: str, pushed: str | None, tip: str, local: str, job: dict,
+                     jobs: JobStore):
+    """Origin's branch holds something the spine did not push: record it and stop, no push."""
+    append_event(jobs.job_dir(job["id"]), {
+        "ts": to_iso(utcnow()), "job": job["id"], "event": "push_lease_rejected",
+        "branch": branch, "expected": pushed, "actual": tip, "local": local})
+    raise _MergeFailure(voice.push_foreign_commits(branch, pushed, tip, local))
+
+
+def _push_leased(worktree: Path, branch: str, spec: str, expected: str, local: str,
+                 job: dict, jobs: JobStore) -> None:
+    """The Cortadora rebased over the spine's own last push (`expected`, also origin's tip):
+    `--force-with-lease=<ref>:<that sha>`. Never a bare force and never a fresher lease: if
+    someone pushed after the fetch the push fails and the job escalates."""
+    job_dir = jobs.job_dir(job["id"])
+    proc = git(worktree, "push", f"--force-with-lease=refs/heads/{branch}:{expected}", "origin",
+               spec, check=False)
+    if proc.returncode != 0:
+        now = git(worktree, "ls-remote", "origin", f"refs/heads/{branch}",
+                  check=False).stdout.split()
+        actual = now[0] if now else None
+        if actual == expected:
+            detail = (proc.stderr or proc.stdout).strip() or f"exit {proc.returncode}"
+            raise FlowError(f"git push falló: {detail}")
+        append_event(job_dir, {"ts": to_iso(utcnow()), "job": job["id"],
+                               "event": "push_lease_rejected", "branch": branch,
+                               "expected": expected, "actual": actual, "local": local})
+        raise _MergeFailure(voice.push_lease_rejected(branch, expected, actual, local))
+    append_event(job_dir, {"ts": to_iso(utcnow()), "job": job["id"], "event": "force_push",
+                           "branch": branch, "old": expected, "new": local})
+    _record_pushed(jobs, job["id"], local)
 
 
 def delete_remote_branch(cwd, jid: str, branch: str, cfg: dict) -> None:
@@ -493,7 +588,7 @@ def cmd_publish(args, cfg, jobs: JobStore) -> int:
         if pr.get("isCrossRepository"):
             raise FlowError(_fork_message(pr.get("number")))
         branches.check_pr_base(pr.get("baseRefName") or "", cfg)
-    _push(wt, branch, cfg)
+    _push(wt, branch, cfg, job=job, jobs=jobs, lease=False)
     if pr is None:
         branches.check_pr_base(integration, cfg)
         body = github.sign("cortadora", _pr_body(job, jobs, wt, integration))
@@ -678,8 +773,78 @@ def _escalate(jobs: JobStore, job: dict, reason: str, code: int, cfg: dict) -> i
     return code
 
 
-def _sync_gate_push(args, cfg, jobs: JobStore, job: dict, wt: Path) -> str:
-    """Sync with origin/<integration>, run merge-checks, push; return the sha that passed."""
+class _SyncRework(Exception):
+    """The sync found the job needs another pass (F3.x): `to` is `review` (the clean merge
+    changed the job's own diff, K7) or `build` (conflict, S4). Carries what to record."""
+
+    def __init__(self, to: str, event: dict, message: str, feedback: str | None = None):
+        super().__init__(message)
+        self.to, self.event, self.message, self.feedback = to, event, message, feedback
+
+
+def _sync_budget_left(job: dict, cfg: dict, *, counted: bool) -> bool:
+    """True when, after this attempt, another sync attempt would still fit in `sync_attempts`
+    (`max_rounds`): a rework whose next attempt is already refused would only waste a round.
+    `counted`: the job is in `merging`, so this attempt is already in `sync_attempts`."""
+    used = job["sync_attempts"] + (0 if counted else 1)
+    return used < cfg["max_rounds"]
+
+
+_DIFF_FILE = re.compile(r"^diff --git a/(.*) b/(.*)$")
+_HUNK = re.compile(r"^@@ .*? @@.*$")
+
+
+def _job_diff(wt: Path, integration: str) -> dict[str, str]:
+    """The job's own diff against origin/<integration> (`git diff origin/<integration>...HEAD`,
+    from the merge base) as {path: digest}.
+
+    K7 compares this before and after a sync. The digest covers the file's header and every
+    changed and context line, but not the line numbers of the hunk headers, the function name
+    after them nor the `index` blob ids (they move whenever the base moves and say nothing about
+    what the job changes; the `index` line is kept for binary files, where it is the content).
+    Context lines stay in: when the integration branch edits next to the job's hunks the
+    reviewers saw different code, which `git patch-id` (changed lines only) would miss.
+    """
+    text = git(wt, "diff", "--no-color", "--no-ext-diff", "--no-renames",
+               f"origin/{integration}...HEAD").stdout
+    sections: dict[str, list[str]] = {}
+    path = None
+    for line in text.splitlines():
+        match = _DIFF_FILE.match(line)
+        if match:
+            path = match.group(2)
+            sections[path] = []
+        if path is None:
+            continue
+        sections[path].append("@@" if _HUNK.match(line) else line)
+    digests = {}
+    for path, lines in sections.items():
+        binary = any(l.startswith(("Binary files", "GIT binary patch")) for l in lines)
+        kept = [l for l in lines if binary or not l.startswith("index ")]
+        digests[path] = hashlib.sha256("\n".join(kept).encode("utf-8", "replace")).hexdigest()
+    return digests
+
+
+def _diff_id(digests: dict[str, str]) -> str:
+    """One short identifier for a `_job_diff` (sha256 of its sorted path/digest pairs)."""
+    blob = "\n".join(f"{p}\t{d}" for p, d in sorted(digests.items()))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def _diff_changes(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """Paths whose part of the job diff differs (or exists on one side only), sorted."""
+    return sorted(p for p in set(before) | set(after) if before.get(p) != after.get(p))
+
+
+def _sync_gate_push(args, cfg, jobs: JobStore, job: dict, wt: Path, via: str = "merge") -> str:
+    """Sync with origin/<integration>, run merge-checks, push; return the sha that passed.
+
+    K7 (S1): the job's own diff is captured before the fetch and again after a clean merge. If
+    it changed, the sync commit is pushed (reviewers see the new diff) and _SyncRework("review")
+    is raised instead of continuing; a conflict raises _SyncRework("build") (S4). Both only while
+    `sync_attempts` leaves room for another attempt; otherwise they fail like any merge failure
+    (→ needs-human). `via` (merge, handoff) is recorded in the events.
+    """
     integration = cfg["integration_branch"]
     branch, number = job["branch"], job["pr"]
     current = git(wt, "symbolic-ref", "--short", "-q", "HEAD", check=False).stdout.strip()
@@ -687,16 +852,40 @@ def _sync_gate_push(args, cfg, jobs: JobStore, job: dict, wt: Path) -> str:
         raise _MergeFailure(f"El worktree de {job['id']} está en «{current or 'HEAD suelto'}», "
                             f"no en {branch}.")
     _check_pr(github.view_pr(number), branch, cfg)
+    before = _job_diff(wt, integration)
     git(wt, "fetch", "origin")
     merged = git(wt, "merge", "--no-edit", f"origin/{integration}", check=False)
+    room = _sync_budget_left(job, cfg, counted=job["stage"] == "merging")
     if merged.returncode != 0:
         conflicts = git(wt, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
         git(wt, "merge", "--abort", check=False)
         if conflicts:
+            if room:
+                raise _SyncRework(
+                    "build", {"event": "sync_conflict", "files": conflicts, "via": via},
+                    voice.sync_conflict_build(number, integration, conflicts),
+                    voice.sync_conflict_feedback(branch, integration, conflicts, number))
             raise _MergeFailure(f"Conflicto al sincronizar con origin/{integration} en "
                                 f"{', '.join(conflicts)}.")
         detail = (merged.stderr or merged.stdout).strip()
         raise _MergeFailure(f"No se pudo sincronizar con origin/{integration}: {detail}")
+    after = _job_diff(wt, integration)
+    if after != before:
+        paths = _diff_changes(before, after)
+        if not room:
+            raise _MergeFailure(
+                f"El diff del PR cambió al sincronizar con origin/{integration} "
+                f"({', '.join(paths)}) y ya no quedan sincronizaciones: sync_attempts llegó a "
+                f"{job['sync_attempts'] + (0 if job['stage'] == 'merging' else 1)} de "
+                f"{cfg['max_rounds']}.")
+        try:
+            _push(wt, branch, cfg, job=job, jobs=jobs)
+        except branches.BranchRefused as exc:
+            raise _MergeFailure(str(exc), REFUSED) from None
+        raise _SyncRework(
+            "review", {"event": "sync_diff", "before": _diff_id(before),
+                       "after": _diff_id(after), "paths": paths, "via": via},
+            voice.sync_diff_review(number, integration, paths))
     round_dir = jobs.job_dir(job["id"]) / f"round-{job['total_rounds'] + 1}"
     try:
         result = gate.run_gate(Path(args.root), wt, job, round_dir,
@@ -713,13 +902,42 @@ def _sync_gate_push(args, cfg, jobs: JobStore, job: dict, wt: Path) -> str:
         raise _MergeFailure(f"La rama {branch} no apunta al commit que pasó el Filtro "
                             f"({result.commit}); no se empuja.")
     try:
-        _push(wt, branch, cfg)
+        _push(wt, branch, cfg, job=job, jobs=jobs)
     except branches.BranchRefused as exc:
         raise _MergeFailure(str(exc), REFUSED) from None
     return result.commit
 
 
-def _push_gated(job: dict, wt: Path, sha: str, cfg: dict) -> str:
+def _next_feedback(job_dir: Path) -> Path:
+    k = 1
+    while (job_dir / f"feedback-{k}.md").exists():
+        k += 1
+    return job_dir / f"feedback-{k}.md"
+
+
+def _apply_rework(jobs: JobStore, job: dict, cfg: dict, rework: _SyncRework) -> int:
+    """Act on a _SyncRework: feedback for the Cortadora (conflicts), the old decision retired,
+    the sync event, and the job back to review or build. Exit 0: it is progress, not a failure.
+    From awaiting-merge the review label goes, nobody waits for a person any more."""
+    jid = job["id"]
+    job_dir = jobs.job_dir(jid)
+    if rework.feedback is not None:
+        with open(_next_feedback(job_dir), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(rework.feedback)
+    _retire_decision(job_dir)
+    append_event(job_dir, {"ts": to_iso(utcnow()), "job": jid, **rework.event})
+    machine.advance(jobs, jid, rework.to)
+    if job["stage"] == AWAITING_MERGE:
+        review = config.label(cfg, "needs_review")
+        try:
+            github.edit_label(job["issue"], "remove", review)
+        except GhError as exc:
+            _err(f"Aviso: no se pudo quitar la label {review} del issue #{job['issue']}: {exc}")
+    print(rework.message)
+    return OK
+
+
+def _push_gated(job: dict, wt: Path, sha: str, cfg: dict, jobs: JobStore | None = None) -> str:
     """Resume with the sha merge-checks already passed: same checks as after the Filtro (branch
     checked out, branch tip = sha), then the push (a no-op when origin has it)."""
     branch = job["branch"]
@@ -731,7 +949,7 @@ def _push_gated(job: dict, wt: Path, sha: str, cfg: dict) -> str:
     if tip != sha:
         raise _MergeFailure(f"La rama {branch} no apunta al commit que pasó el Filtro "
                             f"({sha}); no se empuja.")
-    _push(wt, branch, cfg)
+    _push(wt, branch, cfg, job=job, jobs=jobs)
     return sha
 
 
@@ -949,13 +1167,15 @@ def _resume_merge(args, cfg, jobs: JobStore, job: dict) -> int:
         if gated and local == gated:
             print(f"El PR #{number} sigue abierto; la Reina retoma el merge de {jid} con el "
                   "commit que pasó el Filtro.")
-            sha = _push_gated(job, wt, gated, cfg)
+            sha = _push_gated(job, wt, gated, cfg, jobs)
         else:
             why = ("pero la rama cambió desde el Filtro" if gated else
                    "pero no hay un merge-checks.md con PASS de este merge")
             print(f"El PR #{number} sigue abierto, {why}; la Reina vuelve a sincronizar {jid}.")
             sha = _sync_gate_push(args, cfg, jobs, job, wt)
         warnings = _merge_at(cfg, job, sha, method)
+    except _SyncRework as rework:
+        return _apply_rework(jobs, job, cfg, rework)
     except _MERGE_ERRORS as exc:
         return _escalate(jobs, job, *_failure(exc), cfg)
     return _finish_merge(args, cfg, jobs, job, wt, sha, warnings)
@@ -986,6 +1206,18 @@ def _await_merge(args, cfg, jobs: JobStore, job: dict) -> int:
         return _escalate_review(jobs, job, exc.reason, exc.code, cfg)
     status = str(state.get("state") or "").upper()
     if status == "OPEN":
+        if str(state.get("mergeable") or "").upper() == "CONFLICTING":
+            # S2: GitHub says the PR conflicts with the integration branch; UNKNOWN (still
+            # computing) and MERGEABLE keep waiting.
+            if not _sync_budget_left(job, cfg, counted=False):
+                return _escalate_review(
+                    jobs, job, f"El PR #{number} está en conflicto con origin/{integration} en "
+                    f"GitHub y ya no quedan sincronizaciones: sync_attempts llegó a "
+                    f"{job['sync_attempts'] + 1} de {cfg['max_rounds']}.", NEGATIVE, cfg)
+            return _apply_rework(jobs, job, cfg, _SyncRework(
+                "build", {"event": "sync_conflict", "files": [], "via": "awaiting-merge"},
+                voice.github_conflict_build(number, integration),
+                voice.sync_conflict_feedback(job["branch"], integration, [], number)))
         print(voice.waiting_review(number))
         return OK
     if status == "MERGED":
@@ -1093,7 +1325,7 @@ def _recover_handoff(args, cfg, jobs: JobStore, job: dict) -> int:
         raise FlowError(f"El PR #{number} no está abierto ({pr.get('state')}); no se retoma "
                         "el handoff.")
     try:
-        _push_gated(job, wt, sha, cfg)
+        _push_gated(job, wt, sha, cfg, jobs)
         if pr.get("isDraft"):
             github.ready_pr(number)
     except _MERGE_ERRORS as exc:
@@ -1120,11 +1352,13 @@ def cmd_handoff(args, cfg, jobs: JobStore) -> int:
     number = job["pr"]
     print(voice.reina_approved(number))
     try:
-        sha = _sync_gate_push(args, cfg, jobs, job, wt)
+        sha = _sync_gate_push(args, cfg, jobs, job, wt, via="handoff")
         pr = github.view_pr(number)
         _check_pr(pr, job["branch"], cfg)
         if pr.get("isDraft"):
             github.ready_pr(number)
+    except _SyncRework as rework:
+        return _apply_rework(jobs, job, cfg, rework)
     except _MERGE_ERRORS as exc:
         reason, code = _failure(exc)
         _write_handoff_md(jobs.job_dir(jid), "FAIL", reason)
@@ -1155,6 +1389,8 @@ def cmd_merge(args, cfg, jobs: JobStore) -> int:
     try:
         sha = _sync_gate_push(args, cfg, jobs, job, wt)
         warnings = _merge_at(cfg, job, sha, method)
+    except _SyncRework as rework:
+        return _apply_rework(jobs, job, cfg, rework)
     except _MERGE_ERRORS as exc:
         return _escalate(jobs, job, *_failure(exc), cfg)
     return _finish_merge(args, cfg, jobs, job, wt, sha, warnings)
@@ -1265,8 +1501,11 @@ def register(subparsers) -> None:
                                           "decisión archivada es APPROVE vigente, el PR sigue "
                                           "abierto contra la rama de integración y HEAD es el "
                                           "commit que pasó el Filtro; si no, se rechaza sin "
-                                          "cambios. Nunca mergea. Sale 0 si queda esperando, 1 "
-                                          "si no pasó, 2 si se rechaza.")
+                                          "cambios. Nunca mergea. Si al sincronizar cambió el "
+                                          "diff del job, vuelve a review; si hay conflicto, "
+                                          "vuelve a build con un feedback automático (acotado "
+                                          "por sync_attempts; sale 0). Sale 0 si queda "
+                                          "esperando, 1 si no pasó, 2 si se rechaza.")
     h.add_argument("job", help="id del job")
     h.set_defaults(func=_guarded(cmd_handoff))
 
@@ -1288,7 +1527,12 @@ def register(subparsers) -> None:
                                           "esperando (sale 0 sin cambios); mergeado en la rama "
                                           "de integración, cierra el ciclo como un merge propio "
                                           "(también quita atta:needs-review); cerrado sin merge o "
-                                          "con otra base, needs-human. Sale 0 si mergea, 1 si no "
-                                          "pasó, 2 si se rechaza.")
+                                          "con otra base, needs-human; si GitHub lo marca "
+                                          "CONFLICTING, vuelve a build con un feedback "
+                                          "automático (UNKNOWN sigue esperando). Si al "
+                                          "sincronizar cambió el diff del job, vuelve a review; "
+                                          "si hay conflicto, a build con feedback automático "
+                                          "(ambos acotados por sync_attempts; salen 0). Sale 0 "
+                                          "si mergea, 1 si no pasó, 2 si se rechaza.")
     m.add_argument("job", help="id del job")
     m.set_defaults(func=_guarded(cmd_merge))

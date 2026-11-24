@@ -155,7 +155,21 @@ class FlowBase(FakeGhMixin, unittest.TestCase):
                 ["branch", "-D", BRANCH])
 
     def assert_never_forced(self):
-        for args in self.git_calls:
+        self._assert_no_force(self.git_calls)
+
+    def leased_call(self, branch, expected_sha):
+        return ["push", f"--force-with-lease=refs/heads/{branch}:{expected_sha}", "origin",
+                f"refs/heads/{branch}:refs/heads/{branch}"]
+
+    def assert_only_leased_force(self, branch, expected_sha):
+        """S3: the one narrow exception to assert_never_forced: exactly one push of `branch` with
+        an explicit lease on `expected_sha`; every other call must still be unforced."""
+        leased = self.leased_call(branch, expected_sha)
+        self.assertEqual(self.git_calls.count(leased), 1, self.pushes())
+        self._assert_no_force([c for c in self.git_calls if c != leased])
+
+    def _assert_no_force(self, calls):
+        for args in calls:
             if args in self.allowed_deletions():
                 continue
             self.assertFalse({"-f", "--force", "--force-with-lease", "--force-if-includes",
@@ -955,7 +969,8 @@ class MergeBase(FlowBase):
         return self.run_cmd("merge", JID, cfg=cfg)
 
     def stages(self):
-        return [(e["from"], e["to"]) for e in read_events(self.store.job_dir(JID))]
+        return [(e["from"], e["to"]) for e in read_events(self.store.job_dir(JID))
+                if "from" in e]
 
     def merge_md(self):
         return (self.store.job_dir(JID) / "merge.md").read_text(encoding="utf-8")
@@ -1220,16 +1235,148 @@ class MergeTests(MergeBase):
         self.assert_needs_human(BASE_MAIN)
         self.assertEqual(self.stages()[-2:], [("approve", "merging"), ("merging", "needs-human")])
 
-    def test_conflict_with_develop_aborts_and_goes_to_needs_human(self):
+    def events_named(self, name):
+        return [e for e in read_events(self.store.job_dir(JID)) if e.get("event") == name]
+
+    def feedback_files(self):
+        return sorted(p.name for p in self.store.job_dir(JID).glob("feedback-*.md"))
+
+    def test_conflict_with_develop_goes_back_to_build_with_automatic_feedback(self):
+        # S4: a sync conflict goes to the Cortadora, not to a person.
+        self.push_to_develop("src/feature.py", "x = 'develop'\n")
+        pushes_before = len(self.pushes())
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out, "La Reina aprobó el PR #101 (APPROVE).\n"
+                              "El PR #101 tiene conflicto con origin/develop en src/feature.py; "
+                              "la Cortadora lo resuelve.\n")
+        job = self.job()
+        self.assertEqual((job["stage"], job["sync_attempts"], job["total_rounds"]),
+                         ("build", 1, 0))
+        self.assertEqual(self.stages()[-2:], [("approve", "merging"), ("merging", "build")])
+        job_dir = self.store.job_dir(JID)
+        self.assertEqual(self.feedback_files(), ["feedback-1.md"])
+        self.assertEqual((job_dir / "feedback-1.md").read_text(encoding="utf-8"), (
+            "# Conflicto al sincronizar con origin/develop\n\n"
+            f"Atta no pudo integrar origin/develop en {BRANCH}: hay conflicto en\n\n"
+            "- src/feature.py\n\n"
+            "Qué hacer: en el worktree de la rama, corre `git fetch origin` y "
+            "`git merge origin/develop` (merge, no rebase: la rama se empuja sin forzar), "
+            "resuelve cada conflicto conservando los dos cambios (el de este job y el que ya "
+            "está en develop), corre los tests, haz commit del merge y escribe build.md como "
+            "siempre.\n"))
+        self.assertFalse((job_dir / "decision.md").exists())
+        self.assertTrue((job_dir / "decision-1.md").exists())
+        conflicts = self.events_named("sync_conflict")
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual({k: v for k, v in conflicts[0].items() if k != "ts"},
+                         {"job": JID, "event": "sync_conflict", "files": ["src/feature.py"],
+                          "via": "merge"})
+        self.assertEqual(git(self.wt(), "status", "--porcelain"), "")
+        self.assertFalse((Path(git(self.wt(), "rev-parse", "--absolute-git-dir"))
+                          / "MERGE_HEAD").exists())
+        self.assertEqual(len(self.pushes()), pushes_before)
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        self.assertFalse((job_dir / "merge.md").exists())
+        self.assert_never_forced()
+
+    def test_second_conflict_numbers_the_next_feedback_file(self):
+        self.push_to_develop("src/feature.py", "x = 'develop'\n")
+        self.assertEqual(self.merge()[0], 0)
+        for stage in ("gate", "review", "approve"):
+            machine.advance(self.store, JID, stage)
+        write(self.store.job_dir(JID) / "decision.md", "APPROVE\n\n## Summary\n\nOk.\n")
+        self.assertEqual(self.merge()[0], 0)
+        self.assertEqual(self.feedback_files(), ["feedback-1.md", "feedback-2.md"])
+        self.assertEqual(self.job()["sync_attempts"], 2)
+
+    def test_conflict_with_sync_attempts_exhausted_goes_to_needs_human(self):
+        self.set_job(sync_attempts=2)  # max_rounds 3: this attempt is the last one
         self.push_to_develop("src/feature.py", "x = 'develop'\n")
         pushes_before = len(self.pushes())
         code, out, err = self.merge()
         self.assertEqual(code, 1)
-        self.assertTrue(err.startswith("Conflicto al sincronizar con origin/develop"), err)
+        self.assertEqual(err, "Conflicto al sincronizar con origin/develop en src/feature.py.\n")
         self.assert_needs_human("Conflicto al sincronizar con origin/develop")
+        self.assertEqual(self.feedback_files(), [])
+        self.assertEqual(self.events_named("sync_conflict"), [])
         self.assertEqual(git(self.wt(), "status", "--porcelain"), "")
-        self.assertFalse((Path(git(self.wt(), "rev-parse", "--absolute-git-dir")) / "MERGE_HEAD").exists())
         self.assertEqual(len(self.pushes()), pushes_before)
+
+    # ---- K7 (S1): compare the job's own diff before and after the sync
+
+    def edit_app_in_wt(self):
+        self.commit_in_wt("src/app.py", "print('hola')\nprint('job')\n")
+
+    def test_clean_sync_with_unchanged_job_diff_has_no_extra_round(self):
+        self.edit_app_in_wt()
+        self.push_to_develop("src/otro.py", "y = 2\n")
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertEqual(self.job()["sync_attempts"], 1)
+        self.assertEqual([(e["from"], e["to"]) for e in read_events(self.store.job_dir(JID))
+                          if "from" in e][-2:], [("approve", "merging"), ("merging", "merged")])
+        self.assertEqual(self.events_named("sync_diff"), [])
+        self.assertEqual(self.feedback_files(), [])
+        self.assertEqual(out, "La Reina aprobó el PR #101 (APPROVE).\n"
+                              "La Reina integró el PR #101 en develop.\n")
+
+    def test_merge_without_new_develop_commits_has_no_extra_round(self):
+        self.edit_app_in_wt()
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertEqual(self.events_named("sync_diff"), [])
+
+    def change_job_diff_through_develop(self):
+        """A clean merge whose result changes the job's diff (develop edits next to its hunk)."""
+        self.edit_app_in_wt()
+        self.push_to_develop("src/app.py", "print('dev')\nprint('hola')\n")
+
+    def test_clean_sync_that_changes_the_job_diff_goes_back_to_review(self):
+        self.change_job_diff_through_develop()
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out, "La Reina aprobó el PR #101 (APPROVE).\n"
+                              "La sincronización con origin/develop cambió el diff del PR #101 "
+                              "(src/app.py); los revisores lo miran de nuevo.\n")
+        job = self.job()
+        self.assertEqual((job["stage"], job["sync_attempts"], job["total_rounds"]),
+                         ("review", 1, 0))
+        self.assertEqual(self.stages()[-2:], [("approve", "merging"), ("merging", "review")])
+        job_dir = self.store.job_dir(JID)
+        self.assertFalse((job_dir / "decision.md").exists())
+        self.assertTrue((job_dir / "decision-1.md").read_text(encoding="utf-8")
+                        .startswith("APPROVE\n"))
+        events = self.events_named("sync_diff")
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(sorted(event), ["after", "before", "event", "job", "paths", "ts", "via"])
+        self.assertEqual((event["job"], event["via"], event["paths"]), (JID, "merge",
+                                                                       ["src/app.py"]))
+        self.assertRegex(event["before"], r"^[0-9a-f]{12}$")
+        self.assertRegex(event["after"], r"^[0-9a-f]{12}$")
+        self.assertNotEqual(event["before"], event["after"])
+        # The sync commit is pushed so the reviewers see the new diff; nothing is merged or gated.
+        head = git(self.wt(), "rev-parse", "HEAD")
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), head)
+        git(self.root, "merge-base", "--is-ancestor", self.origin_sha("develop"), head)
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        self.assertFalse((job_dir / "round-1" / "merge-checks.md").exists())
+        self.assertFalse((job_dir / "merge.md").exists())
+        self.assertEqual(self.feedback_files(), [])
+        self.assert_never_forced()
+
+    def test_changed_job_diff_with_sync_attempts_exhausted_goes_to_needs_human(self):
+        self.set_job(sync_attempts=2)
+        self.change_job_diff_through_develop()
+        code, out, err = self.merge()
+        reason = ("El diff del PR cambió al sincronizar con origin/develop (src/app.py) y ya no "
+                  "quedan sincronizaciones: sync_attempts llegó a 3 de 3.")
+        self.assertEqual((code, err), (1, reason + "\n"))
+        self.assert_needs_human(reason)
+        self.assertEqual(self.events_named("sync_diff"), [])
 
     def test_gate_failure_after_sync_goes_to_needs_human(self):
         write(self.root / "atta" / "checks.json", json.dumps({"checks": [FAIL_CHECK]}))
@@ -1387,6 +1534,17 @@ class ResumeMergeTests(MergeBase):
         self.assertNotIn(["fetch", "origin"], self.new_git_calls())
         self.assertEqual(report.stat().st_mtime_ns, mtime)
         self.assert_post_merge_done(sha)
+        self.assert_never_forced()
+
+    def test_resync_after_a_conflict_goes_back_to_build(self):
+        # The job is in merging with no merge-checks.md for this stage: the resume re-syncs.
+        machine.advance(self.store, JID, "merging")
+        self.push_to_develop("src/feature.py", "x = 'develop'\n")
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual((self.job()["stage"], self.job()["sync_attempts"]), ("build", 1))
+        self.assertEqual(self.stages()[-1], ("merging", "build"))
+        self.assertTrue((self.store.job_dir(JID) / "feedback-1.md").exists())
         self.assert_never_forced()
 
     def test_second_run_after_resuming_is_a_no_op(self):
@@ -1778,6 +1936,292 @@ class HandoffTests(HandoffBase):
                          self.gh_calls())
 
 
+class HandoffSyncTests(HandoffBase):
+    """F3.x: the sync of a handoff compares the job diff and sends conflicts to the Cortadora."""
+
+    def events_named(self, name):
+        return [e for e in read_events(self.store.job_dir(JID)) if e.get("event") == name]
+
+    def feedback_files(self):
+        return sorted(p.name for p in self.store.job_dir(JID).glob("feedback-*.md"))
+
+    def test_changed_job_diff_goes_back_to_review_and_counts_an_attempt(self):
+        self.commit_in_wt("src/app.py", "print('hola')\nprint('job')\n")
+        self.push_to_develop("src/app.py", "print('dev')\nprint('hola')\n")
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        job = self.job()
+        self.assertEqual((job["stage"], job["sync_attempts"]), ("review", 1))
+        self.assertEqual(self.stages(), [("intake", "spec"), ("spec", "build"),
+                                         ("build", "gate"), ("gate", "review"),
+                                         ("review", "approve"), ("approve", "review")])
+        self.assertFalse((self.store.job_dir(JID) / "decision.md").exists())
+        self.assertEqual([e["via"] for e in self.events_named("sync_diff")], ["handoff"])
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"),
+                         git(self.wt(), "rev-parse", "HEAD"))
+        self.assertEqual(self.gh_by("pr", "ready"), [])
+        self.assertFalse((self.store.job_dir(JID) / "handoff.md").exists())
+        self.assert_never_forced()
+
+    def test_conflict_goes_back_to_build_with_feedback(self):
+        self.push_to_develop("src/feature.py", "x = 'develop'\n")
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        job = self.job()
+        self.assertEqual((job["stage"], job["sync_attempts"]), ("build", 1))
+        self.assertEqual(self.stages()[-1], ("approve", "build"))
+        self.assertEqual(self.feedback_files(), ["feedback-1.md"])
+        self.assertIn("- src/feature.py\n", (self.store.job_dir(JID) / "feedback-1.md")
+                      .read_text(encoding="utf-8"))
+        self.assertEqual([e["via"] for e in self.events_named("sync_conflict")], ["handoff"])
+        self.assertEqual(self.gh_by("pr", "ready"), [])
+        self.assertEqual(git(self.wt(), "status", "--porcelain"), "")
+        self.assert_never_forced()
+
+    def test_conflict_with_sync_attempts_exhausted_goes_to_needs_human(self):
+        self.set_job(sync_attempts=2)
+        self.push_to_develop("src/feature.py", "x = 'develop'\n")
+        code, out, err = self.handoff()
+        reason = "Conflicto al sincronizar con origin/develop en src/feature.py."
+        self.assertEqual((code, err), (1, reason + "\n"))
+        self.assertEqual(self.job()["stage"], "needs-human")
+        self.assertTrue(self.handoff_md().startswith("HANDOFF: FAIL\n"))
+        self.assertIn(reason, self.handoff_md())
+        self.assertEqual(self.feedback_files(), [])
+        self.assert_never_forced()
+
+    def test_clean_sync_with_unchanged_diff_hands_off_as_before(self):
+        self.push_to_develop("src/otro.py", "y = 2\n")
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "awaiting-merge")
+        self.assertEqual(self.job()["sync_attempts"], 0)
+        self.assertEqual(self.events_named("sync_diff"), [])
+
+
+class LeasedPushTests(HandoffBase):
+    """F3.x S3/S6: when the Cortadora rebased, the spine pushes atta/<job> with an explicit lease."""
+
+    def setUp(self):
+        super().setUp()
+        self.git_calls.clear()  # drop the publish push of the setup
+
+    def events_named(self, name):
+        return [e for e in read_events(self.store.job_dir(JID)) if e.get("event") == name]
+
+    def rebase(self):
+        """Rewrite the job's commit: origin's atta/<job> stops being an ancestor."""
+        old = self.origin_sha(f"refs/heads/{BRANCH}")
+        git(self.wt(), "commit", "-q", "--amend", "-m", "feature reescrita")
+        new = git(self.wt(), "rev-parse", "HEAD")
+        self.assertNotEqual(old, new)
+        return old, new
+
+    def move_origin_after_fetch(self):
+        """Someone else pushes to origin's atta/<job> right after the spine fetched it."""
+        real = flow.git
+        moved = {}
+
+        def racing(cwd, *args, **kw):
+            result = real(cwd, *args, **kw)
+            if args[:2] == ("rev-parse", "--verify") and args[2].startswith("refs/remotes/origin/") \
+                    and not moved:
+                tip = git(self.origin, "rev-parse", f"refs/heads/{BRANCH}")
+                tree = git(self.origin, "rev-parse", f"{tip}^{{tree}}")
+                moved["sha"] = git(self.origin, "commit-tree", tree, "-p", tip, "-m", "ajeno")
+                git(self.origin, "update-ref", f"refs/heads/{BRANCH}", moved["sha"])
+            return result
+
+        patcher = mock.patch.object(flow, "git", side_effect=racing)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return moved
+
+    def test_handoff_of_a_rebased_branch_pushes_once_with_the_fetched_lease(self):
+        old, new = self.rebase()
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "awaiting-merge")
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), new)
+        self.assertEqual(self.git_calls.count(self.leased_call(BRANCH, old)), 1)
+        self.assertEqual([c for c in self.pushes() if c != self.leased_call(BRANCH, old)], [])
+        events = self.events_named("force_push")
+        self.assertEqual([(e["branch"], e["old"], e["new"]) for e in events],
+                         [(BRANCH, old, new)])
+        self.assertEqual(self.events_named("push_lease_rejected"), [])
+        self.assert_only_leased_force(BRANCH, old)
+
+    def test_merge_of_a_rebased_branch_pushes_once_with_the_fetched_lease(self):
+        old, new = self.rebase()
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertEqual([(e["branch"], e["old"], e["new"])
+                          for e in self.events_named("force_push")], [(BRANCH, old, new)])
+        self.assertEqual(self.gh_by("pr", "merge"),
+                         [["pr", "merge", "101", "--merge", "--match-head-commit", new]])
+        self.assert_only_leased_force(BRANCH, old)
+
+    def test_gated_resume_push_of_a_rebased_branch_uses_the_lease(self):
+        old, new = self.rebase()
+        flow._push_gated(self.job(), self.wt(), new, self.cfg, self.store)
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), new)
+        self.assertEqual([e["old"] for e in self.events_named("force_push")], [old])
+        self.assert_only_leased_force(BRANCH, old)
+
+    def test_remote_moved_after_the_fetch_rejects_the_lease_and_escalates(self):
+        old, new = self.rebase()
+        moved = self.move_origin_after_fetch()
+        code, out, err = self.handoff()
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), moved["sha"])
+        self.assertEqual(self.job()["stage"], "needs-human")
+        reason = (f"No empujé {BRANCH}: alguien más empujó a esa rama después de que la espina "
+                  f"la trajo (esperaba {old}, en origin hay {moved['sha']}; mi rama local está "
+                  f"en {new}). No reintento ni piso su trabajo: revísalo.")
+        self.assertIn(reason, err)
+        self.assertIn(reason, self.handoff_md())
+        self.assertEqual(self.git_calls.count(self.leased_call(BRANCH, old)), 1)
+        self.assertEqual(len(self.pushes()), 1)
+        rejected = self.events_named("push_lease_rejected")
+        self.assertEqual([(e["branch"], e["expected"], e["actual"]) for e in rejected],
+                         [(BRANCH, old, moved["sha"])])
+        self.assertTrue(all("from" not in e and "to" not in e for e in rejected))
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assert_only_leased_force(BRANCH, old)
+
+    def foreign_commit(self):
+        """A commit somebody else pushed to origin's atta/<job> (GitHub «Update branch», a
+        committed suggestion, a person's fix) on top of its current tip."""
+        tip = git(self.origin, "rev-parse", f"refs/heads/{BRANCH}")
+        tree = git(self.origin, "rev-parse", f"{tip}^{{tree}}")
+        sha = git(self.origin, "commit-tree", tree, "-p", tip, "-m", "arreglo de una persona")
+        git(self.origin, "update-ref", f"refs/heads/{BRANCH}", sha)
+        return sha
+
+    def assert_foreign_kept(self, code, err, foreign, pushed, local):
+        self.assertEqual(code, 1)
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), foreign)
+        self.assertEqual(self.job()["stage"], "needs-human")
+        self.assertEqual(self.pushes(), [])
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        rejected = self.events_named("push_lease_rejected")
+        self.assertEqual([(e["branch"], e["expected"], e["actual"], e["local"])
+                          for e in rejected], [(BRANCH, pushed, foreign, local)])
+        self.assertTrue(all("from" not in e and "to" not in e for e in rejected))
+        self.assertIn(f"No empujé {BRANCH}: en origin hay commits que la espina no empujó", err)
+        self.assertIn(foreign, err)
+        self.assert_never_forced()
+
+    def test_publish_records_the_pushed_sha(self):
+        self.assertEqual(self.job()["pushed_sha"], self.origin_sha(f"refs/heads/{BRANCH}"))
+
+    def test_handoff_never_rewinds_a_commit_pushed_before_the_fetch(self):
+        pushed = self.origin_sha(f"refs/heads/{BRANCH}")
+        foreign = self.foreign_commit()
+        code, out, err = self.handoff()
+        self.assert_foreign_kept(code, err, foreign, pushed, pushed)
+
+    def test_merge_never_rewinds_a_commit_pushed_before_the_fetch(self):
+        pushed = self.origin_sha(f"refs/heads/{BRANCH}")
+        foreign = self.foreign_commit()
+        code, out, err = self.merge()
+        self.assert_foreign_kept(code, err, foreign, pushed, pushed)
+
+    def test_rebased_branch_with_a_foreign_commit_on_origin_is_not_forced(self):
+        pushed = self.origin_sha(f"refs/heads/{BRANCH}")
+        foreign = self.foreign_commit()
+        old, new = self.rebase_from(pushed)
+        code, out, err = self.handoff()
+        self.assert_foreign_kept(code, err, foreign, pushed, new)
+
+    def rebase_from(self, pushed):
+        git(self.wt(), "commit", "-q", "--amend", "-m", "feature reescrita")
+        return pushed, git(self.wt(), "rev-parse", "HEAD")
+
+    def test_job_without_a_recorded_pushed_sha_is_never_forced(self):
+        job = self.job()
+        job.pop("pushed_sha")
+        self.store.save(job)
+        old, new = self.rebase()
+        code, out, err = self.handoff()
+        self.assert_foreign_kept(code, err, old, None, new)
+        self.assertNotIn("pushed_sha", self.job())
+
+    @unittest.skipIf(os.name == "nt", "el hook pre-receive necesita un shell POSIX")
+    def test_hook_rejection_of_the_leased_push_is_not_a_lease_rejection(self):
+        old, new = self.rebase()
+        hook = self.origin / "hooks" / "pre-receive"
+        write(hook, "#!/bin/sh\necho 'rechazado por el hook' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        code, out, err = self.handoff()
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), old)
+        self.assertEqual(self.job()["stage"], "needs-human")
+        self.assertEqual(self.events_named("push_lease_rejected"), [])
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assertIn("rechazado por el hook", err)
+        self.assertEqual(self.job()["pushed_sha"], old)
+
+    def test_rebase_over_the_spines_own_push_records_the_new_sha(self):
+        old, new = self.rebase()
+        self.assertEqual(self.job()["pushed_sha"], old)
+        self.ok("handoff", JID)
+        self.assertEqual(self.job()["pushed_sha"], new)
+        self.assert_only_leased_force(BRANCH, old)
+
+    def test_fast_forward_push_stays_plain(self):
+        self.commit_in_wt("src/otro_feature.py", "z = 3\n")
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"),
+                         git(self.wt(), "rev-parse", "HEAD"))
+        self.assertEqual(self.pushes(),
+                         [["push", "origin", f"refs/heads/{BRANCH}:refs/heads/{BRANCH}"]])
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assert_never_forced()
+
+    def test_missing_remote_branch_is_a_plain_push(self):
+        git(self.origin, "update-ref", "-d", f"refs/heads/{BRANCH}")
+        flow._push(self.wt(), BRANCH, self.cfg, job=self.job(), jobs=self.store)
+        self.assertEqual(self.pushes(),
+                         [["push", "origin", f"refs/heads/{BRANCH}:refs/heads/{BRANCH}"]])
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assert_never_forced()
+
+    def test_integration_and_forbidden_branches_are_never_pushed_or_forced(self):
+        for branch in ("develop", "main", "master"):
+            with self.subTest(branch=branch):
+                before = len(self.git_calls)
+                with self.assertRaises(flow.branches.BranchRefused):
+                    flow._push(self.wt(), branch, self.cfg, job=self.job(), jobs=self.store)
+                self.assertEqual([c for c in self.git_calls[before:] if c[0] == "push"], [])
+        self.assertEqual(self.events_named("force_push"), [])
+
+    def test_another_atta_branch_keeps_the_plain_push_and_is_rejected_when_diverged(self):
+        other = "atta/99-otra"
+        git(self.wt(), "push", "-q", "origin", f"HEAD:refs/heads/{other}")
+        remote = self.origin_sha(f"refs/heads/{other}")
+        git(self.wt(), "commit", "-q", "--amend", "-m", "reescrita")
+        git(self.wt(), "branch", "-f", other, "HEAD")
+        with self.assertRaises(flow.FlowError):
+            flow._push(self.wt(), other, self.cfg, job=self.job(), jobs=self.store)
+        self.assertEqual(self.origin_sha(f"refs/heads/{other}"), remote)
+        self.assertEqual(self.pushes(),
+                         [["push", "origin", f"refs/heads/{other}:refs/heads/{other}"]])
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assert_never_forced()
+
+    def test_publish_never_uses_the_lease(self):
+        self.rebase()
+        self.set_job(stage="build")
+        code, out, err = self.run_cmd("publish", JID)
+        self.assertEqual(code, 2, out)
+        self.assertEqual([c for c in self.pushes() if len(c) > 3], [])
+        self.assertEqual(self.events_named("force_push"), [])
+
+
 class HandoffRecoveryTests(HandoffBase):
     """L31 (c): `atta handoff` retakes a needs-human job that a handoff escalated, when the
     approval still holds and nothing changed since the Filtro."""
@@ -1982,6 +2426,60 @@ class AwaitingMergeTests(HandoffBase):
         self.assertEqual((self.origin_sha("develop"), self.origin_sha("main")),
                          (self.develop, self.main))
         self.assert_never_forced()
+
+    # ---- F3.x (S2): GitHub reports the PR in conflict with the integration branch
+
+    def test_conflicting_pr_goes_back_to_build_with_automatic_feedback(self):
+        self.set_pr(mergeable="CONFLICTING")
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(out, "El PR #101 está en conflicto con develop en GitHub; la Cortadora "
+                              "lo resuelve.\n")
+        job = self.job()
+        self.assertEqual((job["stage"], job["sync_attempts"], job["total_rounds"]),
+                         ("build", 1, 0))
+        self.assertEqual(self.stages()[-1], ("awaiting-merge", "build"))
+        job_dir = self.store.job_dir(JID)
+        self.assertEqual((job_dir / "feedback-1.md").read_text(encoding="utf-8"), (
+            "# Conflicto al sincronizar con origin/develop\n\n"
+            "GitHub marca el PR #101 como CONFLICTING con origin/develop.\n\n"
+            "Qué hacer: en el worktree de la rama, corre `git fetch origin` y "
+            "`git merge origin/develop` (merge, no rebase: la rama se empuja sin forzar), "
+            "resuelve cada conflicto conservando los dos cambios (el de este job y el que ya "
+            "está en develop), corre los tests, haz commit del merge y escribe build.md como "
+            "siempre.\n"))
+        self.assertFalse((job_dir / "decision.md").exists())
+        events = [e for e in read_events(job_dir) if e.get("event") == "sync_conflict"]
+        self.assertEqual([(e["files"], e["via"]) for e in events], [([], "awaiting-merge")])
+        self.assertNotIn(NEEDS_REVIEW, self.labels())
+        self.assertNotIn("atta:needs-human", self.labels())
+        self.assertEqual(self.git_calls[self.git_n:], [])
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        self.assert_never_forced()
+
+    def test_unknown_mergeability_keeps_waiting(self):
+        job_json = (self.store.job_dir(JID) / "job.json").read_bytes()
+        for value in ("UNKNOWN", "MERGEABLE", None):
+            with self.subTest(mergeable=value):
+                self.set_pr(mergeable=value)
+                code, out, err = self.merge()
+                self.assertEqual((code, out, err),
+                                 (0, "El PR #101 sigue esperando tu revisión.\n", ""))
+                self.assertEqual((self.store.job_dir(JID) / "job.json").read_bytes(), job_json)
+
+    def test_conflicting_pr_with_sync_attempts_exhausted_goes_to_needs_human(self):
+        self.set_job(sync_attempts=2)
+        self.set_pr(mergeable="CONFLICTING")
+        reason = ("El PR #101 está en conflicto con origin/develop en GitHub y ya no quedan "
+                  "sincronizaciones: sync_attempts llegó a 3 de 3.")
+        self.assert_escalated(*self.merge(), 1, reason)
+        self.assertFalse(list(self.store.job_dir(JID).glob("feedback-*.md")))
+
+    def test_conflicting_merged_pr_is_still_a_merge(self):
+        self.set_pr(state="MERGED", headRefOid=self.sha, mergeable="CONFLICTING")
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "merged")
 
     def test_closed_unmerged_pr_goes_to_needs_human(self):
         self.set_pr(state="CLOSED")

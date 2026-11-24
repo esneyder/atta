@@ -215,6 +215,13 @@ class WriteTests(GuardBase):
 
 
 class PushTests(GuardBase):
+    def test_explicit_lease_is_still_denied_to_agents(self):
+        # F3.x S3: only the spine leases atta/<job>; an agent's explicit lease stays denied.
+        for cmd in ("git push --force-with-lease=refs/heads/atta/x:abc origin atta/x",
+                    f"git push --force-with-lease=refs/heads/atta/{JID}:abc origin atta/{JID}"):
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd))
+
     def test_push_to_job_branch_allowed(self):
         for cmd in (f"git push origin atta/{JID}", f"git push -u origin HEAD:atta/{JID}",
                     f"git push origin refs/heads/atta/{JID}:refs/heads/atta/{JID}",

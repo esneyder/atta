@@ -34,6 +34,15 @@ def work_branch(job_id: str, cfg: dict) -> str:
     return branch
 
 
+def owns_work_branch(branch: str, job_id: str, cfg: dict) -> bool:
+    """True when `branch` is exactly the job's own work branch and passes the push policy."""
+    try:
+        check_push_target(branch, cfg)
+        return branch == work_branch(job_id, cfg)
+    except (BranchRefused, InvalidId):
+        return False
+
+
 def check_pr_base(base_ref_name: str, cfg: dict) -> None:
     """Accept only the integration branch as PR base (as from `gh pr view --json baseRefName`)."""
     integration = cfg["integration_branch"]
