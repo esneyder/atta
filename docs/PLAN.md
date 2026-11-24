@@ -2,7 +2,7 @@
 
 > Tu colonia de agentes de software. Fuente de diseño: [`docs/design/arquitectura.md`](design/arquitectura.md).
 > Identidad: [`brand/README.md`](../brand/README.md).
-> Estado: F0, F1, F2, F2.x, F3 y F3.x hechas (F3.x: K7 validado; falta ver el issue `atta:ratchet` en una corrida del sandbox, `odd/tasks/f3x-sync-ratchet.md` T4); F4 y F2.y hechas y validadas en el sandbox (pendientes menores en F4.x, `odd/tasks/f4-ruteo.md` L19-L20, y en `odd/tasks/f2y-config.md` L10-L11). Atta se escribe desde cero.
+> Estado: F0, F1, F2, F2.x, F3 y F3.x hechas (F3.x validada en el sandbox: issue `atta:ratchet` #39, `odd/tasks/f3x-sync-ratchet.md` L11); F4 y F2.y hechas y validadas en el sandbox (pendientes menores en F4.x, `odd/tasks/f4-ruteo.md` L19-L20, y en `odd/tasks/f2y-config.md` L10-L11). Atta se escribe desde cero.
 
 ## 1. Concepto aplicado a la arquitectura
 
