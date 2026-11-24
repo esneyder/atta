@@ -466,6 +466,60 @@ class BuildContractTest(NextBase):
         self.assertEqual(len(open_items), 1)
         self.assertTrue(open_items[0].startswith("- ✗ «Exporta"))
 
+    def test_check_build_requires_the_quoted_criteria_of_spec_verbatim(self):
+        # F4.x S4: every «…» criterion of spec.md's acceptance section appears verbatim
+        # (whitespace aside) in build.md's Acceptance; a ✓ that is false is not detected.
+        spec = ("STATUS: READY\n\n## Summary\n\nX.\n\n## Acceptance criteria\n\n"
+                "From the issue, verbatim:\n\n1. «Exporta los pedidos filtrados.»\n"
+                "2. «Dividir por cero lanza\n   ZeroDivisionError.»\n\n"
+                "Added by the Guía:\n\n3. Un test cubre la lista vacía.\n\n"
+                "## Out of scope\n\n- «Paginar la exportación.»\n")
+        line = "- ✓ «Dividir por cero lanza ZeroDivisionError.» — tests/test_a.py::test_z\n"
+        complete = BUILD_OK.replace("## Risks", line + "\n## Risks")
+        self.assertEqual(nxt.check_build(complete, spec), ([], []))
+        missing = "criterio de spec.md ausente o reescrito en `## Acceptance` (cópialo tal cual)"
+        cases = {
+            "missing": (BUILD_OK, "«Dividir por cero lanza ZeroDivisionError.»"),
+            "reworded": (complete.replace("ZeroDivisionError", "ValueError"),
+                         "«Dividir por cero lanza ZeroDivisionError.»"),
+            "other criterion missing": (complete.replace("Exporta los pedidos", "Exporta pedidos"),
+                                        "«Exporta los pedidos filtrados.»"),
+        }
+        for name, (text, criterion) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(nxt.check_build(text, spec), ([f"{missing}: {criterion}"], []))
+        # Only the Acceptance section counts, not the same text elsewhere in build.md.
+        elsewhere = BUILD_OK.replace("## Risks\n\n- ninguno",
+                                     "## Risks\n\n- Dividir por cero lanza ZeroDivisionError.")
+        self.assertEqual(len(nxt.check_build(elsewhere, spec)[0]), 1)
+
+    def test_check_build_without_quoted_criteria_in_spec_is_unchanged(self):
+        for spec in ("", "STATUS: READY\n", "STATUS: READY\n\n## Acceptance criteria\n\n"
+                     "1. Exporta los pedidos.\n\n## Out of scope\n\n- «Paginar.»\n"):
+            for text in (BUILD_OK, "STATUS: DONE\n",
+                         BUILD_OK.replace("- ✓ «Exporta", "- ✗ «Exporta")):
+                with self.subTest(spec=spec, text=text[:30]):
+                    self.assertEqual(nxt.check_build(text, spec), nxt.check_build(text))
+
+    def test_missing_spec_criterion_respawns_the_cortadora_naming_it(self):
+        self.write("spec.md", "STATUS: READY\n\n## Acceptance criteria\n\n"
+                   "1. «Exporta los pedidos filtrados.»\n"
+                   "2. «Dividir por cero lanza ZeroDivisionError.»\n")
+        text = BUILD_OK.replace("## Risks", "- ✓ «Dividir por cero lanza ValueError.» — t\n\n"
+                                "## Risks")
+        self.write("round-1/build.md", text)
+        before = self.counters()
+        action = self.call_next()
+        self.assertSpawn(action, "atta-cortadora", "sonnet", "breaks the build.md contract: ",
+                         "criterio de spec.md ausente o reescrito en `## Acceptance` (cópialo "
+                         "tal cual): «Dividir por cero lanza ZeroDivisionError.»")
+        self.assertEqual(self.counters(), before)
+        self.rewrite(text, 5)
+        self.assertEqual(self.call_next(), self.run_action("advance", JID, "needs-human"))
+        # Copied verbatim, the same report goes on to publish.
+        self.rewrite(text.replace("ValueError", "ZeroDivisionError"), 10)
+        self.assertEqual(self.call_next(), self.run_action("publish", JID))
+
 
 class GateTest(NextBase):
     def setUp(self):
@@ -1199,8 +1253,9 @@ class CommandTest(NextBase):
         self.job["stage"] = "build"
         self.jobs.save(self.job)
         self.call("next", JID)
+        # F4.x S5: the tier recorded is the tier of the model it ran on (haiku is T1).
         self.assertEqual({k: self.pending()[k] for k in ("role", "model", "tier")},
-                         {"role": "cortadora", "model": "haiku", "tier": "T2"})
+                         {"role": "cortadora", "model": "haiku", "tier": "T1"})
         self.job["total_rounds"] = 2
         self.jobs.save(self.job)
         self.call("next", JID)
@@ -1237,6 +1292,86 @@ class CommandTest(NextBase):
         pending = self.pending()
         self.assertEqual((pending["role"], pending["model"]), ("vigia", json.loads(out)["model"]))
         self.assertEqual(nxt.mdl.table(self.cfg).tier_model(pending["tier"]), pending["model"])
+
+    def spawned(self, stage, risk="medium", reviewers=(CODE,), **fields):
+        """(role, model, tier) of each agent `atta next` records as pending in `stage`."""
+        self.routed(risk=risk, reviewers=reviewers, spec_review=True)
+        self.job = dict(self.job, stage=stage, pending_agent=None, **fields)
+        self.jobs.save(self.job)
+        code, out, err = self.call("next", JID)
+        self.assertEqual((code, err), (0, ""), out)
+        pending = self.pending()
+        return [(e["role"], e["model"], e["tier"])
+                for e in (pending if isinstance(pending, list) else [pending])]
+
+    def test_role_override_records_the_tier_of_its_model(self):
+        # F4.x S5 (#L20 f): the Jardinera resilience ran on opus and the event said T2.
+        resilience = {"reviewer": "resilience", "lenses": ["resilience"], "tier": "T2"}
+        self.cfg = config.with_defaults({"models": {"claude-code": {"roles": {
+            "jardinera-resilience": "opus", "exploradora": "sonnet", "guia": "opus",
+            "vigia": "haiku", "reina": "opus"}}}})
+        self.with_worktree()
+        self.write("spec.md", "STATUS: READY\n")
+        self.assertEqual(self.spawned("review", reviewers=(CODE, resilience), pr=7),
+                         [("jardinera-code", "sonnet", "T2"),
+                          ("jardinera-resilience", "opus", "T3")])
+        self.assertEqual(self.spawned("intake"), [("exploradora", "sonnet", "T2")])
+        # The Guía steps down to T1 at low risk, but its override is opus.
+        (self.dir / "spec.md").unlink()
+        self.assertEqual(self.spawned("spec", risk="low"), [("guia", "opus", "T3")])
+        self.write("spec.md", "STATUS: READY\n")
+        self.assertEqual(self.spawned("spec-review"), [("vigia", "haiku", "T1")])
+        self.assertEqual(self.spawned("approve", pr=7), [("reina", "opus", "T3")])
+
+    def test_override_on_a_model_of_no_tier_keeps_the_stage_tier(self):
+        self.cfg = config.with_defaults({"models": {"claude-code": {"roles": {
+            "exploradora": "claude-sonnet-4-5"}}}})
+        self.assertEqual(self.spawned("intake"), [("exploradora", "claude-sonnet-4-5", "T1")])
+
+    def test_overridden_role_falls_back_on_the_chain_of_its_model_tier(self):
+        # An opus override walks T3's chain; its fallback on sonnet records T2 (the model's
+        # tier) and chain_tier T3 (the chain it walks).
+        self.cfg = config.with_defaults({"models": {"claude-code": {
+            "roles": {"jardinera-code": "opus"},
+            "fallbacks": {"T2": ["haiku"], "T3": ["sonnet"]}}}})
+        self.with_worktree()
+        failures = {"stage": "review", "since": PAST, "agents": {"atta-jardinera-code": ["opus"]}}
+        self.assertEqual(self.spawned("review", risk="high", pr=7, model_failures=failures),
+                         [("jardinera-code", "sonnet", "T2")])
+        pending = self.pending()
+        entry = pending[0] if isinstance(pending, list) else pending
+        self.assertEqual(entry["chain_tier"], "T3")
+
+    def test_refutador_floor_still_follows_the_reviewers_stage_tier(self):
+        # The fallback changes the reviewer's recorded tier, not the Refutador's floor (G4).
+        self.cfg = config.with_defaults({"models": {"claude-code": {
+            "fallbacks": {"T3": ["sonnet"]}}}})
+        self.review_with_changes()
+        self.routed(risk="medium", reviewers=(CODE, SECURITY))
+        failures = {"stage": "review", "since": PAST, "agents": {"atta-soldado": ["opus"]}}
+        self.jobs.save(dict(self.job, model_failures=failures))
+        code, out, _ = self.call("next", JID)
+        self.assertEqual(json.loads(out)["agent"], "atta-refutador")
+        pending = self.pending()
+        refutador = [e for e in (pending if isinstance(pending, list) else [pending])
+                     if e["agent"] == "atta-refutador"][0]
+        self.assertEqual((refutador["model"], refutador["tier"]), ("opus", "T3"))
+
+    def test_refutador_floor_counts_a_role_override_with_its_stage_tier(self):
+        # A code reviewer overridden to opus still sets a T2 floor, as before F4.x S5.
+        self.cfg = config.with_defaults({"models": {"claude-code": {"roles": {
+            "jardinera-code": "opus"}}}})
+        self.routed(risk="medium", reviewers=(CODE,))
+        self.with_worktree()
+        self.job.update(stage="review", pr=7)
+        self.write("round-1/review-code.md", CHANGES)
+        self.jobs.save(self.job)
+        code, out, _ = self.call("next", JID)
+        self.assertEqual(json.loads(out)["agent"], "atta-refutador")
+        pending = self.pending()
+        refutador = [e for e in (pending if isinstance(pending, list) else [pending])
+                     if e["agent"] == "atta-refutador"][0]
+        self.assertEqual((refutador["model"], refutador["tier"]), ("sonnet", "T2"))
 
     def refute_events(self):
         return [e for e in events.read_events(self.dir) if e.get("event") == "refute"]

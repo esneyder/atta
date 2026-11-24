@@ -278,6 +278,13 @@ class Table:
             raise ModelsError(f"models.json no define {tier} para {self.runtime}.")
         return model
 
+    def tier_for(self, model: str, base: str) -> str:
+        """The tier whose model is `model` (F4.x S5): `base` when its model is it, else the
+        first tier of AVOID_ORDER that maps to it, else `base` (a model of no tier)."""
+        if self.tiers.get(base) == model:
+            return base
+        return next((t for t in AVOID_ORDER if self.tiers.get(t) == model), base)
+
     def chain(self, tier: str, primary: str | None = None) -> list[str]:
         """The fallback models of `tier` that are not `primary` (the tier model by default)
         and never cost more than it (S4, L4)."""

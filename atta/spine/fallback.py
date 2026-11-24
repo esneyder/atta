@@ -14,6 +14,10 @@ Under the job lock it checks that the agent is in job.json `pending_agent` for t
     {"ts", "job", "event": "model_fallback", "stage", "round" (build/gate/review/approve),
      "agent", "tier", "from_model", "to_model", "reason"}
 
+`tier` is the tier whose chain the agent walks: the entry's `chain_tier` when `atta next` put it
+on a fallback model (F4.x S5: its `tier` is then the tier of that model), else its `tier` (also
+an entry written before F4.x, without `chain_tier`).
+
 `from_model`/`to_model` (not `from`/`to`) keep the event out of every reader of stage
 transitions. `to_model` is the model `atta next` will spawn next (computed by next.plan, so the
 Vigía/Refutador avoid rules and escalation hold), or null when the tier's chain is spent.
@@ -112,6 +116,12 @@ def clear(jobs, jid: str, reset: dict) -> None:
         jobs.save(job)
 
 
+def chain_tier(entry: dict) -> str:
+    """The tier whose fallback chain a `pending_agent` entry walks (see the module docstring)."""
+    chain = entry.get("chain_tier")
+    return chain if chain in mdl.TIERS else entry["tier"]
+
+
 def _next_model(job: dict, job_dir, root, cfg: dict, agent: str, tier: str,
                 failed: list[str]) -> str | None:
     """The model `atta next` would spawn `agent` on with these failures (None: chain spent)."""
@@ -144,7 +154,7 @@ def cmd_model_failed(args, cfg, jobs) -> int:
         if entry is None:
             return _refuse(f"{agent} no está pendiente en {jid} (etapa {job['stage']}): solo se "
                            "registra la falla de un agente que `atta next` lanzó en esta etapa.")
-        model, tier = entry["model"], entry["tier"]
+        model, tier = entry["model"], chain_tier(entry)
         if model in failed_models(job, agent):
             print(f"{agent} ya tenía registrada la falla en {model} en {jid}; no cambié nada.")
             return OK

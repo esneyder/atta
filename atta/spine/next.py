@@ -26,9 +26,11 @@ comments of a decision (ACCEPT, NEEDS-INFO, REJECT, ESCALATE) come as these comm
 the skill itself (T11).
 
 Telemetry (T12): `atta next` writes `pending_agent` in job.json when the action is a
-spawn ({stage, role, agent, model, tier, at}) or a spawn-group (a list of those, merged by agent
-so a reviewer retry keeps the ones that already finished; a single spawn in a stage that already
-holds such a list, the Refutador in review, joins it). `machine.advance` moves it to the event
+spawn ({stage, role, agent, model, tier, at}; `tier` is the tier of the model it runs on, and an
+agent on a fallback model adds `chain_tier`, the tier whose chain it walks, F4.x S5) or a
+spawn-group (a list of those, merged by agent so a reviewer retry keeps the ones that already
+finished; a single spawn in a stage that already holds such a list, the Refutador in review,
+joins it). `machine.advance` moves it to the event
 that leaves the stage and clears it. Its only other writes are the `refute` event (below),
 job.json `build_retry` (build.md contract, below), on low risk the rule's decision.md and
 `reina_rule` event (Reina determinista, below) and clearing an agent's `model_failures` when
@@ -308,11 +310,36 @@ def _acceptance_items(body: str) -> list[str]:
     return items
 
 
-def check_build(text: str) -> tuple[list[str], list[str]]:
+_QUOTED = re.compile(r"«([^«»]+)»")
+MISSING_CRITERION = ("criterio de spec.md ausente o reescrito en `## Acceptance` "
+                     "(cópialo tal cual)")
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+def spec_criteria(spec: str) -> list[str]:
+    """The «…» criteria of spec.md's `## Acceptance…` section, whitespace-normalized, in order
+    (F4.x S4); the same text quoted elsewhere in spec.md (`## Out of scope`) does not count."""
+    out: list[str] = []
+    for name, body in build_sections(spec):
+        if name.lower().startswith("acceptance"):
+            for m in _QUOTED.finditer(body):
+                criterion = _squash(m.group(1))
+                if criterion and criterion not in out:
+                    out.append(criterion)
+    return out
+
+
+def check_build(text: str, spec: str = "") -> tuple[list[str], list[str]]:
     """(problems, open criteria) of a `STATUS: DONE` build.md against the contract (G10).
 
     `problems` names what breaks the format (in English, for the Cortadora's prompt); `open`
-    lists the acceptance criteria marked ✗."""
+    lists the acceptance criteria marked ✗. With the job's `spec` text, every «…» criterion
+    of its acceptance section must appear verbatim (whitespace aside) in `## Acceptance`
+    (F4.x S4); that problem is in Spanish and names the criterion. A false ✓ is not
+    detected here."""
     sections = build_sections(text)
     names = [name for name, _ in sections]
     body = build_section_map(text)
@@ -337,6 +364,9 @@ def check_build(text: str) -> tuple[list[str], list[str]]:
             problems.append("acceptance lines without ✓ or ✗: "
                             + "; ".join(f"«{i}»" for i in unmarked))
         open_items = [i for i in items if (m := _ACCEPT_MARK.match(i)) and m.group(1) == "✗"]
+        accepted = _squash(body["Acceptance"])
+        problems.extend(f"{MISSING_CRITERION}: «{c}»" for c in spec_criteria(spec)
+                        if c not in accepted)
     return problems, open_items
 
 
@@ -460,14 +490,17 @@ class _Ctx:
 
     def tier(self, role: str, *, tier: str | None = None, escalate: bool = False,
              model: str | None = None) -> str:
-        """The tier a spawn runs at: T3 on escalation, else the router's or the role's tier; a
-        model moved off its tier (the Vigía avoiding the Guía) reports the tier it came from."""
+        """The tier of the model a spawn runs on (F4.x S5), recorded in `pending_agent` and
+        whose fallback chain it walks: T3 on escalation; else the router's or the role's tier,
+        unless the model is another tier's (a role override, the Vigía avoiding the Guía),
+        which reports that tier. `model` defaults to the role's model. A fallback model
+        records its own tier and keeps this one as `chain_tier` (`_failover`)."""
         if escalate:
             return "T3"
         base = tier or self.table.tier_of(role)
-        if model is None or role in self.table.roles or self.table.tiers.get(base) == model:
-            return base
-        return next((t for t in mdl.AVOID_ORDER if self.table.tiers.get(t) == model), base)
+        if model is None:
+            model = self.model(role, tier=base)
+        return self.table.tier_for(model, base)
 
 
 def _table(cfg: dict, models) -> mdl.Table:
@@ -478,8 +511,8 @@ def _table(cfg: dict, models) -> mdl.Table:
     return mdl.Table(models)  # a bare tier map (no role overrides)
 
 
-_INTERNAL = ("tier", "avoid", "build_retry", "refute", "rule_decision", "rule_fallback",
-             "model_reset", "restart")
+_INTERNAL = ("tier", "chain_tier", "avoid", "build_retry", "refute", "rule_decision",
+             "rule_fallback", "model_reset", "restart")
 
 
 def _public(action: dict) -> dict:
@@ -490,7 +523,8 @@ def _public(action: dict) -> dict:
         return {k: v for k, v in action.items() if k not in _INTERNAL}
     if action["action"] == "spawn-group":
         return {"action": "spawn-group",
-                "agents": [{k: v for k, v in a.items() if k not in ("tier", "avoid", "restart")}
+                "agents": [{k: v for k, v in a.items()
+                            if k not in ("tier", "chain_tier", "avoid", "restart")}
                            for a in action["agents"]]}
     return action
 
@@ -506,7 +540,12 @@ def _failover(c: _Ctx, spawn: dict) -> dict | None:
         return spawn
     model = c.table.fallback(spawn["tier"], failed, primary=failed[-1],
                              avoid=spawn.get("avoid"))
-    return None if model is None else dict(spawn, model=model)
+    if model is None:
+        return None
+    # F4.x S5: `tier` is the tier of the model it runs on; `chain_tier` the chain it walks
+    # (a chain model of no tier keeps the chain's tier).
+    return dict(spawn, model=model, tier=c.table.tier_for(model, spawn["tier"]),
+                chain_tier=spawn["tier"])
 
 
 def _spent(c: _Ctx, spawn: dict) -> dict:
@@ -664,7 +703,7 @@ def _build_retry_used(c: _Ctx) -> dict | None:
 def _build_contract(c: _Ctx, build: Path) -> dict | None:
     """G10: None when build.md keeps the contract with every criterion ✓; else the one retry
     of the Cortadora (same round), or needs-human when that retry came back still wrong."""
-    problems, open_items = check_build(_read_text(build))
+    problems, open_items = check_build(_read_text(build), _read_text(c.dir / SPEC_FILE))
     if not problems and not open_items:
         return None
     mtime = _mtime(build)
@@ -827,15 +866,26 @@ def _refute(c: _Ctx, judged: list) -> dict:
     return action
 
 
+def _floor_tier(c: _Ctx, spec: dict, spawn: dict) -> str | None:
+    """The tier a reviewer counts with for the Refutador's floor: its spawn's tier, except a
+    role override, which counts with its stage tier as before F4.x S5 (that change is about
+    the tier recorded, not about how strong the Refutador must be)."""
+    role = spawn["agent"][len("atta-"):]
+    if role not in c.table.roles:
+        return spawn.get("tier")
+    tier, escalate = c.stage(role, tier=spec["tier"], reviewer=spec["reviewer"])
+    return "T3" if escalate else tier
+
+
 def _refutador_spawn(c: _Ctx, judged: list, out: Path, again: Path | None = None) -> dict:
     # The models the reviewers really ran on: a reviewer that fell back (F4 T4) counts with
     # its fallback model.
-    spawns = [_failover(c, s) or s
-              for s in (_reviewer_spawn(c, spec, path) for spec, path, _found in judged)]
+    planned = [(spec, _reviewer_spawn(c, spec, path)) for spec, path, _found in judged]
+    spawns = [_failover(c, s) or s for _spec, s in planned]
     avoid = [s["model"] for s in spawns]
     # Quality first: the Refutador can overturn a finding, so it is never weaker than the
     # strongest reviewer it judges, and runs on T3 when the job is high risk.
-    tiers = [s.get("tier") for s in spawns if s.get("tier") in mdl.TIERS]
+    tiers = [t for t in (_floor_tier(c, spec, s) for spec, s in planned) if t in mdl.TIERS]
     floor = max(tiers, key=mdl.TIERS.index) if tiers else None
     high = _risk(c.job) == "high"
     model = c.model("refutador", avoid=avoid, floor=floor, escalate=high)
@@ -1098,8 +1148,11 @@ def cmd_save_artifact(args, cfg, jobs) -> int:
 
 
 def _entry(stage: str, spawn: dict, at: str) -> dict:
-    return {"stage": stage, "role": spawn["agent"][len("atta-"):], "agent": spawn["agent"],
-            "model": spawn["model"], "tier": spawn["tier"], "at": at}
+    entry = {"stage": stage, "role": spawn["agent"][len("atta-"):], "agent": spawn["agent"],
+             "model": spawn["model"], "tier": spawn["tier"], "at": at}
+    if spawn.get("chain_tier") in mdl.TIERS:
+        entry["chain_tier"] = spawn["chain_tier"]  # F4.x S5: on a fallback chain
+    return entry
 
 
 def _clock(previous, job: dict, stage: str, spawn: dict, now: str) -> str:

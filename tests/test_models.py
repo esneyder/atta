@@ -495,6 +495,15 @@ class StageTierTest(unittest.TestCase):
             "jardinera-ux", tier="T2", escalate=False, risk="high", cortadora="sonnet"),
             "sonnet")
 
+    def test_tier_for_names_the_tier_of_the_model(self):
+        # F4.x S5: base first, then AVOID_ORDER (T1 before T0 for a shared haiku), else base.
+        tab = self.table()
+        self.assertEqual(tab.tier_for("sonnet", "T2"), "T2")
+        self.assertEqual(tab.tier_for("opus", "T2"), "T3")
+        self.assertEqual(tab.tier_for("haiku", "T0"), "T0")
+        self.assertEqual(tab.tier_for("haiku", "T2"), "T1")
+        self.assertEqual(tab.tier_for("claude-opus-4-1", "T2"), "T2")
+
     def test_resolve_ceiling_bounds_the_avoid_search(self):
         tab = self.table()
         self.assertEqual(tab.resolve("refutador", avoid={"haiku"}, floor="T1"), "sonnet")
