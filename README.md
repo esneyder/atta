@@ -87,7 +87,8 @@ funciona igual: los issues son las hojas, el repositorio es el hormiguero y el c
 
 Atta se construye por fases (ver [`docs/PLAN.md`](docs/PLAN.md)). **F1**, **F2**, **F2.x**, **F2.y**,
 **F3**, **F3.x** y **F4** están terminadas: la colonia corrió de punta a punta en el repo de prueba
-(`esneyder/atta-sandbox`). Sigue F5 (Pi como segundo runtime).
+(`esneyder/atta-sandbox`). **F4.x** (pendientes de las corridas F4 y F3.x) está en curso: el código
+está hecho y falta validarlo en el sandbox. Sigue F5 (Pi como segundo runtime).
 
 | Pieza | Estado |
 |---|---|
@@ -112,6 +113,7 @@ Atta se construye por fases (ver [`docs/PLAN.md`](docs/PLAN.md)). **F1**, **F2**
 | Memoria: la Cultivadora convierte las `PREVENTION:` en lecciones (`atta/memory/lessons.md`) | ✅ F3 |
 | Contratos: `build.md` con secciones fijas, PR con plantilla, tope de `REVISE` de la Vigía | ✅ F3 |
 | Diff antes y después del sync; issue `atta:ratchet` para las lecciones | ✅ F3.x |
+| Pendientes de F4: `untested` sin falsos positivos por comentarios, espera por `BLOCKED-BY` aparte, criterios del spec tal cual, comando faltante como falla de configuración | ⏳ F4.x (falta el sandbox) |
 | Configuración interactiva (menús `/atta:*` en Claude Code) | ⏳ F2.y |
 | Ruteo de modelos por etapa e intento, Reina determinista en riesgo bajo | ⏳ F4 |
 | Pi como segundo runtime, benchmark, conductor sin LLM | ⏳ F5-F7 |
@@ -234,12 +236,14 @@ falla, `needs-human`. Un `CHANGES` con solo hallazgos `minor` no abre ronda: el 
 (`path:line` en sus `review-*.md`) y con `FILES:` del spec. Lo que sale de ahí queda como aviso en
 `## Alcance` («la corrección salió del alcance de los hallazgos»); con `scope.enforce: true` el
 Filtro falla (sección 9). Si la ronda anterior no tiene hallazgos con `path:line` (por ejemplo, no
-pasó el Filtro), la corrección no se acota.
+pasó el Filtro), la corrección no se acota. Un hallazgo citado con ruta absoluta dentro del proyecto
+o de su worktree (`<raíz>/.worktrees/<job>/src/a.py:3`) cuenta como la ruta relativa al proyecto
+(`src/a.py`); una ruta absoluta fuera del proyecto no se usa (F4.x).
 
-**Fallas de configuración del Filtro.** Un `FAIL` con `KIND: config` (sin checks, sin shell, sin
-`ast-grep`, checkout principal fuera de `develop`) no es culpa de la Cortadora: el job va a
-`needs-human` sin tocar ningún contador y, cuando una persona lo corrige, `atta next` vuelve a
-correr el Filtro en la **misma ronda** (sección 6).
+**Fallas de configuración del Filtro.** Un `FAIL` con `KIND: config` (sin checks, sin shell, sin el
+primer comando de un check, sin `ast-grep`, checkout principal fuera de `develop`) no es culpa de la
+Cortadora: el job va a `needs-human` sin tocar ningún contador y, cuando una persona lo corrige,
+`atta next` vuelve a correr el Filtro en la **misma ronda** (sección 6).
 
 **Tope de la Vigía.** `spec_reviews` (en `job.json`) cuenta los `REVISE` de la Vigía. Los dos
 primeros devuelven el job a `spec`; desde el segundo, el prompt de la Vigía le pide `REVISE` solo
@@ -254,7 +258,12 @@ No gasta rondas de build.
 criterio está en ✗, el job no publica ni va al Filtro: `atta next` lanza a la Cortadora **una vez
 más** en la misma ronda (sin tocar contadores) con una nota que dice qué falta o qué criterios
 quedan abiertos, y guarda ese reintento en `job.json` (`build_retry`). Si el `build.md` reescrito
-sigue mal, el job pasa a `needs-human`.
+sigue mal, el job pasa a `needs-human`. Cada criterio entre «…» de la sección `## Acceptance` de
+`spec.md` tiene que aparecer **tal cual** (sin contar espacios) en el `## Acceptance` de `build.md`:
+si falta o está reescrito (`ValueError` donde el spec dice `ZeroDivisionError`), `build.md` es
+inválido, con el mismo reintento y la nota «criterio de spec.md ausente o reescrito en `## Acceptance`
+(cópialo tal cual): «…»» (F4.x). En riesgo bajo, la regla de la Reina deja ese job a la Reina LLM.
+La espina no detecta un ✓ falso: la Reina lee el test detrás de cada ✓.
 
 ### 2.6 Ruteo por riesgo
 
@@ -273,7 +282,10 @@ cada reviewer decide su modelo en Claude Code (sección 5.4).
 **Riesgo efectivo.** El riesgo de la Exploradora es un piso, no la última palabra. Cuando el Filtro
 pasa una ronda (`checks`), clasifica el diff real con `risk_rules` (sección 10) en categorías de
 alto riesgo: datos irreversibles, seguridad, contratos consumidos y concurrencia (suben a alto),
-entrega/CI y código sin test (suben a medio). El **riesgo efectivo** es el mayor entre el de la
+entrega/CI y código sin test (suben a medio). Un archivo modificado cuyo cambio solo toca líneas
+vacías o comentarios (en un lenguaje conocido), o en `.py` solo docstrings, comentarios o líneas
+vacías (mismo AST), no cuenta como código sin test (`untested`, F4.x); los detalles están en la
+sección 9. El **riesgo efectivo** es el mayor entre el de la
 Exploradora, el de las reglas y el efectivo anterior: nunca baja. Si queda por encima del riesgo con
 el que se ruteó el job, el router vuelve a planear los reviewers con ese riesgo y las mismas
 superficies (en alto entran el Soldado y el Rastreador), y el resumen del Filtro lo dice: «El Filtro
@@ -630,7 +642,7 @@ atta models fallback T3 --clear        # sin cadena (el valor de fábrica)
 - `/atta` corre `atta model-failed <job> --agent <agente> --reason quota|rate-limit|network`
   cuando el Agent tool devuelve ese error. Queda un evento `model_fallback` en `events.jsonl`
   (sección 11) y `atta next` relanza al agente con el siguiente modelo de la cadena de **su** tier
-  (la de T3 cuando escala). La Vigía y el Refutador siguen sin repetir el modelo de la Guía o de
+  (la de T3 cuando escala; con un modelo propio del rol, la del tier de ese modelo, F4.x). La Vigía y el Refutador siguen sin repetir el modelo de la Guía o de
   los revisores mientras la cadena tenga otro.
 - Cadena agotada (o sin cadena): el job **no sube de modelo**. `atta next` espera (`wait`) con el
   motivo y olvida esas fallas, así que el próximo `/atta run` vuelve a intentar con el modelo de
@@ -926,11 +938,12 @@ no hace nada. Ver sección 8.
 Decide la siguiente acción del job e imprime una línea JSON (sección 5.2). Sale `0`. Si el job está
 en una etapa activa y su `BLOCKED-BY` (el que guarda `atta route`) tiene un bloqueante sin mergear, imprime `wait`
 con el motivo («espera a #7: todavía no está mergeado.»; con un bloqueante rechazado o una
-dependencia circular, «decide una persona») y no escribe nada, igual que `atta queue` y `atta
-start`; solo ahí consulta GitHub (una vez por bloqueante sin job abierto; un issue que `gh` no puede
+dependencia circular, «decide una persona»), igual que `atta queue` y `atta start`; de esa espera
+solo escribe `blocked_since` en `job.json` la primera vez, y al desbloquearse suma la espera a
+`blocked_s` (F4.x, sección 11); solo ahí consulta GitHub (una vez por bloqueante sin job abierto; un issue que `gh` no puede
 leer cuenta como abierto). Si el evento `reina_rule` de «la regla dejó la decisión a la Reina» no se
 puede escribir, avisa por stderr y imprime igual el lanzamiento de la Reina. Lo
-único que escribe es `pending_agent` en `job.json` cuando la acción lanza agentes (sección 11),
+demás que escribe es `pending_agent` en `job.json` cuando la acción lanza agentes (sección 11),
 `build_retry` cuando pide a la Cortadora rehacer un `build.md` que no cumple el contrato (sección
 2.5), el evento `refute` del Refutador y, al imprimir el `wait` de una cadena de fallback agotada,
 borra las fallas de ese agente (`model_fallback`, sección 5.4). Si `atta model-failed` registró
@@ -956,7 +969,9 @@ Ejemplo recién creado el job:
 Lo corre `/atta` (nunca un subagente: el guard lo deniega dentro de un subagente) cuando el Agent
 tool falla por cuota, rate limit o red; **nunca** por contexto. Bajo el lock del job verifica que
 el agente esté en `pending_agent` de la etapa actual, guarda el modelo que falló en `job.json`
-(`model_failures`) y agrega un evento `model_fallback`. Sale `0`:
+(`model_failures`) y agrega un evento `model_fallback`. La cadena es la del tier que el agente
+recorre: `chain_tier` de `pending_agent` si ya corre en un modelo de fallback, si no su `tier`
+(también en entradas anteriores a F4.x, sin `chain_tier`). Sale `0`:
 
 ```text
 atta-cortadora falló en opus por cuota en 12-agregar-exportacion-a-csv: el próximo intento usa sonnet (cadena de fallback de T3).
@@ -1040,7 +1055,10 @@ Sin subcomando lista las lecciones de `atta/memory/lessons.md` (nombre, veces, s
 la regla). `harvest <job>` agrega las `PREVENTION:` de las revisiones del job con hallazgos
 (`CHANGES`, o `PASS` con hallazgos menores) que conservan al menos un hallazgo que el Refutador no
 refutó; un `PASS` sin hallazgos no cuenta. Una lección parecida se actualiza en vez de repetirse, y
-cosechar dos veces el mismo job no agrega nada. `atta merge` lo corre solo al cerrar un job
+cosechar dos veces el mismo job no agrega nada. Los casos de cada lección son las rutas de los
+hallazgos relativas al proyecto: una ruta absoluta dentro del proyecto o de su worktree
+(`<raíz>/.worktrees/<job>/calc.py`) se guarda como `calc.py`, y una absoluta fuera del proyecto no
+se guarda (F4.x). `atta merge` lo corre solo al cerrar un job
 (sección 8), y después abre el issue `atta:ratchet` de cada lección mecanizable vista en 2 o más
 jobs (paso 18). Sale `2` si `lessons.md` está dañado, el job no existe o el id es inválido.
 
@@ -1159,7 +1177,10 @@ solo lectura (se cambia con `atta profiles`).
 #### `save-artifact <job> intake --from-reply <archivo>`
 
 Extrae el texto entre `<<<ATTA-ARTIFACT` y `ATTA-ARTIFACT>>>` de la respuesta de la Exploradora
-(`-` = stdin), valida la cabecera y escribe `intake.md`: «La Exploradora decidió ACCEPT en <job>:
+(`-` = stdin), valida la cabecera y escribe `intake.md`. `/atta` guarda antes la respuesta en un
+archivo de la carpeta temporal del sistema (la resuelve primero con `echo "$TMPDIR"` o `%TEMP%` /
+`$env:TEMP`, porque el Write tool no expande variables; el guard niega el scratchpad de Claude Code)
+y le pasa esa ruta (F4.x): «La Exploradora decidió ACCEPT en <job>:
 intake.md guardado.». Solo en la etapa `intake`. Sale `2` sin escribir nada si la respuesta no trae
 exactamente un bloque («La respuesta no trae el artefacto entre «<<<ATTA-ARTIFACT» y
 «ATTA-ARTIFACT>>>». No se escribió intake.md.») o si la cabecera es inválida.
@@ -1403,8 +1424,16 @@ niega todo `--force*`, también `--force-with-lease=…`.
 0. **Configuración** (falla de tipo `config`, la arregla una persona): el checkout principal está
    en `develop` (si existe `develop` local u `origin/develop`; si no: «El checkout principal está en
    «main»; Atta lee checks.json y las reglas desde develop. Corre: git switch develop»),
-   `atta/checks.json` se puede leer, es válido y tiene checks, y el shell de cada check está en el
-   `PATH`. También son `config` las reglas de `ast-grep` sin el binario o que no pasan sus propios
+   `atta/checks.json` se puede leer, es válido y tiene checks, el shell de cada check está en el
+   `PATH` y el **primer comando** de cada check existe (F4.x): se busca en el `PATH` como lo haría
+   el shell (`shutil.which`, con `PATHEXT` en Windows) y, si falta, el Filtro no corre nada:
+   «No se encontró el comando «pytest» en el PATH de este equipo (check «tests»). Instálalo o
+   corrige atta/checks.json en el checkout principal.». Un script con ruta (`./scripts/ci.sh`) solo
+   cuenta como faltante si no está ni en el checkout principal ni en el worktree. Nunca se marcan
+   los builtins del shell (`cd`, `echo`, cmdlets y alias de PowerShell), los prefijos
+   `VAR=valor` ni un primer comando con expansiones o sintaxis compleja (`$(…)`, `$X`, grupos). Un
+   comando que existe y aun así sale `127` sigue siendo una falla `code`. El siguiente `/atta run`
+   vuelve a correr el Filtro solo cuando el comando ya existe. También son `config` las reglas de `ast-grep` sin el binario o que no pasan sus propios
    tests. Una falla `config` no corre nada más y nunca gasta ronda: `atta next` manda el job a
    `needs-human` y, corregida, repite el Filtro en la misma ronda. Todo lo demás (rutas
    protegidas, worktree sucio, alcance con `scope.enforce`, hallazgos de `ast-grep`, un check que
@@ -1441,6 +1470,22 @@ niega todo `--force*`, también `--force-with-lease=…`.
 8. **Riesgo** (solo `checks` que pasa): clasifica el diff con `risk_rules`, escribe `## Riesgo` y
    guarda en `job.json` el riesgo efectivo; si sube, vuelve a planear los reviewers (sección 2.6).
    Un `FAIL` y `merge-checks` no tocan el riesgo.
+
+   **`untested` y los cambios cosméticos** (F4.x). Un archivo modificado (mismo modo, archivo
+   normal) cuyo cambio solo toca líneas vacías o comentarios en un lenguaje conocido, o, en `.py`,
+   solo docstrings, comentarios o líneas vacías (el AST sin docstrings es el mismo), no cuenta para
+   `untested`. Ante la duda cuenta como código:
+   - los comentarios con efecto cuentan: shebang, en Go `//go:`, `// +build`, `//export` y cgo
+     (`// #`), `@ts-` y pragmas de JS/TS, magic comments de Ruby y `#{`, `#requires` de
+     PowerShell, anotaciones `@` de PHP;
+   - un cambio solo de comentarios cuenta igual si el archivo tiene strings multilínea, heredocs,
+     JSX, cgo, líneas que siguen con `\` o un `/*` sin cerrar; en Rust, shell, Ruby, PHP, PowerShell
+     y YAML, siempre que las líneas de código tengan comillas;
+   - una extensión desconocida, un `.py` que no parsea, un cambio de modo, un renombre y los
+     archivos nuevos o borrados siguen contando.
+
+   Las demás categorías siguen mirando las líneas agregadas, comentarios incluidos. La regla de la
+   Reina en riesgo bajo usa la misma evaluación.
 
 Si el Filtro pasa con avisos, el resumen los nombra («Avisos en checks.md: alcance.»).
 
@@ -1610,7 +1655,8 @@ muestran el dashboard y el PR.
 | `risk_escalation` | El mensaje del Filtro cuando subió el riesgo («El Filtro subió el riesgo a alto: …») |
 | `gate_failure` | `{kind: "config", reason}` mientras el Filtro está detenido por configuración (sección 9); otro resultado lo borra |
 | `build_retry` | El reintento del contrato de `build.md`: `{round, since, mtime}` (sección 2.5) |
-| `pending_agent` | Lo que `atta next` decidió al lanzar agentes en la etapa actual: `{stage, role, agent, model, tier, at}`, o una lista de esos para los reviewers en paralelo. Lo consume y borra la siguiente transición |
+| `pending_agent` | Lo que `atta next` decidió al lanzar agentes en la etapa actual: `{stage, role, agent, model, tier, at}`, o una lista de esos para los reviewers en paralelo. Lo consume y borra la siguiente transición. `tier` es el del modelo con el que corre el agente (F4.x): un modelo propio del rol (`models set --role`) registra el tier de ese modelo y recorre la cadena de fallback de ese tier; en un modelo de fallback se agrega `chain_tier`, el tier de la cadena que recorre (`atta model-failed` y `model_fallback` usan ese). Un modelo propio del rol no cambia el tier mínimo del Refutador |
+| `blocked_since`, `blocked_s` | Espera por un bloqueante de `BLOCKED-BY` en la etapa actual (F4.x): `atta next` escribe `blocked_since` la primera vez que espera y, al desbloquearse, suma esa espera a `blocked_s`. La siguiente transición la pasa al evento y borra los dos; faltan si el job nunca esperó |
 | `model_failures` | Los modelos en que cada agente falló por cuota, rate limit o red (`atta model-failed`): `{stage, since, agents: {agente: [modelos]}}`. Solo cuenta en la entrada a la etapa que nombra (sección 5.4) |
 | `stage_timeouts` | Los timeouts de etapa ya reportados por agente (`atta next`): `{stage, since, agents: {agente: n}}`. 1 = reintentado, 2 = dejado a una persona; solo cuenta en la entrada a la etapa que nombra |
 
@@ -1623,10 +1669,21 @@ muestran el dashboard y el PR.
 ```
 
 `duration_s` es el tiempo que el job pasó en la etapa que deja. `model`, `tier`, `agent`, `models`,
-`tokens_*` y `cost_usd` son opcionales. Con esto el dashboard calcula tiempos por etapa y costo.
+`tokens_*`, `cost_usd` y `blocked_s` son opcionales. Con esto el dashboard calcula tiempos por
+etapa y costo.
+
+`blocked_s` (F4.x) son los segundos que el job esperó en esa etapa a un bloqueante de `BLOCKED-BY`
+sin mergear, en cualquier etapa; `duration_s` ya no los incluye, así que la mediana por etapa queda
+limpia. Falta si el job nunca esperó. Los límites de etapa (`stage_timeouts_s`) siguen midiendo la
+etapa entera.
+
+```json
+{"ts": "2025-06-05T08:45:00Z", "job": "20-exportar-pdf", "from": "intake", "to": "spec",
+ "duration_s": 70, "blocked_s": 2499, "model": "haiku", "tier": "T1", "agent": "atta-exploradora"}
+```
 
 Cuando la etapa que se deja la hizo un agente lanzado por `atta next`, el evento lleva su `model`,
-`tier` y `agent` (tomados de `pending_agent`); los reviewers en paralelo dejan en el evento
+`tier` y `agent` (tomados de `pending_agent`; `tier` es el del modelo con el que corrió); los reviewers en paralelo dejan en el evento
 `review → …` una lista `models` de `{agent, model, tier}`:
 
 ```json
@@ -1649,7 +1706,8 @@ cuando `atta next` actúa sobre el veredicto del Refutador:
 
 `model_fallback` tampoco es una transición: lo escribe `atta model-failed` (sección 7.3) cuando un
 agente falla por cuota, rate limit o red. Lleva `from_model` y `to_model` (no `from`/`to`), y
-`to_model` es `null` cuando la cadena se agotó; `round` solo en build, gate, review y approve:
+`to_model` es `null` cuando la cadena se agotó; `round` solo en build, gate, review y approve.
+Su `tier` es el de la cadena que recorre el agente (`chain_tier` de `pending_agent`, o su `tier`):
 
 ```json
 {"ts": "2025-06-05T08:10:00Z", "job": "1-agregar-la-funcion-de", "event": "model_fallback",
@@ -1685,7 +1743,9 @@ Abre <http://127.0.0.1:8765/>.
 - **Detalle del job**: clic en una tarjeta (o `#job=<id>` en la URL) muestra rondas, veredictos,
   modelos, tiempo por etapa, costo y los artefactos con su `## Summary`.
 - **Estadísticas**: jobs activos, los que te necesitan, tasa de merge, costo total y mediana de
-  tiempo por etapa.
+  tiempo por etapa. Junto a la mediana de una etapa, «· bloqueado X» es la mediana de la espera
+  por `BLOCKED-BY` entre los jobs que esperaron en esa etapa (F4.x); el detalle del job también
+  muestra su espera por etapa.
 - **Tema** claro u oscuro con el botón de arriba; respeta *reducir movimiento*.
 - Se actualiza cada 5 s y se pausa cuando la pestaña no está visible.
 
@@ -1693,7 +1753,7 @@ Abre <http://127.0.0.1:8765/>.
 
 | Ruta | Devuelve |
 |---|---|
-| `GET /api/jobs` | Todos los jobs con etapa, rondas, veredictos, tiempos y estadísticas globales |
+| `GET /api/jobs` | Todos los jobs con etapa, rondas, veredictos, tiempos y estadísticas globales; `jobs[].blocked` y `stats.blocked` son la espera por `BLOCKED-BY` por etapa (segundos), fuera de los tiempos |
 | `GET /api/jobs/<id>/files` | Artefactos `.md` del job con su primera línea y su `## Summary` |
 | `GET /api/jobs/<id>/file?path=<ruta>` | Contenido de un artefacto `.md` del job, como texto plano |
 
@@ -1935,6 +1995,7 @@ cambia nada; revisa, en orden:
 | `atta` y `atta-board` en el `PATH` | `✗`: agrega la carpeta `Scripts` de ese Python al `PATH` o `pipx ensurepath` (sin `atta` el hook del guard no bloquea nada) |
 | Python de Atta con pip | `⚠`: para actualizar usa `pipx` o un Python con pip |
 | Repo git, `atta/config.json` válido, `atta/checks.json` con al menos un check | `✗`: sin checks el Filtro siempre falla (sección 4.2) |
+| El shell y el primer comando de cada check de `atta/checks.json` en el `PATH` (F4.x; la misma búsqueda que el Filtro, sección 9) | `⚠`: el Filtro se detiene por configuración (`needs-human`, sin gastar ronda); instálalo o corrige `atta/checks.json` en el checkout principal |
 | Si tu `config.json` no define `routing_matrix`: el routing por defecto cambió (modelos por riesgo, F4) | `⚠`: con `"routing_matrix": true` aceptas la matriz y con `false` conservas el routing de antes (solo una persona edita ese archivo); `atta models` muestra el efecto |
 | Si tu `config.json` tiene un `routing` propio, que incluya al Rastreador en riesgo alto | `⚠`: si nunca lo editaste, borra la clave `routing`; si es tuyo, agrega el reviewer `rastreador` (T3) a `high` |
 | Si hay `sgconfig.yml`, el binario `ast-grep` (o `sg`) en el `PATH` | `⚠`: sin él el Filtro falla por configuración; instálalo o quita `sgconfig.yml` del checkout principal |
@@ -1952,10 +2013,14 @@ cambia nada; revisa, en orden:
 Atta doctor: C:\code\mi-app
 ✓ atta está en el PATH (C:\Python311\Scripts\atta.exe)
 …
+✓ atta/checks.json tiene 2 checks
+⚠ No se encontró el comando «ruff» en el PATH de este equipo (check «lint»): el Filtro no va a correr (needs-human)
+    → Instálalo o corrige atta/checks.json en el checkout principal.
+…
 ✗ faltan labels de Atta en el repo: atta:needs-review, atta:ratchet
     → Corre atta init en tu terminal: crea las labels que faltan.
 …
-Resumen: 18 bien, 0 avisos, 1 falla.
+Resumen: 18 bien, 1 aviso, 1 falla.
 Corrige lo marcado con ✗ antes de correr /atta.
 — Atta
 ```
@@ -1986,6 +2051,7 @@ Corrige lo marcado con ✗ antes de correr /atta.
 | `./atta.sh: Permission denied` | `chmod +x atta.sh` |
 | El Filtro falla con «no tiene checks» | `atta/checks.json` está vacío a propósito (`atta doctor` lo marca): agrega los checks del proyecto. Si en `origin/develop` sí tiene checks, el checkout principal está en otra rama (p. ej. `main`): `git switch develop` |
 | El Filtro falla con «El checkout principal está en «main»…» | Atta lee `checks.json` y las reglas del checkout principal: corre `git switch develop` ahí |
+| El Filtro falla con «No se encontró el comando «X» en el PATH de este equipo…» | El primer comando de ese check no existe en esta máquina (`atta doctor` lo avisa): instálalo o corrige `atta/checks.json` en el checkout principal (por ejemplo `python3` en vez de `python`) y corre `/atta run`; no gastó ronda |
 | Un job quedó en `needs-human` por una falla de configuración del Filtro (`KIND: config`) | No gastó ronda. Corrige lo que dice `checks.md` en el checkout principal (nunca le pidas a la Cortadora que toque `atta/`) y corre `/atta run`: el Filtro vuelve a correr en la misma ronda |
 | El Filtro rechaza `--base` | La base no existe, es igual a `HEAD` o no comparte historia: usa `origin/develop` tras un `git fetch` |
 | «el worktree tiene cambios sin commitear» | Commitea o descarta los cambios del worktree antes de correr el Filtro |
@@ -2007,6 +2073,7 @@ Corrige lo marcado con ✗ antes de correr /atta.
 | **F3** ✅ | Calidad determinista: riesgo por reglas, Refutador, corrección acotada, Rastreador, memoria con la Cultivadora, ast-grep, alcance del diff y frescura en el Filtro, contrato de `build.md`, plantilla de PR y tope de la Vigía |
 | **F3.x** ✅ | Issue `atta:ratchet` por lección mecanizable vista en 2 o más jobs (K1, sección 8 paso 18); diff antes y después del sync (K7), conflictos de sync y `CONFLICTING` en `awaiting-merge` resueltos por la Cortadora (sección 8.3) |
 | **F4** | Ruteo de modelos por etapa, riesgo e intento; revisor con modelo distinto al de la Cortadora; Reina determinista en riesgo bajo |
+| **F4.x** ⏳ | Pendientes de las corridas F4 y F3.x: `untested` ignora cambios de solo comentarios o docstrings, rutas absolutas de hallazgos relativas al proyecto, espera por `BLOCKED-BY` aparte (`blocked_s`), criterios de `spec.md` tal cual en `build.md`, tier del modelo usado en los eventos, comando faltante de un check como falla de configuración (y aviso en `atta doctor`), archivo de respuesta en la carpeta temporal del sistema. Falta la corrida en el sandbox |
 | **F5** | Pi como segundo runtime para etapas baratas |
 | **F6-F7** | Benchmark y conductor sin orquestador LLM |
 

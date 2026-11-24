@@ -190,6 +190,13 @@ reintenta (evento `stage_timeout`), la segunda deja el job a una persona (needs-
 que no tienen ese paso, label, comentario y `wait`). No consume la cadena de fallback: un timeout no es una
 falla de cuota, rate limit o red.
 
+**Implementado en F4.x (S5):** el `tier` de `pending_agent` y de los eventos de transición es el del modelo
+con el que corrió el agente (`models.Table.tier_for`): un modelo propio del rol registra el tier de ese
+modelo y recorre la cadena de fallback de ese tier. En un modelo de fallback, `pending_agent` suma
+`chain_tier` (el tier de la cadena que recorre); `atta model-failed` y el evento `model_fallback` usan
+ese, y una entrada vieja sin `chain_tier` usa `tier`. Un modelo propio del rol no cambia el tier mínimo
+del Refutador (cuenta con el tier de su etapa, como antes).
+
 **Escalera por intento:** si la ronda N falla (`GATE: FAIL` o `VERDICT: CHANGES`), la ronda N+1 sube a la
 Cortadora un tier (`T1 → T2 → T3`) y la última ronda siempre usa T3. Lo caro solo se paga cuando lo barato
 demostró no alcanzar. Cada subida queda en `events.jsonl`.
@@ -223,6 +230,9 @@ este worktree, y devuélveme el artefacto, el uso y el costo». La espina no sab
   lanza agentes; no decide estado.
 - Cada rol tiene su definición propia de agente, escrita para Atta.
 - El guard de herramientas y el nudge del Filtro al terminar la Cortadora son hooks escritos en Python.
+- La respuesta de la Exploradora pasa por un archivo de la carpeta temporal del sistema: el skill pide
+  resolverla primero (`echo "$TMPDIR"`; `%TEMP%` o `$env:TEMP` en Windows), porque el Write tool no
+  expande variables y el guard niega el scratchpad de Claude Code (F4.x S7).
 - Costo leído de los registros de uso del runtime.
 
 ### 6.2 Pi (segundo runtime)
@@ -320,6 +330,18 @@ sin ast-grep, reglas que no pasan sus tests, checkout fuera de `develop`) de las
 configuración va a `needs-human` sin gastar ronda y, cuando una persona la corrige, `atta next` vuelve a
 correr el Filtro en la misma ronda. Los checks con `when: "risk>=medium"` se saltean en riesgo bajo. La
 Vigía tiene tope: la tercera `REVISE` va a `needs-human`.
+
+### 8.2 Ajustes de F4.x (pendientes de las corridas F4 y F3.x)
+
+| Spec | Ajuste | Cómo funciona hoy |
+|---|---|---|
+| S1 | `untested` sin falsos positivos cosméticos (G3) | Un archivo modificado cuyo cambio solo toca líneas vacías o comentarios en un lenguaje conocido, o en `.py` solo docstrings, comentarios o líneas vacías (mismo AST, stdlib), no cuenta para `untested`. Ante la duda cuenta como código: comentarios con efecto (shebang, `//go:`, build tags, `//export`, cgo `// #`, `@ts-`, magic comments de Ruby y `#{`, `#requires`, anotaciones PHP), archivos con strings multilínea, heredocs, JSX, cgo, continuaciones o un `/*` sin cerrar, y en Rust, shell, Ruby, PHP, PowerShell y YAML líneas de código con comillas. Extensiones desconocidas, `.py` que no parsea, cambios de modo, renombres, archivos nuevos o borrados siguen contando. Las demás categorías miran igual las líneas agregadas; la regla de la Reina usa la misma evaluación |
+| S2 | Rutas absolutas en hallazgos | `paths.project_rel`: una ruta dentro del proyecto o de `<raíz>/.worktrees/<job>/` cuenta como la relativa al proyecto, para los casos de `lessons.md` y para acotar la corrección desde la ronda 2 (G5); una absoluta fuera del proyecto no se usa |
+| S3 | Espera por `BLOCKED-BY` aparte | `atta next` escribe `blocked_since` al esperar y suma a `blocked_s` al desbloquearse; la transición lleva `blocked_s` (opcional) y `duration_s` sin la espera, en cualquier etapa. El hormiguero muestra «· bloqueado X» junto al p50 de cada etapa (mediana entre los jobs que esperaron) y en el detalle; `/api/jobs` suma `jobs[].blocked` y `stats.blocked`. Los timeouts de etapa miden la etapa entera |
+| S4 | Criterios del spec tal cual (G10, G11) | `build.md` es inválido si un criterio «…» de la sección Acceptance de `spec.md` falta o está reescrito en su `## Acceptance`: un reintento de la Cortadora y después `needs-human`; la regla de la Reina deja el job a la Reina LLM. Un ✓ falso no se detecta: la Reina lee el test detrás de cada ✓ |
+| S5 | Tier del modelo usado | Ver §5 («Implementado en F4.x») |
+| S6 | Comando faltante de un check | Antes de correr, el primer comando de cada check se busca en el `PATH` (`shutil.which`, `PATHEXT` en Windows); si falta es una falla `config` (needs-human, sin ronda): «No se encontró el comando «X» en el PATH de este equipo (check «N»). Instálalo o corrige atta/checks.json en el checkout principal.». Un script con ruta solo se marca si falta en el checkout principal y en el worktree; nunca builtins, prefijos `VAR=valor` ni expansiones o sintaxis compleja. Un comando existente que sale 127 sigue siendo `code`; `/atta run` reintenta cuando el comando existe. `atta doctor` lo avisa (⚠) con la misma búsqueda (`gate.config_problems`) |
+| S7 | Archivo de respuesta | El skill resuelve primero la carpeta temporal del sistema (§6.1) |
 
 ---
 
