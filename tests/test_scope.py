@@ -39,6 +39,20 @@ class ParseFilesTests(unittest.TestCase):
         self.assertEqual(scope.finding_paths([text]),
                          ["src/orders/import.py", "src/a.py", "src/win.py"])
 
+    def test_absolute_finding_paths_inside_the_project_are_relative(self):
+        # S2: reviewers cite absolute paths of the worktree or of the project.
+        text = ("- [minor] /srv/proj/.worktrees/7-x/calc.py:12 — x — y\n"
+                "- [major] `/srv/proj/src/a.py:3` — x — y\n"
+                "- [major] C:\\Users\\u\\proj\\.worktrees\\7-x\\src\\w.py:4 — x — y\n"
+                "- [minor] /otro/sitio/b.py:1 — fuera del proyecto\n")
+        self.assertEqual(scope.finding_paths([text], root="/srv/proj"),
+                         ["calc.py", "src/a.py"])
+        self.assertEqual(scope.finding_paths([text], root="C:\\Users\\u\\proj"),
+                         ["src/w.py"])
+
+    def test_absolute_finding_paths_without_root_are_ignored(self):
+        self.assertEqual(scope.finding_paths(["- [minor] /srv/proj/a.py:1 — x\n"]), [])
+
 
 class ScopeGateTests(GateFixture, unittest.TestCase):
     """The `## Alcance` section of checks.md for a `checks` round."""
@@ -144,6 +158,18 @@ class BoundedCorrectionTests(GateFixture, unittest.TestCase):
         self.assertTrue(result.passed, result.summary)
         self.assertIn("Corrección acotada (ronda 2 contra los hallazgos de la ronda 1): la "
                       "corrección queda dentro de los hallazgos.", self.section("Alcance"))
+
+    def test_absolute_worktree_finding_bounds_the_correction(self):
+        # S2: an absolute in-project finding path bounds the round-2 correction.
+        write(self.round1 / "review-code.md",
+              "VERDICT: CHANGES\n\n- [major] src/feature.py:1 — x — y\n"
+              f"- [minor] {self.wt.as_posix()}/src/app.py:1 — otro — z\n")
+        write(self.wt / "src" / "app.py", "print('corregido')\n")
+        self.commit_wt("corrige app")
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIn("la corrección queda dentro de los hallazgos", self.section("Alcance"))
+        self.assertNotIn("Avisos", result.summary)
 
     def test_correction_outside_findings_warns(self):
         write(self.wt / "src" / "app.py", "print('otro')\n")

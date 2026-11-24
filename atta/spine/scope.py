@@ -10,7 +10,8 @@ checks.md under `## Alcance`. Three rules, all from data the spine already has:
 - Size: more than `scope.max_files` (default 12) changed files is a warning, never a failure.
 - Corrección acotada (G5): from round 2 on, the paths changed in this round (the previous
   round's checks.md `COMMIT:` .. HEAD) must be named by the previous round's findings
-  (`path:line` in its review-*.md) or by FILES; outside → «la corrección salió del alcance de
+  (`path:line` in its review-*.md; an absolute path inside the project or its worktree counts
+  as the project-relative one, S2) or by FILES; outside → «la corrección salió del alcance de
   los hallazgos» (warning, failure with `scope.enforce`). A previous round without findings
   (e.g. it failed the Filtro) does not bound the correction.
 """
@@ -19,6 +20,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+
+from .paths import WORKTREES_DIR, is_absolute, project_rel
 
 SPEC_FILE = "spec.md"
 DEFAULT_MAX_FILES = 12
@@ -32,8 +35,10 @@ MAX_LISTED = 10
 
 _FILES_LINE = re.compile(r"^\s*(?:[-*]\s*)?\**FILES:\**\s*(.*)$")
 _ROUND = re.compile(r"round-([1-9][0-9]*)\Z")
-# `path:line` as the reviewers cite it (`src/orders/import.py:42`, `` `a/b.py:7` ``).
-_FINDING = re.compile(r"(?<![\w./\\-])((?:[\w.-]+[/\\])*[\w-][\w.-]*):[0-9]+")
+# `path:line` as the reviewers cite it (`src/orders/import.py:42`, `` `a/b.py:7` ``), also
+# absolute (`/…/proj/.worktrees/7-x/calc.py:12`, `C:\…\calc.py:12`).
+_FINDING = re.compile(r"(?<![\w./\\-])((?:[A-Za-z]:[/\\]|[/\\])?(?:[\w.-]+[/\\])*[\w-][\w.-]*)"
+                      r":[0-9]+")
 
 
 def _clean(entry: str) -> str:
@@ -82,14 +87,17 @@ def exempt(path: str, tests) -> bool:
     return matches_protected(path, list(tests)) or matches_protected(path, LOCKFILES)
 
 
-def finding_paths(texts) -> list[str]:
-    """Paths cited as `path:line` in review texts, in first-seen order, without duplicates."""
+def finding_paths(texts, root=None, worktree=None) -> list[str]:
+    """Paths cited as `path:line` in review texts, in first-seen order, without duplicates.
+
+    An absolute path inside `root`, its job worktree `<root>/.worktrees/<id>/` or `worktree`
+    becomes project-relative (S2); any other absolute path is left out."""
     out: list[str] = []
     for text in texts:
         for m in _FINDING.finditer(text):
-            path = m.group(1).replace("\\", "/")
-            while path.startswith("./"):
-                path = path[2:]
+            path = project_rel(m.group(1), root, worktree=worktree)
+            if is_absolute(path):
+                continue
             if path and path not in out:
                 out.append(path)
     return out
@@ -192,7 +200,9 @@ def assess(worktree, commit: str, round_dir, cfg: dict, entries, tests) -> dict:
                 texts.append(review.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError):
                 continue
-        cited = finding_paths(texts)
+        wt = Path(worktree)
+        root = wt.parent.parent if wt.parent.name == WORKTREES_DIR else None
+        cited = finding_paths(texts, root=root, worktree=wt)
         prev = previous_commit(prev_dir)
         label = f"Corrección acotada (ronda {n} contra los hallazgos de la ronda {n - 1})"
         if not cited:

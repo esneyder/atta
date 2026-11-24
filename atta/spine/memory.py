@@ -37,6 +37,7 @@ from pathlib import Path
 
 from .ids import InvalidId, sanitize_id
 from .lock import LockTimeout, job_lock
+from .paths import project_rel, root_of_job_dir
 from .store import _replace
 from .timeutil import utcnow
 
@@ -177,13 +178,18 @@ def _refute_reviewer(token: str) -> str:
     return "security" if name == "soldado" else name
 
 
-def collect(job_dir: str | Path) -> list[dict]:
+def collect(job_dir: str | Path, root: str | Path | None = None) -> list[dict]:
     """Preventions of one job: [{rule, job, reviewer, paths}] in round and reviewer order.
 
     Skips malformed reviews, reviews without findings (a clean PASS) and reviews whose every
     finding was REFUTED in a
-    `refute*.md` of the same round. `paths` are the non-refuted finding paths, without line."""
+    `refute*.md` of the same round. `paths` are the non-refuted finding paths, without line,
+    relative to the project (S2): an absolute path inside `root` or its job worktree
+    `<root>/.worktrees/<id>/` loses that prefix. Without `root` it is inferred from a
+    `<root>/atta/jobs/<id>` job folder."""
     job_dir = Path(job_dir)
+    if root is None:
+        root = root_of_job_dir(job_dir)
     jid = job_dir.name
     out = []
     for rd in _round_dirs(job_dir):
@@ -203,7 +209,7 @@ def collect(job_dir: str | Path) -> list[dict]:
             for m in _FINDING_AT.finditer(text):
                 if verdicts.get((reviewer, m.group(2))) == {"REFUTED"}:
                     continue
-                path = _norm_path(_LINE_SUFFIX.sub("", m.group(2)))
+                path = project_rel(_LINE_SUFFIX.sub("", m.group(2)), root)
                 if path and path not in paths:
                     paths.append(path)
             if not paths:
@@ -459,7 +465,7 @@ class Lessons:
                 return {"created": 0, "updated": 0, "already": True}
             lessons = self.load()
             counts = {"created": 0, "updated": 0}
-            for item in collect(job_dir):
+            for item in collect(job_dir, self.root):
                 counts[_merge(lessons, item, today)] += 1
             if counts["created"] or counts["updated"]:
                 _write_atomic(self.path, serialize(lessons))
