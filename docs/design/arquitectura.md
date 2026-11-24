@@ -1,6 +1,6 @@
 # Atta: arquitectura y diseño
 
-> Estado: F1, F2 y F3 implementadas; F3.x en curso (K7 hecho; falta el issue `atta:ratchet` de K1, §8). Lo que
+> Estado: F1, F2, F3 y F3.x implementadas (K1 y K7, §8). Lo que
 > describe F4 en adelante (matriz completa de §5, Pi en §6.2) sigue siendo diseño. Este documento
 > define cómo funciona Atta y por qué.
 > El orden de construcción está en [`docs/PLAN.md`](../PLAN.md) y la identidad en [`brand/README.md`](../../brand/README.md).
@@ -58,7 +58,7 @@ determinista. Los modelos de lenguaje solo hacen lo que el código no puede: juz
 | **Rastreador** | `rastreador` | Solo riesgo alto. Revisor adversarial: intenta romper el cambio siguiendo a cada caller, writer y reader de lo que tocó (G6) | `review-rastreador.md` | `VERDICT: PASS\|CHANGES` |
 | **Refutador** | `refutador` | Antes de abrir otra ronda por un `CHANGES` con hallazgos blocker o major, contrasta cada hallazgo con el diff real; no agrega hallazgos (G4) | `refute.md` | `REFUTE: UPHELD\|REFUTED\|PARTIAL` |
 | **Reina** | `approver` | Decide qué entra: aprueba o escala a un humano. En `low`, regla determinista | `decision.md` | `APPROVE\|ESCALATE` |
-| **Cultivadora** | `ratchet` | Cosecha los `PREVENTION:` de las revisiones con hallazgos (`CHANGES` o `PASS` con menores) que el Refutador no descartó: actualiza una lección parecida o crea una nueva (G9) | `atta/memory/lessons.md` | — (es código de la espina, no un agente: corre al cerrar el merge y con `atta memory harvest <job>`) |
+| **Cultivadora** | `ratchet` | Cosecha los `PREVENTION:` de las revisiones con hallazgos (`CHANGES` o `PASS` con menores) que el Refutador no descartó: actualiza una lección parecida o crea una nueva (G9) | `atta/memory/lessons.md` | — (es código de la espina, no un agente: corre al cerrar el merge y con `atta memory harvest <job>`; abre el issue `atta:ratchet` de cada lección mecanizable vista en 2+ jobs) |
 
 Reglas del contrato:
 
@@ -274,7 +274,7 @@ determinista de la espina cuando sea mecanizable.**
 
 | # | Mecanismo | Debilidad en Kernia | Cómo entra en Atta | Tipo |
 |---|---|---|---|---|
-| K1 | **Ratchet**: cada `CHANGES` trae `PREVENTION:`; la lección generalizada va al checklist o, si es mecánica, a una regla ast-grep o un test | Depende de que el agente cumpla | `PREVENTION:` obligatorio; la espina rechaza la revisión sin él. La Cultivadora (`atta/spine/memory.py`) cosecha las prevenciones al cerrar el merge en `atta/memory/lessons.md` como temas que evolucionan (G9). **Pendiente (F3.x):** abrir un issue `atta:ratchet` para convertir una lección mecanizable en regla; hoy no se abre ninguno | Script + prompt |
+| K1 | **Ratchet**: cada `CHANGES` trae `PREVENTION:`; la lección generalizada va al checklist o, si es mecánica, a una regla ast-grep o un test | Depende de que el agente cumpla | `PREVENTION:` obligatorio; la espina rechaza la revisión sin él. La Cultivadora (`atta/spine/memory.py`) cosecha las prevenciones al cerrar el merge en `atta/memory/lessons.md` como temas que evolucionan (G9). **Implementado (F3.x):** tras la cosecha, cada lección con `Mecanizable: ast-grep` o `test`, vista en 2+ jobs y sin issue, abre un issue `Ratchet: <slug>` con solo la label `atta:ratchet` (`labels.ratchet`; nunca la de la cola: la persona decide si entra) y guarda `Issue: #N` en la lección bajo el lock de `atta/memory/`; un issue con el mismo título (cualquier estado) se reutiliza, así que nunca hay dos | Script + prompt |
 | K2 | **Checklist de bugs**: releer el diff arriba-abajo y abajo-arriba; intentar producir la falla, no confirmar el happy path; sad path por comportamiento nuevo; bugfix empieza con test rojo; autorización del lado del servidor; cada límite de un guard fijado por un test; mutation-check | Muy largo y de dominio: diluye | Núcleo corto («## Core checklist») dentro de los prompts de los revisores, con «grep a callers y writers antes de afirmar» y «no trabajar de memoria con APIs de terceros»; los revisores juzgan correctness y requisitos declarados, sin inventar trabajo | Prompt |
 | K3 | **DoD**: no se termina sin tests corridos y revisión independiente | Solo prueba que el comando se intentó; se apaga con texto | El Filtro corre los checks él mismo y exige `GATE: PASS` más todas las revisiones. Un diff de código sin tests cambiados sube el riesgo (categoría `untested` de G3, configurable en `risk_rules`). Nunca hay opt-out por texto | Script |
 | K4 | **ast-grep** como guardarraíl | Nunca bloquea | Reglas del `sgconfig.yml` del checkout principal (nunca las de la rama) + `ast-grep scan` sobre los archivos del diff dentro del Filtro; solo `severity: error` **bloquea**, los warnings informan. Con `testConfigs`, las reglas pasan sus propios tests antes. Sin `sgconfig.yml` el paso se saltea; con reglas y sin binario falla como configuración. Destino natural de K1 | Script |
