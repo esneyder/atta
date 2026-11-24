@@ -85,10 +85,9 @@ funciona igual: los issues son las hojas, el repositorio es el hormiguero y el c
 
 ## 1. Estado actual
 
-Atta se construye por fases (ver [`docs/PLAN.md`](docs/PLAN.md)). **F1**, **F2**, **F2.x** y **F3**
-están terminadas: la colonia corrió de punta a punta en el repo de prueba (`esneyder/atta-sandbox`).
-De F3 quedan dos piezas para F3.x (el diff antes y después del sync y el issue `atta:ratchet`);
-siguen la configuración interactiva (F2.y) y F4.
+Atta se construye por fases (ver [`docs/PLAN.md`](docs/PLAN.md)). **F1**, **F2**, **F2.x**, **F2.y**,
+**F3**, **F3.x** y **F4** están terminadas: la colonia corrió de punta a punta en el repo de prueba
+(`esneyder/atta-sandbox`). Sigue F5 (Pi como segundo runtime).
 
 | Pieza | Estado |
 |---|---|
@@ -112,7 +111,7 @@ siguen la configuración interactiva (F2.y) y F4.
 | Filtro ampliado: ast-grep, alcance del diff (`FILES:`), frescura, checks por riesgo, fallas de configuración sin gastar ronda | ✅ F3 |
 | Memoria: la Cultivadora convierte las `PREVENTION:` en lecciones (`atta/memory/lessons.md`) | ✅ F3 |
 | Contratos: `build.md` con secciones fijas, PR con plantilla, tope de `REVISE` de la Vigía | ✅ F3 |
-| Diff antes y después del sync; issue `atta:ratchet` para las lecciones | ⏳ F3.x |
+| Diff antes y después del sync; issue `atta:ratchet` para las lecciones | ✅ F3.x |
 | Configuración interactiva (menús `/atta:*` en Claude Code) | ⏳ F2.y |
 | Ruteo de modelos por etapa e intento, Reina determinista en riesgo bajo | ⏳ F4 |
 | Pi como segundo runtime, benchmark, conductor sin LLM | ⏳ F5-F7 |
@@ -1042,7 +1041,8 @@ la regla). `harvest <job>` agrega las `PREVENTION:` de las revisiones del job co
 (`CHANGES`, o `PASS` con hallazgos menores) que conservan al menos un hallazgo que el Refutador no
 refutó; un `PASS` sin hallazgos no cuenta. Una lección parecida se actualiza en vez de repetirse, y
 cosechar dos veces el mismo job no agrega nada. `atta merge` lo corre solo al cerrar un job
-(sección 8). Sale `2` si `lessons.md` está dañado, el job no existe o el id es inválido.
+(sección 8), y después abre el issue `atta:ratchet` de cada lección mecanizable vista en 2 o más
+jobs (paso 18). Sale `2` si `lessons.md` está dañado, el job no existe o el id es inválido.
 
 #### `settings` · `settings get <clave>` · `settings set <clave> <valor>` · `settings reset <clave>`
 
@@ -1091,7 +1091,7 @@ comandos en `.claude/commands/atta/` (`/atta:config`, `/atta:models`, `/atta:pro
   | `/atta:delivery` | Umbral de auto-merge, con la tabla de qué se mergea solo y qué va a una persona | `delivery.auto_merge_up_to` |
   | `/atta:rounds` | Rondas por contador (`gate_rounds`, `review_rounds`), tope global y concurrencia | `max_rounds`, `max_total_rounds`, `concurrency` |
   | `/atta:risk` | Alcance del Filtro; `risk_rules` es de solo lectura en `atta settings`: el menú la muestra y no la edita | `scope.enforce`, `scope.max_files` |
-  | `/atta:labels` | Labels de la cola y de espera. Cambiar una no renombra las labels que ya existen en GitHub: `atta init` crea la nueva (`gh label create --force`) pero no borra ni renombra las viejas. Un nombre con espacios va entre comillas dobles; si trae `$`, `;`, `&` u otro carácter que el guard no acepta, el menú muestra el comando para tu terminal | `labels.queue`, `labels.needs_info`, `labels.needs_human`, `labels.needs_review` |
+  | `/atta:labels` | Labels de la cola y de espera. Cambiar una no renombra las labels que ya existen en GitHub: `atta init` crea la nueva (`gh label create --force`) pero no borra ni renombra las viejas. Un nombre con espacios va entre comillas dobles; si trae `$`, `;`, `&` u otro carácter que el guard no acepta, el menú muestra el comando para tu terminal | `labels.queue`, `labels.needs_info`, `labels.needs_human`, `labels.needs_review`, `labels.ratchet` |
 
 **Aprobación.** El menú nunca edita `atta/config.json` ni encadena comandos. El guard le pide a
 la persona que apruebe el comando exacto (`ask`) si la sesión es interactiva (`default`,
@@ -1243,9 +1243,16 @@ Si todo pasa: `merge.md` con `MERGE: DONE` y el `COMMIT`, el job pasa a `merged`
 17. La Cultivadora cosecha el job (`atta memory harvest`): sus `PREVENTION:` no refutadas pasan a
     `atta/memory/lessons.md` del checkout principal (una vez por job). También corre cuando una
     persona mergea el PR (sección 8.2). Commitea ese archivo cuando quieras compartir las lecciones.
+18. Ratchet (K1): por cada lección con `Mecanizable: ast-grep` o `test`, vista en 2 o más jobs y
+    sin issue, la Cultivadora abre un issue `Ratchet: <lección>` con la label `atta:ratchet`
+    (`labels.ratchet`; si falta en el repo la crea) para convertirla en regla, y guarda su número
+    en la lección (`Issue: #N`): nunca abre dos. Si ya hay un issue con ese título (abierto o
+    cerrado), lo reutiliza. El issue **no entra en la cola**: si quieres que Atta lo haga,
+    agrégale la label `atta`. Sale en stdout («La Cultivadora abrió el issue #N…») y en
+    `events.jsonl` (`ratchet_issue`). No corre si la cosecha falló.
 
 `merge.md` y el paso a `merged` se escriben apenas GitHub confirma el merge, antes de los pasos
-13-17. Cada uno de esos pasos va aislado: cualquier fallo (de `gh`, de git o inesperado, como un
+13-18. Cada uno de esos pasos va aislado: cualquier fallo (de `gh`, de git o inesperado, como un
 worktree en uso en Windows) es solo un aviso («Aviso: …» en stderr y una sección `## Avisos` en
 `merge.md`) y el paso siguiente corre igual; el merge ya ocurrió, así que `atta merge` sale `0`.
 Si `gh pr merge` devuelve un error pero GitHub muestra el PR mergeado con el sha del Filtro (por
@@ -1260,7 +1267,7 @@ repetir y `atta next` lo pide solo en `merging`, así que `/atta run` se recuper
 
 | Estado del PR en GitHub | Qué hace |
 |---|---|
-| `MERGED` y su último commit es el `COMMIT:` de `round-N/merge-checks.md` (escrito en esta etapa) | «La Reina termina el merge»: `merge.md` con `MERGE: DONE`, pasa a `merged` y corre los pasos 13-16; sale `0` |
+| `MERGED` y su último commit es el `COMMIT:` de `round-N/merge-checks.md` (escrito en esta etapa) | «La Reina termina el merge»: `merge.md` con `MERGE: DONE`, pasa a `merged` y corre los pasos 13-18; sale `0` |
 | `OPEN` y el worktree sigue en el commit que pasó el Filtro | Retoma desde el merge: push (si hace falta) y `gh pr merge --match-head-commit`, sin sincronizar ni repetir el Filtro |
 | `OPEN` y la rama cambió (o no hay `merge-checks.md` con `PASS`) | Vuelve a sincronizar con `develop`, corre el Filtro `merge-checks` y mergea |
 | Cerrado sin merge, mergeado con otro commit o sin `merge-checks.md` que lo pruebe | Escala a `needs-human` con el motivo |
@@ -1334,7 +1341,7 @@ consulta el PR:
 | Estado del PR en GitHub | Qué hace |
 |---|---|
 | Abierto | «El PR #M sigue esperando tu revisión.»; sale `0` sin cambiar nada |
-| Mergeado en `develop` | Cierra el ciclo como un merge propio: `merge.md` con `MERGE: DONE` y el commit que GitHub integró (si empujaste arreglos, es el tuyo; no tiene que ser el del Filtro), pasa a `merged`, comenta y cierra el issue («El PR #M quedó mergeado en develop. El issue #N queda resuelto.»), quita las labels `atta` y `atta:needs-review` y borra la rama y el worktree (pasos 13-16, con avisos aislados) |
+| Mergeado en `develop` | Cierra el ciclo como un merge propio: `merge.md` con `MERGE: DONE` y el commit que GitHub integró (si empujaste arreglos, es el tuyo; no tiene que ser el del Filtro), pasa a `merged`, comenta y cierra el issue («El PR #M quedó mergeado en develop. El issue #N queda resuelto.»), quita las labels `atta` y `atta:needs-review` y borra la rama y el worktree (pasos 13-18, con avisos aislados) |
 | Cerrado sin merge | `needs-human` |
 | Mergeado en otra base (por ejemplo `main`) | `needs-human` con el motivo de la política de ramas («La Reina no mergea a main: Atta solo integra en develop.»); Atta no toca `main` |
 
@@ -1522,7 +1529,7 @@ un Atta anterior) cuenta como `code`.
 | `max_rounds` | `3` | Tope por contador de rondas |
 | `max_total_rounds` | `6` | Tope global de rondas por job |
 | `concurrency` | `3` | Jobs corriendo a la vez (los que esperan a una persona no cuentan) |
-| `labels` | `atta`, `atta:needs-info`, `atta:needs-human`, `atta:needs-review` | Labels de GitHub de la cola (`queue`), los estados de espera (`needs_info`, `needs_human`) y el PR que te toca mergear (`needs_review`, opcional) |
+| `labels` | `atta`, `atta:needs-info`, `atta:needs-human`, `atta:needs-review`, `atta:ratchet` | Labels de GitHub de la cola (`queue`), los estados de espera (`needs_info`, `needs_human`), el PR que te toca mergear (`needs_review`, opcional) y el issue del ratchet (`ratchet`, opcional; no entra en la cola) |
 | `delivery.auto_merge_up_to` | `"high"` (`atta init` escribe `"none"`) | Riesgo máximo que Atta mergea sola: `none`, `low`, `medium` o `high` (sección 8.2) |
 | `protected_paths` | `atta/**`, `.claude/**`, `.pi/**`, `.github/workflows/**` | Rutas que ningún job puede tocar. No puede estar vacía |
 | `prices_usd_per_mtok` | `{}` | Precio por millón de tokens por modelo. Sin precio, el costo queda `null` con un aviso (nunca corta) |
@@ -1935,7 +1942,7 @@ cambia nada; revisa, en orden:
 | Checkout principal en `develop` | `✗`: «Atta lee checks.json y las reglas desde develop. Corre: git switch develop» (en `main` el Filtro lee otro `checks.json`) |
 | Checkout principal al día con `origin/develop` | `⚠`: `git pull --ff-only origin develop` (el Filtro lee `checks.json` de ahí) |
 | `gh` instalado, con sesión y con acceso al repo (`gh repo view`) | `✗`: `gh auth login`, o `gh auth switch -u <usuario>` a la cuenta con acceso |
-| Labels de Atta en el repo (incluida `atta:needs-review`) | `✗`: corre `atta init` en tu terminal (crea las que faltan) |
+| Labels de Atta en el repo (incluidas `atta:needs-review` y `atta:ratchet`) | `✗`: corre `atta init` en tu terminal (crea las que faltan) |
 | Los 12 agentes, el skill, `.claude/commands/atta.md` y el hook `atta guard` | `✗`: corre `atta init` en tu terminal |
 | `claude --version` | `⚠`: instala Claude Code |
 | Archivos al día con la versión instalada (como `atta init --check`) | `⚠`: `atta init --force` |
@@ -1945,7 +1952,7 @@ cambia nada; revisa, en orden:
 Atta doctor: C:\code\mi-app
 ✓ atta está en el PATH (C:\Python311\Scripts\atta.exe)
 …
-✗ faltan labels de Atta en el repo: atta:needs-review
+✗ faltan labels de Atta en el repo: atta:needs-review, atta:ratchet
     → Corre atta init en tu terminal: crea las labels que faltan.
 …
 Resumen: 18 bien, 0 avisos, 1 falla.
@@ -1998,7 +2005,7 @@ Corrige lo marcado con ✗ antes de correr /atta.
 | **F2.x** ✅ | Operación: `atta doctor` y `atta init --check` |
 | **F2.y** | Configuración interactiva: menús `/atta:*` dentro de Claude Code para modelos, entrega, rondas, labels, riesgo y alcance |
 | **F3** ✅ | Calidad determinista: riesgo por reglas, Refutador, corrección acotada, Rastreador, memoria con la Cultivadora, ast-grep, alcance del diff y frescura en el Filtro, contrato de `build.md`, plantilla de PR y tope de la Vigía |
-| **F3.x** | Pendiente de F3: el issue `atta:ratchet` del ratchet (K1). Hecho: diff antes y después del sync (K7), conflictos de sync y `CONFLICTING` en `awaiting-merge` resueltos por la Cortadora (sección 8.3) |
+| **F3.x** ✅ | Issue `atta:ratchet` por lección mecanizable vista en 2 o más jobs (K1, sección 8 paso 18); diff antes y después del sync (K7), conflictos de sync y `CONFLICTING` en `awaiting-merge` resueltos por la Cortadora (sección 8.3) |
 | **F4** | Ruteo de modelos por etapa, riesgo e intento; revisor con modelo distinto al de la Cortadora; Reina determinista en riesgo bajo |
 | **F5** | Pi como segundo runtime para etapas baratas |
 | **F6-F7** | Benchmark y conductor sin orquestador LLM |

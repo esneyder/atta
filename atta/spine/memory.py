@@ -15,6 +15,11 @@ every phrasing already there. Otherwise it creates a lesson. `harvest(job_id)` i
 upsert for one job, idempotent through `atta/memory/.harvested` (one job id per line).
 `relevant(paths)` picks lessons for a prompt within BUDGET_CHARS (G12).
 
+Ratchet (K1, F3.x T3): `ratchet(open_issue)` calls `open_issue(lesson)` once for every lesson that is
+mechanizable (`ast-grep` or `test`), seen in RATCHET_TIMES or more jobs and still without an issue,
+and keeps the returned number as `Issue: #N` right away (one atomic write per issue, under the
+lock), so a lesson never gets a second issue.
+
 CLI (wired by cli.py): `atta memory` lists the lessons; `atta memory harvest <job>` harvests one.
 """
 
@@ -48,6 +53,8 @@ MAX_SLUG_WORDS = 6
 BUDGET_CHARS = 1500
 RULE_CHARS = 300
 MECHANIZABLE = ("ast-grep", "test", "no")
+RATCHET_MECHANIZABLE = ("ast-grep", "test")
+RATCHET_TIMES = 2
 OK, REFUSED = 0, 2
 
 STOPWORDS = frozenset("""
@@ -71,7 +78,8 @@ _QUOTED = re.compile(r"""^(?:(?:checklist|bug-core|ítem|item)[^"“«']*)?["“
                      re.I)
 _SLUG = re.compile(r"[0-9a-z][0-9a-z-]*\Z")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
-_FIELD = re.compile(r"(Regla|Variantes|Casos|Veces|Actualizada|Mecanizable):[ \t]*(.*)\Z")
+_FIELD = re.compile(r"(Regla|Variantes|Casos|Veces|Actualizada|Mecanizable|Issue):[ \t]*(.*)\Z")
+_ISSUE = re.compile(r"#([1-9][0-9]*)\Z")
 
 
 class LessonsError(RuntimeError):
@@ -87,6 +95,7 @@ class Lesson:
     updated: str = ""
     mechanizable: str | None = None
     variants: list = field(default_factory=list)
+    issue: int | None = None  # the `atta:ratchet` issue opened for it (K1)
 
 
 # ---------------------------------------------------------------- text helpers
@@ -222,7 +231,8 @@ def _finish(lesson: dict | None, lineno: int, out: list[Lesson]) -> None:
             raise _damaged(lineno, f"a la lección «{lesson['slug']}» le falta «{label}:».")
     out.append(Lesson(slug=lesson["slug"], rule=lesson["rule"], cases=lesson["cases"],
                       times=lesson["times"], updated=lesson["updated"],
-                      mechanizable=lesson.get("mechanizable"), variants=lesson["variants"]))
+                      mechanizable=lesson.get("mechanizable"), variants=lesson["variants"],
+                      issue=lesson.get("issue")))
 
 
 def parse(text: str) -> list[Lesson]:
@@ -293,6 +303,11 @@ def parse(text: str) -> list[Lesson]:
             if not ok:
                 raise _damaged(lineno, f"«Actualizada: {value}» debe ser una fecha AAAA-MM-DD.")
             cur["updated"] = value
+        elif key == "Issue":
+            m = _ISSUE.match(value)
+            if not m:
+                raise _damaged(lineno, f"«Issue: {value}» debe ser un número de issue como «#12».")
+            cur["issue"] = int(m.group(1))
         else:  # Mecanizable
             if value not in MECHANIZABLE:
                 raise _damaged(lineno, f"«Mecanizable: {value}» debe ser "
@@ -314,6 +329,8 @@ def serialize(lessons: list[Lesson]) -> str:
         lines += [f"Veces: {l.times}", f"Actualizada: {l.updated}"]
         if l.mechanizable:
             lines.append(f"Mecanizable: {l.mechanizable}")
+        if l.issue:
+            lines.append(f"Issue: #{l.issue}")
         parts.append("\n".join(lines) + "\n")
     return "\n".join(parts)
 
@@ -448,6 +465,23 @@ class Lessons:
                 _write_atomic(self.path, serialize(lessons))
             _write_atomic(self.harvested_path, "".join(f"{j}\n" for j in sorted({*done, jid})))
         return {**counts, "already": False}
+
+    def ratchet(self, open_issue) -> list[tuple[str, int]]:
+        """Open the `atta:ratchet` issue of every lesson that needs one: [(slug, number)].
+
+        `open_issue(lesson)` returns the issue number; it runs under the lock of atta/memory/ and
+        each number is written before the next lesson, so an error keeps the issues already
+        opened and a second run never opens them again."""
+        opened: list[tuple[str, int]] = []
+        with self._locked():
+            lessons = self.load()
+            for lesson in lessons:
+                if (lesson.issue is None and lesson.times >= RATCHET_TIMES
+                        and lesson.mechanizable in RATCHET_MECHANIZABLE):
+                    lesson.issue = int(open_issue(lesson))
+                    _write_atomic(self.path, serialize(lessons))
+                    opened.append((lesson.slug, lesson.issue))
+        return opened
 
     def relevant(self, paths: list[str], limit: int = 5,
                  budget: int = BUDGET_CHARS) -> list[Lesson]:

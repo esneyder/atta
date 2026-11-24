@@ -1070,8 +1070,12 @@ def _finish_merge(args, cfg, jobs: JobStore, job: dict, wt: Path | None, sha: st
     print(line)
     warnings += _after_merge(args, cfg, job, wt, sha, closing, extra_labels)
     # T4b: the Cultivadora runs once the job is closed; isolated like every post-merge step.
+    harvested = len(warnings)
     _step(warnings, f"No se pudieron cosechar las lecciones de {jid}",
           lambda: _harvest(args.root, jobs, jid))
+    if len(warnings) == harvested:  # a damaged lessons.md is reported once, by the harvest
+        _step(warnings, f"No se pudo abrir el issue {config.label(cfg, 'ratchet')}",
+              lambda: _ratchet(args.root, cfg, jobs, jid))
     if warnings:
         _write_merge_md(jobs.job_dir(jid), "DONE", line, sha, warnings)
         for warning in warnings:
@@ -1085,6 +1089,42 @@ def _harvest(root, jobs: JobStore, jid: str) -> None:
         memory.Lessons(root).harvest(jid, jobs_dir=jobs.root)
     except (memory.LessonsError, LockTimeout) as exc:
         raise FlowError(str(exc)) from None  # the message already says what to do
+
+
+def _ratchet(root, cfg: dict, jobs: JobStore, jid: str) -> list[str]:
+    """K1 (F3.x T3): one `atta:ratchet` issue per mechanizable lesson seen in 2+ jobs. Only that
+    label, never the queue's (S5). An issue already on GitHub with the same title is reused, so
+    a number lost before reaching lessons.md never makes a duplicate."""
+    label = config.label(cfg, "ratchet")
+    queue = cfg["labels"]["queue"]
+    failed: list[str] = []
+
+    def open_issue(lesson) -> int:
+        title = voice.ratchet_title(lesson.slug)
+        try:
+            number = github.find_issue(label, title)
+            if number is None:
+                body = github.sign("cultivadora", voice.ratchet_issue(
+                    lesson.slug, lesson.rule, lesson.times, lesson.mechanizable, lesson.cases,
+                    queue))
+                number = github.create_issue(title, body, label, create=_label_style(cfg, label))
+        except GhError:
+            failed.append(lesson.slug)
+            raise
+        return number
+
+    try:
+        opened = memory.Lessons(root).ratchet(open_issue)
+    except GhError as exc:
+        return [f"No se pudo abrir el issue {label} de la lección {failed[-1]}: {exc}"]
+    except (memory.LessonsError, LockTimeout) as exc:
+        return [f"No se pudo abrir el issue {label}: {exc}"]
+    for slug, number in opened:
+        append_event(jobs.job_dir(jid), {"ts": to_iso(utcnow()), "job": jid,
+                                         "event": "ratchet_issue", "lesson": slug,
+                                         "issue": number})
+        print(voice.ratchet_opened(number, slug))
+    return []
 
 
 _MERGE_ERRORS = (_MergeFailure, branches.BranchRefused, GhError, FlowError)

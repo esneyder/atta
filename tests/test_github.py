@@ -222,3 +222,47 @@ class SignTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RatchetIssueTests(FakeGhMixin, unittest.TestCase):
+    """F3.x T3 (S5): `gh issue create` for a ratchet issue and the lookup that avoids duplicates."""
+
+    def test_create_issue_returns_the_number_with_one_label_and_the_body_on_stdin(self):
+        number = github.create_issue("Ratchet: a", "cuerpo\n", "atta:ratchet")
+        st = self.state()
+        issue = st["issues"][str(number)]
+        self.assertEqual((issue["title"], issue["body"], issue["labels"]),
+                         ("Ratchet: a", "cuerpo\n", [{"name": "atta:ratchet"}]))
+        self.assertEqual(st["calls"][-1]["argv"],
+                         ["issue", "create", "--title", "Ratchet: a", "--label", "atta:ratchet",
+                          "--body-file", "-"])
+
+    def test_a_missing_label_is_created_and_the_issue_retried_once(self):
+        self.write_state({"user": "operador", "issues": {}, "prs": [], "repo_labels": []})
+        number = github.create_issue("Ratchet: a", "c\n", "atta:ratchet",
+                                     create=("5319e7", "desc"))
+        st = self.state()
+        self.assertEqual(st["repo_labels"], ["atta:ratchet"])
+        self.assertEqual(st["issues"][str(number)]["labels"], [{"name": "atta:ratchet"}])
+        self.assertEqual([c["argv"][:2] for c in st["calls"]],
+                         [["issue", "create"], ["label", "create"], ["issue", "create"]])
+
+    def test_a_missing_label_without_style_is_an_error(self):
+        self.write_state({"user": "operador", "issues": {}, "prs": [], "repo_labels": []})
+        with self.assertRaises(github.GhError):
+            github.create_issue("Ratchet: a", "c\n", "atta:ratchet")
+        self.assertEqual(self.state()["issues"], {})
+
+    def test_find_issue_matches_the_exact_title_in_any_state(self):
+        self.write_state({"user": "operador", "prs": [], "issues": {
+            "3": {"number": 3, "title": "Ratchet: a", "state": "CLOSED",
+                  "labels": [{"name": "atta:ratchet"}]},
+            "4": {"number": 4, "title": "Ratchet: ab", "state": "OPEN",
+                  "labels": [{"name": "atta:ratchet"}]},
+            "5": {"number": 5, "title": "Ratchet: b", "state": "OPEN", "labels": []}}})
+        self.assertEqual(github.find_issue("atta:ratchet", "Ratchet: a"), 3)
+        self.assertEqual(github.find_issue("atta:ratchet", "Ratchet: ab"), 4)
+        self.assertIsNone(github.find_issue("atta:ratchet", "Ratchet: b"))
+        self.assertEqual(self.state()["calls"][-1]["argv"],
+                         ["issue", "list", "--label", "atta:ratchet", "--state", "all", "--json",
+                          "number,title", "--limit", "500"])

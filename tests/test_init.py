@@ -30,6 +30,9 @@ LABEL_ARGS = [
      "--description", "Atta: necesita una decisión humana", "--force"],
     ["label", "create", "atta:needs-review", "--color", "1d76db",
      "--description", "Atta: PR listo para que lo revises y lo mergees", "--force"],
+    ["label", "create", "atta:ratchet", "--color", "5319e7",
+     "--description", "Atta: lección mecanizable para convertir en regla ast-grep o test",
+     "--force"],
 ]
 
 

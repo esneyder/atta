@@ -16,7 +16,7 @@ from atta.spine.settings_registry import Setting
 
 KEYS = ("integration_branch", "forbidden_branches", "branch_prefix", "max_rounds",
         "max_total_rounds", "concurrency", "merge_method", "labels.queue", "labels.needs_info",
-        "labels.needs_human", "labels.needs_review", "protected_paths",
+        "labels.needs_human", "labels.needs_review", "labels.ratchet", "protected_paths",
         "delivery.auto_merge_up_to", "scope.enforce", "scope.max_files",
         "guard.deny_commands", "prices_usd_per_mtok", "routing", "risk_rules", "models",
         "profile")
@@ -67,6 +67,8 @@ class RegistryTest(unittest.TestCase):
             self.assertIn(word, by["delivery.auto_merge_up_to"].description)
         self.assertEqual(by["labels.needs_review"].default, "atta:needs-review")
         self.assertEqual(by["labels.needs_review"].type, "str")
+        self.assertEqual(by["labels.ratchet"].default, "atta:ratchet")
+        self.assertEqual(by["labels.ratchet"].type, "str")
         self.assertEqual(by["guard.deny_commands"].default, list(guard.DEFAULT_DENY_COMMANDS))
         self.assertEqual((by["scope.enforce"].type, by["scope.enforce"].default), ("bool", False))
         self.assertEqual((by["scope.max_files"].type, by["scope.max_files"].default), ("int", 12))

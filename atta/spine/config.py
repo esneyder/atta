@@ -85,7 +85,7 @@ DEFAULTS = {
 
 # Labels that may be absent from `labels` and take these defaults (S13). They are kept out of
 # DEFAULTS["labels"] so a config's `labels` keeps its F1 shape; read them with `label()`.
-OPTIONAL_LABELS = {"needs_review": "atta:needs-review"}
+OPTIONAL_LABELS = {"needs_review": "atta:needs-review", "ratchet": "atta:ratchet"}
 
 MERGE_METHODS = ("merge", "squash", "rebase")
 RISK_LEVELS = ("none", "low", "medium", "high")

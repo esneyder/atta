@@ -1089,6 +1089,121 @@ class MergeTests(MergeBase):
         self.assertTrue(self.merge_md().startswith("MERGE: DONE\n"))
         self.assertNotIn("## Avisos", self.merge_md())
 
+    RATCHET_RULE = "Usar una regla ast-grep para prohibir eval en src"
+
+    def seed_ratchet_lesson(self, issue=None):
+        write(self.lessons(), "## prohibir-eval\nRegla: " + self.RATCHET_RULE + "\nCasos:\n"
+              "- 3-otro: src/x.py\nVeces: 1\nActualizada: 2025-01-01\nMecanizable: ast-grep\n"
+              + (f"Issue: #{issue}\n" if issue else ""))
+        write(self.store.job_dir(JID) / "round-1" / "review-code.md",
+              "VERDICT: CHANGES\n\n## Summary\n\nX.\n\n## Findings\n\n"
+              "- [major] src/feature.py:1 — usa eval — quítalo.\n\n"
+              f"PREVENTION: {self.RATCHET_RULE}\n")
+
+    def test_a_mechanizable_lesson_seen_twice_opens_one_ratchet_issue(self):
+        self.seed_ratchet_lesson()
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        [create] = self.gh_by("issue", "create")
+        self.assertEqual(create, ["issue", "create", "--title", "Ratchet: prohibir-eval",
+                                  "--label", "atta:ratchet", "--body-file", "-"])
+        issue = next(i for i in self.state()["issues"].values()
+                     if i.get("title") == "Ratchet: prohibir-eval")
+        number = issue["number"]
+        body = issue["body"]
+        self.assertTrue(body.startswith("<!-- atta -->\nLa Cultivadora vio esta lección en 2 "
+                                        "jobs y se puede convertir en una regla ast-grep del "
+                                        "Filtro."), body)
+        self.assertIn(f"Regla: {self.RATCHET_RULE}\n", body)
+        self.assertIn(f"- {JID}: src/feature.py\n- 3-otro: src/x.py\n", body)
+        self.assertIn("si quieres que Atta lo haga, agrégale la label `atta`.", body)
+        self.assertTrue(body.endswith("— La Cultivadora · Atta\n"), body)
+        self.assertIn(f"Mecanizable: ast-grep\nIssue: #{number}\n",
+                      self.lessons().read_text(encoding="utf-8"))
+        self.assertIn(f"La Cultivadora abrió el issue #{number} para convertir la lección "
+                      "prohibir-eval en una regla.\n", out)
+        events = [e for e in read_events(self.store.job_dir(JID))
+                  if e.get("event") == "ratchet_issue"]
+        self.assertEqual([(e["lesson"], e["issue"]) for e in events],
+                         [("prohibir-eval", number)])
+        self.assertEqual(self.job()["stage"], "merged")
+
+    def test_a_lesson_with_its_issue_opens_none(self):
+        self.seed_ratchet_lesson(issue=7)
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.gh_by("issue", "create"), [])
+        self.assertIn("Veces: 2\n", self.lessons().read_text(encoding="utf-8"))
+        self.assertIn("Issue: #7\n", self.lessons().read_text(encoding="utf-8"))
+
+    def test_an_issue_already_on_github_is_reused_never_duplicated(self):
+        self.seed_ratchet_lesson()
+        st = self.state()
+        st["issues"]["30"] = {"number": 30, "title": "Ratchet: prohibir-eval",
+                              "state": "CLOSED", "labels": [{"name": "atta:ratchet"}]}
+        self.write_state(st)
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.gh_by("issue", "create"), [])
+        self.assertIn("Issue: #30\n", self.lessons().read_text(encoding="utf-8"))
+
+    def test_the_ratchet_label_is_configurable(self):
+        self.seed_ratchet_lesson()
+        cfg = json.loads(json.dumps(self.cfg))
+        cfg["labels"]["ratchet"] = "regla"
+        code, out, err = self.merge(cfg=cfg)
+        self.assertEqual((code, err), (0, ""), out)
+        [create] = self.gh_by("issue", "create")
+        self.assertEqual(create[create.index("--label") + 1], "regla")
+
+    def test_an_unexpected_ratchet_error_is_a_warning_never_a_traceback(self):
+        self.seed_ratchet_lesson()
+        with mock.patch.object(flow.github, "find_issue", side_effect=ValueError("boom")):
+            code, out, err = self.merge()
+        self.assertEqual((code, self.job()["stage"]), (0, "merged"))
+        self.assertEqual(err, "Aviso: No se pudo abrir el issue atta:ratchet: ValueError: boom\n")
+        self.assertIn("## Avisos", self.merge_md())
+
+    def test_a_failure_mid_loop_keeps_the_first_number_and_a_rerun_opens_only_the_rest(self):
+        def lesson(slug, rule, mech):
+            return (f"## {slug}\nRegla: {rule}\nCasos:\n- 3-otro: src/x.py\n- 4-otro: src/y.py\n"
+                    f"Veces: 2\nActualizada: 2025-01-01\nMecanizable: {mech}\n")
+        write(self.lessons(), lesson("a-uno", "Regla ast-grep uno sobre foo", "ast-grep") + "\n"
+              + lesson("b-dos", "Regla test dos sobre bar", "test"))
+        real, calls = flow.github.create_issue, []
+
+        def flaky(*a, **k):
+            calls.append(a[0])
+            if len(calls) == 2:
+                raise flow.GhError("HTTP 502")
+            return real(*a, **k)
+
+        with mock.patch.object(flow.github, "create_issue", side_effect=flaky):
+            code, out, err = self.merge()
+        self.assertEqual((code, self.job()["stage"]), (0, "merged"))
+        self.assertEqual(err, "Aviso: No se pudo abrir el issue atta:ratchet de la lección "
+                              "b-dos: HTTP 502\n")
+        self.assertEqual(self.lessons().read_text(encoding="utf-8").count("Issue: #"), 1)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(flow._ratchet(self.root, self.cfg, self.store, JID), [])
+        self.assertEqual([c[3] for c in self.gh_by("issue", "create")],
+                         ["Ratchet: a-uno", "Ratchet: b-dos"])
+        self.assertEqual(self.lessons().read_text(encoding="utf-8").count("Issue: #"), 2)
+
+    def test_a_ratchet_failure_is_a_warning_that_never_blocks(self):
+        self.seed_ratchet_lesson()
+        st = self.state()
+        st["fail"] = {"issue create": "HTTP 502"}
+        self.write_state(st)
+        code, out, err = self.merge()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertTrue(err.startswith("Aviso: No se pudo abrir el issue atta:ratchet de la "
+                                       "lección prohibir-eval: "), err)
+        self.assertIn("## Avisos", self.merge_md())
+        self.assertNotIn("Issue:", self.lessons().read_text(encoding="utf-8"))
+        self.assertIn("Veces: 2\n", self.lessons().read_text(encoding="utf-8"))
+
     def test_harvest_failure_is_a_warning_that_never_blocks(self):
         write(self.lessons(), "## Mal Nombre\n")
         code, out, err = self.merge()

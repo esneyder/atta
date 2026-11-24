@@ -63,6 +63,10 @@ SETTINGS = (
     _entry("labels.needs_review", "str",
            "Label cuando el PR está listo y te toca revisarlo y mergearlo (awaiting-merge).",
            default=config.OPTIONAL_LABELS["needs_review"]),
+    _entry("labels.ratchet", "str",
+           "Label del issue que abre la Cultivadora para convertir una lección mecanizable en "
+           "regla (no entra en la cola).",
+           default=config.OPTIONAL_LABELS["ratchet"]),
     _entry("protected_paths", "list",
            "Rutas que los agentes no pueden tocar (el Filtro y el guard las vigilan)."),
     _entry("delivery.auto_merge_up_to", "enum",
