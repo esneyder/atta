@@ -14,7 +14,7 @@ from unittest import mock
 
 from support import TempDirMixin
 
-from atta.spine import cli, doctor, initcmd, project
+from atta.spine import cli, doctor, gate, initcmd, project
 
 HAS_GIT = shutil.which("git") is not None
 FAKEGH = Path(__file__).resolve().parent / "fakegh" / "fakegh.py"
@@ -64,6 +64,8 @@ class DoctorBase(TempDirMixin, unittest.TestCase):
         self.state = self.tmp / "fakegh.json"
         self.set_gh({"user": "operador", "repo": {"name": "proj"}, "repo_labels": list(LABELS)})
         self.which = {"atta": str(self.bin / "atta"), "atta-board": str(self.bin / "atta-board")}
+        # What the Filtro's preflight finds on the PATH for the first command of a check (T6).
+        self.commands = {"python": str(self.bin / "python")}
         self.claude = CLAUDE
 
     def set_matrix(self, value):
@@ -92,6 +94,8 @@ class DoctorBase(TempDirMixin, unittest.TestCase):
                 mock.patch.object(doctor, "_which", side_effect=self.which.get), \
                 mock.patch.object(doctor, "_pip_version", return_value=PIP), \
                 mock.patch.object(doctor, "_claude_version", side_effect=lambda: self.claude), \
+                mock.patch.object(gate, "_command_which",
+                                  side_effect=lambda name, path=None: self.commands.get(name)), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             os.environ.pop("ATTA_ASCII", None)
             if via_cli:
@@ -387,6 +391,25 @@ class FailureTest(DoctorBase):
         self.assertEqual(code, 0, out)
         exe = self.bin / "ast-grep"
         self.assert_line(out, f"✓ ast-grep para las reglas de sgconfig.yml ({exe})")
+
+    # F4.x T6 (S8): the Filtro now stops as a config failure when a check's command is missing.
+    def test_check_command_missing_from_path_is_a_warning(self):
+        self.write_checks({"checks": [{"name": "tests", "run": "pytest -q"}],
+                           "timeout_s": 900})
+        before = tree(self.root)
+        code, out = self.run_doctor(no_github=True)
+        self.assertEqual(code, 0, out)
+        self.assert_line(out, "⚠ No se encontró el comando «pytest» en el PATH de este equipo "
+                              "(check «tests»): el Filtro no va a correr (needs-human)",
+                         "Instálalo o corrige atta/checks.json en el checkout principal.")
+        self.assertIn("Resumen: 15 bien, 2 avisos, 0 fallas.", out.splitlines())
+        self.assertEqual(tree(self.root), before)
+
+    def test_check_command_on_path_adds_no_line(self):
+        code, out = self.run_doctor(no_github=True)
+        self.assertEqual(code, 0, out)
+        self.assertFalse(any("No se encontró" in line for line in out.splitlines()), out)
+        self.assertIn("Resumen: 15 bien, 1 aviso, 0 fallas.", out.splitlines())
 
     def test_outdated_agent_is_a_warning(self):
         agent = self.root / ".claude" / "agents" / "atta-guia.md"
