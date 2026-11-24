@@ -799,6 +799,116 @@ class FailureKindTests(GateFixture, unittest.TestCase):
         self.assertNotIn("gate_failure", jobs.load(job["id"]))
 
 
+MISSING = "atta-no-existe-7f3a"
+POSIX = os.name != "nt"
+
+
+def missing_msg(command, name):
+    return (f"No se encontró el comando «{command}» en el PATH de este equipo (check «{name}»). "
+            "Instálalo o corrige atta/checks.json en el checkout principal.")
+
+
+def missing_script_msg(command, name):
+    return (f"No se encontró «{command}» (check «{name}») en el checkout principal. "
+            "Agrégalo o corrige atta/checks.json en el checkout principal.")
+
+
+class CommandPreflightTests(GateFixture, unittest.TestCase):
+    """T6 (S6): the first command of a check must exist before running anything."""
+
+    def marker_check(self):
+        return check("marca", py("open('marca.txt', 'w').write('x')"))
+
+    def assert_config(self, result, message):
+        self.assertEqual((result.passed, result.kind, result.failed_check),
+                         (False, "config", None))
+        self.assertEqual(result.summary, f"El Filtro no pasó: {message[0].lower()}{message[1:]}")
+        self.assertEqual(self.report().splitlines()[2], "KIND: config")
+        self.assertIn(f"- {message}", self.section("Configuración"))
+        self.assertIn("No se corrieron: la configuración del Filtro no está lista.",
+                      self.section("Checks"))
+        self.assertFalse((self.wt / "marca.txt").exists())
+        self.assertEqual(gate.config_problems(self.main, self.cfg), [message])
+
+    def test_missing_interpreter_is_config_and_runs_no_check(self):
+        self.set_checks([self.marker_check(), check("tests", f"{MISSING} -m unittest")])
+        result = self.run_gate()
+        self.assert_config(result, missing_msg(MISSING, "tests"))
+        log = (self.round / "checks.log").read_text(encoding="utf-8")
+        self.assertNotIn("== marca", log)
+
+    def test_existing_command_is_unchanged(self):
+        self.set_checks([check("git", "git --version"), check("py", OK)])
+        self.assertEqual(gate.config_problems(self.main, self.cfg), [])
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        self.assertIsNone(result.kind)
+
+    @unittest.skipUnless(POSIX, "VAR=value is POSIX shell syntax")
+    def test_leading_assignments_are_skipped(self):
+        self.set_checks([check("tests", f"ATTA_X=1 {MISSING} -m x")])
+        self.assert_config(self.run_gate(), missing_msg(MISSING, "tests"))
+        self.set_checks([check("tests", "ATTA_X=1 ATTA_Y=2 " + py(
+            "import os, sys; sys.exit(0 if os.environ['ATTA_X'] == '1' else 1)"))])
+        self.assertEqual(gate.config_problems(self.main, self.cfg), [])
+        self.assertTrue(self.run_gate().passed)
+
+    @unittest.skipUnless(POSIX, "bash syntax")
+    def test_builtins_and_complex_syntax_are_never_flagged(self):
+        cases = ["echo hola", f"cd src && {MISSING}", f"$({MISSING}) x", f"`{MISSING}`",
+                 f"PATH=/opt/x:$PATH {MISSING}", f"( {MISSING} )", f"{{ {MISSING}; }}",
+                 f"if {MISSING}; then true; fi", f"~/bin/{MISSING}", f"$HOME/{MISSING}",
+                 f"{MISSING}* x", "ATTA_X=1", "exec " + MISSING]
+        for run in cases:
+            with self.subTest(run=run):
+                self.set_checks([check("x", run)])
+                self.assertEqual(gate.config_problems(self.main, self.cfg), [])
+
+    def test_relative_script_missing_is_config(self):
+        script = ("scripts\\no_existe.cmd" if os.name == "nt" else "./scripts/no_existe.sh")
+        self.set_checks([self.marker_check(), check("tests", f"{script} -v")])
+        self.assert_config(self.run_gate(), missing_script_msg(script, "tests"))
+
+    @unittest.skipUnless(POSIX, "executable shell script")
+    def test_relative_script_present_runs(self):
+        write(self.wt / "scripts" / "ok.sh", "#!/bin/sh\nexit 0\n")
+        os.chmod(self.wt / "scripts" / "ok.sh", 0o755)
+        self.commit_wt()
+        self.set_checks([check("tests", "./scripts/ok.sh")])
+        result = self.run_gate()
+        self.assertTrue(result.passed, result.summary)
+        # Only in the main checkout: not a config problem (the worktree decides at run time).
+        write(self.main / "scripts" / "main.sh", "#!/bin/sh\nexit 0\n")
+        self.set_checks([check("tests", "./scripts/main.sh")])
+        self.assertEqual(gate.config_problems(self.main, self.cfg), [])
+        result = self.run_gate()
+        self.assertEqual((result.passed, result.kind), (False, "code"))
+
+    def test_existing_command_exiting_127_is_still_code(self):
+        self.set_checks([check("tests", py("import sys; sys.exit(127)"))])
+        result = self.run_gate()
+        self.assertEqual((result.passed, result.kind, result.failed_check),
+                         (False, "code", "tests"))
+        self.assertEqual(result.summary, "El Filtro no pasó: falló `tests` (exit 127).")
+        self.assertEqual(self.report().splitlines()[2], "KIND: code")
+
+    def test_missing_shell_is_reported_alone_as_before(self):
+        self.set_checks([check("tests", f"{MISSING} -m unittest")])
+        shell = gate.select_shell(SHELL)
+        with mock.patch.object(gate, "_find_shell", return_value=None):
+            result = self.run_gate()
+            problems = gate.config_problems(self.main, self.cfg)
+        message = (f"No se encontró el shell «{shell}» en el PATH de este equipo (check "
+                   "«tests»).")
+        self.assertEqual(problems, [message])
+        self.assertEqual((result.passed, result.kind), (False, "config"))
+        self.assertEqual(result.summary, f"El Filtro no pasó: n{message[1:]}")
+
+    def test_same_missing_command_is_listed_once(self):
+        self.set_checks([check("a", f"{MISSING} uno"), check("b", f"{MISSING} dos")])
+        self.assertEqual(gate.config_problems(self.main, self.cfg), [missing_msg(MISSING, "a")])
+
+
 class ShellCommandTests(unittest.TestCase):
     def test_run_string_is_single_argument_for_posix_shells(self):
         argv = gate.shell_command("bash", "echo 'a b' && exit 1", platform_key="linux",
