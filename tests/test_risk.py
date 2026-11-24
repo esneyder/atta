@@ -149,6 +149,135 @@ class CategoryTest(RepoBase):
         self.change(self.with_test({"src/app.py": APP + "X = 1\n"}))
         self.assertEqual(self.classify(), {"risk": "low", "categories": [], "reasons": []})
 
+    # ---- T1 (S1): `untested` ignores blank lines, comments and Python docstrings
+
+    QUIET = {"risk": "low", "categories": [], "reasons": []}
+
+    def base_with(self, files: dict):
+        """Move the base to a commit that also holds `files`."""
+        for rel, text in files.items():
+            write(self.repo / rel, text)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "base")
+        self.base = git(self.repo, "rev-parse", "HEAD")
+
+    def write_bytes(self, rel, data: bytes):
+        path = self.repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def assertUntested(self, found, path):
+        self.assertEqual(found["categories"], ["untested"])
+        self.assertEqual(found["reasons"],
+                         [f"{path}: sin test — cambia código y el diff no cambia ningún test"])
+
+    def test_untested_not_for_a_docstring_only_python_change(self):
+        self.base_with({"src/doc.py": '"""Viejo."""\n\n\nclass A:\n    """Clase."""\n\n'
+                                       '    def m(self):\n        return 1\n'})
+        text = APP.replace("def export_csv(rows):\n",
+                           'def export_csv(rows):\n    """Exporta\n\n    filas."""\n')
+        self.change({"src/app.py": '"""Módulo de la app."""\n' + text,
+                     "src/doc.py": '"""Nuevo."""\n\n\nclass A:\n    """Otra clase.\n    """\n'
+                                   '\n    def m(self):\n        """Método."""\n        return 1\n'})
+        self.assertEqual(self.classify(), self.QUIET)
+
+    def test_untested_not_for_a_comment_only_change(self):
+        base = {
+            "src/app.py": APP,
+            "src/web.js": "const a = 1;\nfunction f() {\n  return a;\n}\n",
+            "src/main.go": "package main\n\nfunc main() {}\n",
+            "src/run.sh": "#!/bin/sh\necho hola\n",
+            "src/lib.c": "#include <stdio.h>\nint x = 1;\n",
+            "src/app.rb": "puts 1\n",
+            "src/App.java": "class App {\n  int x = 1;\n}\n",
+        }
+        self.base_with(base)
+        changed = {
+            "src/app.py": "# Cabecera.\n" + APP.replace("    return rows\n",
+                                                      "    # devuelve\n    return rows\n"),
+            "src/web.js": "// cabecera\nconst a = 1;\n/*\n * bloque\n */\nfunction f() {\n"
+                          "  /* corto */\n  return a;\n}\n",
+            "src/main.go": "// Package main hace cosas.\npackage main\n\nfunc main() {}\n",
+            "src/run.sh": "#!/bin/sh\n# saluda\necho hola\n",
+            "src/lib.c": "/* licencia */\n#include <stdio.h>\n// x\nint x = 1;\n",
+            "src/app.rb": "# imprime\nputs 1\n",
+            "src/App.java": "/**\n * App.\n */\nclass App {\n  // x\n  int x = 1;\n}\n",
+        }
+        for rel, text in changed.items():
+            with self.subTest(rel=rel):
+                self.base_with(base)
+                self.change({rel: text})
+                self.assertEqual(self.classify(), self.QUIET)
+
+    def test_untested_not_for_a_blank_line_only_change(self):
+        self.base_with({"src/web.ts": "const a = 1;\nconst b = 2;\n"})
+        self.change({"src/app.py": APP + "\n\n", "src/web.ts": "const a = 1;\n\n\nconst b = 2;\n"})
+        self.assertEqual(self.classify(), self.QUIET)
+
+    def test_untested_not_for_a_comment_only_change_with_crlf(self):
+        self.write_bytes("src/win.ts", b"const a = 1;\r\nconst b = 2;\r\n")
+        self.write_bytes("src/win.py", b"X = 1\r\n")
+        self.base_with({})
+        self.write_bytes("src/win.ts", b"const a = 1;\r\n// nota\r\n\r\nconst b = 2;\r\n")
+        self.write_bytes("src/win.py", b'"""Doc."""\r\n# nota\r\nX = 1\r\n')
+        self.change({})
+        self.assertEqual(self.classify(), self.QUIET)
+
+    def test_untested_still_for_a_real_code_change(self):
+        self.base_with({"src/web.js": "const a = 1;\n"})
+        cases = {
+            "src/app.py": '"""Doc."""\n# nota\n' + APP + "X = 1\n",
+            "src/web.js": "// nota\nconst a = 2;\n",
+        }
+        for rel, text in cases.items():
+            with self.subTest(rel=rel):
+                self.base_with({"src/app.py": APP, "src/web.js": "const a = 1;\n"})
+                self.change({rel: text})
+                self.assertUntested(self.classify(), rel)
+
+    def test_untested_still_for_an_unparseable_python_file(self):
+        self.base_with({"src/roto.py": "def f(:\n    return 1\n"})
+        self.change({"src/roto.py": "# nota\ndef f(:\n    return 1\n"})
+        self.assertUntested(self.classify(), "src/roto.py")
+
+    def test_untested_still_for_meaningful_comments_and_unknown_languages(self):
+        base = {"src/main.go": "package main\n", "src/run.sh": "#!/bin/sh\necho 1\n",
+                "src/app.rb": "puts 'a'\n", "src/tool.py": "X = 1\n",
+                "src/web.ts": "const a = 1;\n", "src/page.php": "<?php\nclass A {}\n",
+                "src/a.zig": "const a = 1;\n", "src/b.sh": "echo 1\r\n"}
+        cases = {
+            "src/main.go": "//go:build linux\n\npackage main\n",
+            "src/run.sh": "#!/bin/bash\necho 1\n",
+            "src/app.rb": "# frozen_string_literal: true\nputs 'a'\n",
+            "src/tool.py": "#!/usr/bin/env python3\nX = 1\n",
+            "src/web.ts": "// @ts-nocheck\nconst a = 1;\n",
+            "src/page.php": "<?php\n/** @ORM\\Entity */\nclass A {}\n",
+            "src/a.zig": "// nota\nconst a = 1;\n",
+            "src/b.sh": "echo 1\n",
+        }
+        rules = copy.deepcopy(risk.DEFAULT_RULES)
+        rules["source"].append("**/*.zig")
+        for rel, text in cases.items():
+            with self.subTest(rel=rel):
+                self.base_with(base)
+                self.change({rel: text})
+                self.assertUntested(self.classify(rules), rel)
+
+    def test_untested_still_for_a_mode_only_change(self):
+        self.base_with({"src/run.sh": "echo 1\n"})
+        git(self.repo, "update-index", "--chmod=+x", "src/run.sh")
+        git(self.repo, "commit", "-q", "-m", "modo")
+        self.assertUntested(self.classify(), "src/run.sh")
+
+    def test_comment_only_change_keeps_other_categories_and_real_files(self):  # preserve
+        self.change({"src/app.py": APP + "# usa hashlib\n", "src/other.py": "Y = 2\n"})
+        found = self.classify()
+        self.assertEqual(found["categories"], ["security", "untested"])
+        self.assertEqual(found["risk"], "high")
+        self.assertEqual(found["reasons"], [
+            "src/app.py: seguridad — agrega «# usa hashlib»",
+            "src/other.py: sin test — cambia código y el diff no cambia ningún test"])
+
     def test_categories_combine_and_take_the_highest(self):
         self.change({"migrations/0004.sql": "DROP TABLE x;\n", "Dockerfile": "FROM x\n",
                      "src/app.py": APP + "Y = 2\n"})
