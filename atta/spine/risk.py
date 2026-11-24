@@ -315,7 +315,8 @@ _TRIPLE = r'"""'
 COMMENT_STYLES = {
     **{ext: {**_SLASH, "reject": (r'R"',)}  # C++ raw strings R"(...)"
        for ext in ("c", "h", "cc", "cpp", "cxx", "hh", "hpp", "hxx")},
-    **{ext: {**_SLASH, "reject": (_TRIPLE,)} for ext in ("java", "kt", "kts", "scala")},
+    **{ext: {**_SLASH, "reject": (_TRIPLE,)} for ext in ("java", "kt", "kts")},
+    "scala": {**_SLASH, "reject": (_TRIPLE, "</", "/>")},  # Scala 2 XML literals
     "swift": {**_SLASH, "reject": (_TRIPLE, r'#+"')},
     "cs": {**_SLASH, "reject": (_TRIPLE, r'@\$?"', r'\$@"')},
     "rs": {**_SLASH, "bare": '"'},  # plain Rust strings span lines; r"..." holds a quote

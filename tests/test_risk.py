@@ -290,6 +290,10 @@ class CategoryTest(RepoBase):
                 self.change({rel: new})
                 self.assertUntested(self.classify(), rel)
 
+    def test_untested_still_for_scala_xml_literal_text(self):
+        self.assertFalse(risk.cosmetic("a.scala", b"val x = <a>\n// a\n</a>\n",
+                                       b"val x = <a>\n// b\n</a>\n"))
+
     def test_cosmetic_is_false_for_comment_looking_code_or_strings(self):
         for rel, (old, new) in self.STRING_CASES.items():
             with self.subTest(rel=rel):
