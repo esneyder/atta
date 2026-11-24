@@ -18,14 +18,14 @@ Rama: `feat/f4x-pendientes` (desde `main` en 100d1a2; `develop` está atrás de 
 
 | ID | Specs | Route | Estado | Commit |
 |---|---|---|---|---|
-| T1 | S1, S8 | `untested` ignora comentarios, líneas vacías y docstrings Python (`risk.py`); Risk: item 2 (G3 decide revisores y auto-merge) → verify | hecho; verify pendiente (L4) | a07a651 |
+| T1 | S1, S8 | `untested` ignora comentarios, líneas vacías y docstrings Python (`risk.py`); Risk: item 2 (G3 decide revisores y auto-merge) → verify | hecho; verify OK tras corrección (L9) | a07a651, 5a88ca8, Scala |
 | T2 | S2, S8 | Helper de ruta relativa al proyecto; `memory.collect` y `scope.finding_paths` lo usan | hecho (L5) | db53067 |
 | T3 | S3, S8 | `blocked_s` en el evento y aparte en el tablero (`next._blocked`, `machine.advance`, `board`) | hecho (L6) | b000451 |
-| T4 | S4, S8 | `check_build` exige los criterios «…» de spec.md tal cual en Acceptance | pendiente | — |
-| T5 | S5, S8 | Reproducir y corregir el tier del evento vs modelo (`next._Ctx.tier`) | pendiente | — |
+| T4 | S4, S8 | `check_build` exige los criterios «…» de spec.md tal cual en Acceptance | hecho (L10) | bd57bc3 |
+| T5 | S5, S8 | Reproducir y corregir el tier del evento vs modelo (`next._Ctx.tier`) | hecho (L10) | bd57bc3 |
 | T6 | S6, S8 | Preflight `which` del primer comando de cada check → falla de configuración | hecho (L7) | 1cac75e |
-| T7 | S7, S8 | SKILL.md: archivo de respuesta en `$TMPDIR`/`%TEMP%` de entrada | pendiente | — |
-| T8 | S1-S8 | README, PLAN, arquitectura y corrida en el sandbox | pendiente | — |
+| T7 | S7, S8 | SKILL.md: archivo de respuesta en `$TMPDIR`/`%TEMP%` de entrada | hecho (L11) | ver git log |
+| T8 | S1-S8 | README, PLAN, arquitectura y corrida en el sandbox | docs y aviso de doctor hechos (L11); corrida en el sandbox pendiente | ver git log |
 
 ## Log
 
@@ -37,4 +37,7 @@ Rama: `feat/f4x-pendientes` (desde `main` en 100d1a2; `develop` está atrás de 
 - **L6** T3 (worker; RED 10, GREEN 245): `atta next` escribe `blocked_since` la primera vez que espera y suma a `blocked_s` al desbloquearse; la transición emite `blocked_s` y `duration_s` sin la espera; un job que nunca esperó emite el mismo evento que antes. Tablero: «· bloqueado X» junto al p50 y en el detalle; `/api/jobs` suma `jobs[].blocked` y `stats.blocked`. Aplica a cualquier etapa. `timeouts.py` sigue midiendo la etapa entera. Test `…waits_and_writes_nothing` reemplazado a propósito.
 - **L7** T6 (worker; RED 4, GREEN 9): `_preflight` (que usan `run_gate` y `config_problems`) resuelve el primer comando de cada check con `shutil.which` (PATHEXT en Windows), saltea `VAR=valor`, builtins, cmdlets/alias y sintaxis compleja; un script con ruta solo se marca si falta en el checkout principal y en el worktree (así el reintento de `next` ve lo mismo y no hay bucle). Exit 127 con comando existente sigue siendo de código. Pendiente S8: aviso en `atta doctor` (T8). Windows sin probar en local.
 - **L8** Slice: 5 commits, ~1085 líneas (por encima de ~400): revisar por commit; T1 en su propio commit por riesgo.
+- **L9** Verificación independiente de T1 (Risk: item 2): primera pasada con bloqueantes B1 (preámbulo cgo `// #cgo`), B2 (Ruby `#{…}` en heredoc), B3 (líneas con forma de comentario dentro de strings multilínea: template literals, raw strings, heredocs, `"""`, `R"(`, here-strings, YAML) y B3a (`/*` sin cerrar dentro de un string oculta código posterior). Corrección (5a88ca8): fuera de Python, un archivo con aperturas de string multilínea, heredocs, JSX, cgo, continuaciones `\` o `/*` sin cerrar nunca es cosmético; en Rust, shell, Ruby, PHP, PowerShell y YAML tampoco si las líneas de código tienen comillas. Re-verificación: S1 y S8 cumplidos, sin bloqueantes; diferencial idéntico salvo los casos cosméticos pedidos. Advisory 1 (literales XML de Scala) corregido inline con test; advisories aceptados: expansiones de shell multilínea sin comillas, `//sys` de Go, `__doc__`/doctests y `# type:`/`# noqa`.
+- **L10** T4+T5 (worker): `check_build(text, spec)` exige cada «…» de la sección Acceptance de spec.md tal cual (espacios normalizados) en `## Acceptance` de build.md; falta o reescrito → problema en español; `_build_contract` (un reintento de la Cortadora) y `decide._signals` (pasa a la Reina LLM) lo usan; plantillas de Cortadora y Reina lo dicen. T5 reproducido: un modelo por rol se registraba con el tier base; `models.Table.tier_for` y `_Ctx.tier` registran el tier del modelo usado; en un fallback `pending_agent` guarda `chain_tier` (lo usan `atta model-failed`, el evento `model_fallback` y su mensaje; entradas viejas sin `chain_tier` usan `tier`). Pins cambiados a propósito: `test_pending_agent_follows_overrides_and_escalation` (T2→T1) y `test_walks_the_tier_chain_and_waits_when_it_is_spent` (sonnet/T2 con chain_tier T3). Suite 1389 OK.
+- **L11** T7 + T8 docs (worker): SKILL.md resuelve primero `$TMPDIR` (o `/tmp`), `%TEMP%`/`$env:TEMP` y escribe ahí (sin scratchpad); `atta doctor` suma un ⚠ cuando el primer comando de un check falta en el PATH (vía `gate.config_problems`); README, arquitectura (§8.2 nueva) y PLAN (F4.x ⏳) al día. Suite 1396 OK. Queda la corrida en el sandbox.
 
