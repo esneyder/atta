@@ -18,7 +18,7 @@ from atta.spine import cli, doctor, initcmd, project
 
 HAS_GIT = shutil.which("git") is not None
 FAKEGH = Path(__file__).resolve().parent / "fakegh" / "fakegh.py"
-LABELS = ["atta", "atta:needs-info", "atta:needs-human", "atta:needs-review"]
+LABELS = ["atta", "atta:needs-info", "atta:needs-human", "atta:needs-review", "atta:ratchet"]
 CHECKS = {"checks": [{"name": "tests", "run": "python -m unittest"}], "timeout_s": 900}
 PIP = "24.0"
 CLAUDE = "2.1.0 (Claude Code)"
@@ -205,7 +205,7 @@ class FailureTest(DoctorBase):
         self.set_gh({"user": "operador", "repo": {"name": "proj"}, "repo_labels": LABELS[:3]})
         code, out = self.run_doctor()
         self.assertEqual(code, 1, out)
-        self.assert_line(out, "✗ faltan labels de Atta en el repo: atta:needs-review",
+        self.assert_line(out, "✗ faltan labels de Atta en el repo: atta:needs-review, atta:ratchet",
                          "Corre atta init en tu terminal: crea las labels que faltan.")
         self.assertIn("Corrige lo marcado con ✗ antes de correr /atta.", out.splitlines())
 

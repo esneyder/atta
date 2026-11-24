@@ -5,6 +5,8 @@ MERGED and "headRefOid" from --match-head-commit), "fail" ({"<cmd> <sub>": "stde
 that command exit 1), "calls" (appended: {"argv": [...], "stdin": text|null}), "repo_labels"
 (optional list of label names that exist in the repository: when present, `issue edit
 --add-label X` fails like GitHub if X is not in it, and `label create X` adds it).
+`issue create` adds an OPEN issue (next free number) with its --label and prints its URL; with
+"repo_labels" an unknown --label fails like GitHub. `issue list --state all` also lists closed ones.
 Without "repo_labels" every label exists and `label create` / `label list` are unsupported (exit 1).
 `gh --version`, `auth status` (logged in unless "fail" has "auth status") and `repo view`
 ("repo" object, default {"name": "r"}) are what `atta doctor` asks.
@@ -85,10 +87,22 @@ def main(argv):
         sys.stdout.write(state.get("user", "operador") + "\n")
     elif key == "issue list":
         label = _opt(argv, "--label")
+        everything = _opt(argv, "--state") == "all"
         rows = [i for i in state["issues"].values()
-                if i.get("state", "OPEN") == "OPEN"
+                if (everything or i.get("state", "OPEN") == "OPEN")
                 and (label is None or label in [lb["name"] for lb in i.get("labels", [])])]
         _out([_pick(i, fields) for i in sorted(rows, key=lambda i: i["number"])])
+    elif key == "issue create":
+        label = _opt(argv, "--label")
+        if label and "repo_labels" in state and label not in state["repo_labels"]:
+            sys.stderr.write(f"could not add label: '{label}' not found\n")
+            return 1
+        number = max([int(n) for n in state["issues"]] + [0]) + 1
+        url = f"https://github.com/o/r/issues/{number}"
+        state["issues"][str(number)] = {
+            "number": number, "url": url, "state": "OPEN", "title": _opt(argv, "--title"),
+            "body": stdin, "labels": [{"name": label}] if label else []}
+        sys.stdout.write("Creating issue in o/r\n\n" + url + "\n")
     elif key == "issue view":
         issue = state["issues"].get(str(argv[2]))
         if issue is None:

@@ -41,6 +41,7 @@ ROLES = {
     "jardineras": "Las Jardineras",
     "soldado": "El Soldado",
     "reina": "La Reina",
+    "cultivadora": "La Cultivadora",
 }
 
 
@@ -226,6 +227,42 @@ def create_pr(head: str, base: str, title: str, body: str) -> str:
     if not urls:
         raise GhError("gh pr create no devolvió la URL del PR.")
     return urls[-1]
+
+
+def create_issue(title: str, body: str, label: str,
+                 create: tuple[str, str] | None = None) -> int:
+    """Open an issue with one label and return its number (K1: the ratchet issue). With
+    `create` = (color, description), a repository without the label gets it and the issue is
+    retried once, like `edit_label` (L31)."""
+    argv = ["issue", "create", "--title", title, "--label", label, "--body-file", "-"]
+    try:
+        out = run(argv, input=body)
+    except GhError as exc:
+        if create is None or not _label_missing(exc, label):
+            raise
+        try:
+            create_label(label, *create)
+        except GhError as failed:
+            raise GhError(f"La label {label} no existe en el repositorio y no se pudo crear: "
+                          f"{failed}") from None
+        out = run(argv, input=body)
+    numbers = re.findall(r"https://\S+/issues/(\d+)", out)
+    if not numbers:
+        raise GhError("gh issue create no devolvió la URL del issue.")
+    return int(numbers[-1])
+
+
+def find_issue(label: str, title: str) -> int | None:
+    """Number of an issue with `label` and exactly `title`, open or closed; None if there is none
+    (K1: an issue opened before its number reached lessons.md is reused, never duplicated)."""
+    rows = run_json(["issue", "list", "--label", label, "--state", "all", "--json",
+                     "number,title", "--limit", "500"])
+    if not isinstance(rows, list):
+        raise GhError("gh issue list no devolvió una lista.")
+    for row in rows:
+        if isinstance(row, dict) and row.get("title") == title:
+            return int(row["number"])
+    return None
 
 
 def ready_pr(number: int) -> None:

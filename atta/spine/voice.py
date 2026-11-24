@@ -91,6 +91,26 @@ def merged(pr: int, branch: str) -> str:
     return f"La Reina integró el PR #{pr} en {branch}."
 
 
+def ratchet_title(slug: str) -> str:
+    """Title of the Cultivadora's ratchet issue (K1); also how a lost issue number is found."""
+    return f"Ratchet: {slug}"
+
+
+def ratchet_issue(slug: str, rule: str, times: int, mechanizable: str, cases, queue: str) -> str:
+    """Body of the ratchet issue (K1, F3.x S5): it never enters the queue by itself."""
+    how = "una regla ast-grep del Filtro" if mechanizable == "ast-grep" else "un test"
+    lines = [f"La Cultivadora vio esta lección en {times} jobs y se puede convertir en {how}.",
+             "", f"Regla: {rule}", "", "Casos:"]
+    lines += [f"- {job}: {', '.join(paths)}" if paths else f"- {job}" for job, paths in cases]
+    lines += ["", f"Es la lección `{slug}` de `atta/memory/lessons.md`. Este issue no entra en la "
+                  f"cola de Atta: si quieres que Atta lo haga, agrégale la label `{queue}`."]
+    return "\n".join(lines)
+
+
+def ratchet_opened(issue: int, slug: str) -> str:
+    return f"La Cultivadora abrió el issue #{issue} para convertir la lección {slug} en una regla."
+
+
 def pr_opened(pr: int, branch: str) -> str:
     """The Cortadora's comment on the issue when `atta publish` opens the PR (T11)."""
     return f"La Cortadora abrió el PR #{pr} contra {branch}."

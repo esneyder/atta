@@ -314,3 +314,66 @@ class CliTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RatchetTest(Base):
+    """K1 (F3.x T3, S5): an issue `atta:ratchet` per mechanizable lesson seen in 2+ jobs, once."""
+
+    def seed(self, *specs):
+        lessons = [memory.Lesson(slug=slug, rule=f"Regla {slug}", cases=[("1-a", ["a.py"])],
+                                 times=times, updated="2025-03-01", mechanizable=mech,
+                                 issue=issue)
+                   for slug, times, mech, issue in specs]
+        write(self.path, memory.serialize(lessons))
+
+    def issues(self):
+        return {l.slug: l.issue for l in self.lessons.load()}
+
+    def test_opens_one_issue_per_mechanizable_lesson_seen_twice_and_keeps_its_number(self):
+        self.seed(("a", 2, "ast-grep", None), ("b", 3, "test", None), ("c", 1, "ast-grep", None),
+                  ("d", 5, "no", None), ("e", 2, None, None), ("f", 2, "ast-grep", 9))
+        seen = []
+        opened = self.lessons.ratchet(lambda lesson: seen.append(lesson.slug) or 40 + len(seen))
+        self.assertEqual(seen, ["a", "b"])
+        self.assertEqual(opened, [("a", 41), ("b", 42)])
+        self.assertEqual(self.issues(), {"a": 41, "b": 42, "c": None, "d": None, "e": None,
+                                         "f": 9})
+        self.assertIn("Mecanizable: ast-grep\nIssue: #41\n", self.path.read_text(encoding="utf-8"))
+
+    def test_second_run_never_opens_a_duplicate(self):
+        self.seed(("a", 2, "ast-grep", None))
+        self.lessons.ratchet(lambda lesson: 41)
+        before = snapshot(self.path)
+        seen = []
+        self.assertEqual(self.lessons.ratchet(lambda lesson: seen.append(lesson.slug) or 50), [])
+        self.assertEqual(seen, [])
+        self.assertEqual(snapshot(self.path), before)
+
+    def test_a_failure_keeps_the_numbers_already_opened(self):
+        self.seed(("a", 2, "ast-grep", None), ("b", 2, "test", None))
+
+        def open_issue(lesson):
+            if lesson.slug == "b":
+                raise RuntimeError("gh caído")
+            return 41
+
+        with self.assertRaises(RuntimeError):
+            self.lessons.ratchet(open_issue)
+        self.assertEqual(self.issues(), {"a": 41, "b": None})
+
+    def test_without_lessons_md_nothing_is_written(self):
+        self.assertEqual(self.lessons.ratchet(lambda lesson: 1), [])
+        self.assertFalse(self.path.exists())
+
+    def test_issue_field_round_trips_and_rejects_bad_numbers(self):
+        text = "## x\nRegla: r\nCasos:\n- 1-a: a.py\nVeces: 2\nActualizada: 2025-01-01\n" \
+               "Mecanizable: test\nIssue: #12\n"
+        [lesson] = memory.parse(text)
+        self.assertEqual(lesson.issue, 12)
+        self.assertEqual(memory.serialize([lesson]), memory.HEADER + "\n" + text)
+        for bad in ("Issue: 12", "Issue: #0", "Issue: #x", "Issue:"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(memory.LessonsError) as ctx:
+                    memory.parse("## x\nRegla: r\nVeces: 1\nActualizada: 2025-01-01\n"
+                                 + bad + "\n")
+                self.assertIn("lessons.md está dañado", str(ctx.exception))

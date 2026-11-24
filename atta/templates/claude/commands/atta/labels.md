@@ -1,5 +1,5 @@
 ---
-description: Menú de labels de Atta: la label de la cola y las de espera (needs-info, needs-human, needs-review), con el efecto antes de guardar.
+description: Menú de labels de Atta: la label de la cola y las de espera (needs-info, needs-human, needs-review) y la del ratchet, con el efecto antes de guardar.
 model: {{model:T0}}
 ---
 
@@ -41,14 +41,16 @@ adornos. La persona elige; tú muestras el estado, previsualizas el efecto y arm
    ```
 
    Es JSON: `settings` es una lista con `key`, `value` (vigente), `default`, `changed`, `type`,
-   `choices`, `editable` y `description`. Usa solo las claves de este menú: `labels.queue`, `labels.needs_info`, `labels.needs_human`, `labels.needs_review`.
-2. Muestra las cuatro labels vigentes con su valor por defecto:
+   `choices`, `editable` y `description`. Usa solo las claves de este menú: `labels.queue`, `labels.needs_info`, `labels.needs_human`, `labels.needs_review`, `labels.ratchet`.
+2. Muestra las cinco labels vigentes con su valor por defecto:
    - `labels.queue` (por defecto `atta`): pone un issue en la cola de Atta.
    - `labels.needs_info` (`atta:needs-info`): Atta espera respuesta del autor.
    - `labels.needs_human` (`atta:needs-human`): un job necesita a una persona.
    - `labels.needs_review` (`atta:needs-review`): el PR está listo y te toca revisarlo y mergearlo.
-   Si `needs_review` no está en `atta/config.json`, `atta settings --json` igual trae su valor
-   por defecto.
+   - `labels.ratchet` (`atta:ratchet`): el issue que abre la Cultivadora para convertir una
+     lección mecanizable en regla; no entra en la cola.
+   Si `needs_review` o `ratchet` no están en `atta/config.json`, `atta settings --json` igual
+   trae su valor por defecto.
 3. Pregunta con `AskUserQuestion` qué label quiere cambiar. Opciones: una por label (con el valor
    vigente y «(actual)»), y **Volver al valor por defecto** (solo si alguna tiene `changed`
    true). Luego pide el nombre nuevo con otra `AskUserQuestion`: ofrece el valor por defecto y
@@ -67,6 +69,7 @@ adornos. La persona elige; tú muestras el estado, previsualizas el efecto y arm
    atta settings set labels.needs_info atta:needs-info
    atta settings set labels.needs_human atta:needs-human
    atta settings set labels.needs_review atta:needs-review
+   atta settings set labels.ratchet atta:ratchet
    atta settings reset labels.queue
    ```
 

@@ -53,6 +53,7 @@ LABEL_STYLE = {
     "needs_info": ("fbca04", "Atta: falta información del autor del issue"),
     "needs_human": ("d93f0b", "Atta: necesita una decisión humana"),
     "needs_review": ("1d76db", "Atta: PR listo para que lo revises y lo mergees"),
+    "ratchet": ("5319e7", "Atta: lección mecanizable para convertir en regla ast-grep o test"),
 }
 # S13: what a new project's atta/config.json says about delivery (never merges by itself).
 NEW_PROJECT_DELIVERY = {"auto_merge_up_to": "none"}
