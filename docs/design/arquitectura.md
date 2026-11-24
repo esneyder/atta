@@ -423,6 +423,11 @@ allá del modelo de gentle (allí la entrega es humana): es una decisión explí
   - `job merge` verifica que la base del PR sea `develop` (`gh pr view --json baseRefName`) y usa
     `--match-head-commit` con el SHA que pasó el Filtro.
   - El guard bloquea `git push` a ramas fuera de `atta/*` y cualquier `gh pr merge` de un agente.
+  - Push sin fuerza, con una excepción (F3.x): la espina (nunca un agente) empuja la `atta/<job>` del propio
+    job con `--force-with-lease=refs/heads/atta/<job>:<pushed_sha>` solo cuando la Cortadora rebaseó sobre el
+    último push de la propia espina (la punta de origin es `pushed_sha`, guardado en `job.json`); queda como
+    evento `force_push`. Cualquier commit que la espina no empujó (o si el lease falla) → `needs-human`.
+    `develop`, `main` y cualquier otra rama solo reciben avance rápido. El guard sigue negando `--force*`.
   - El Filtro y `atta doctor` fallan si el checkout principal no está en `develop` (de ahí salen
     `checks.json` y las reglas); `atta doctor` verifica que `develop` exista en `origin` y avisa si el
     checkout está atrás.

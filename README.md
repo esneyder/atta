@@ -873,7 +873,7 @@ sale `0`.
 #### `publish <job>`
 
 Verifica que la rama sea `atta/<id>` (`check-push`) y que el worktree esté en ella, empuja **solo** esa
-rama con refspec explícito y sin `--force`, y si no hay PR abre uno **en borrador** contra `develop`
+rama con refspec explícito y sin `--force` (`publish` nunca fuerza), y si no hay PR abre uno **en borrador** contra `develop`
 (firmado por la Cortadora, con `Closes #<issue>`). El cuerpo sale de la plantilla
 `atta/templates/pr-body.md` con el `build.md` de la ronda: `## Summary` (Resumen), `## Changes`
 (Cambios), `## Tests` (Pruebas), `## Acceptance` (Criterios de aceptación) y `Closes #<issue>`. Los
@@ -1215,7 +1215,12 @@ La Reina decide; **la espina mergea**. Cuando `decision.md` empieza con `APPROVE
    el merge y lista los archivos.
 8. El Filtro otra vez, tipo `merge-checks` (`round-N/merge-checks.md`).
 9. El commit del worktree y la punta de `atta/<id>` son exactamente el commit que pasó el Filtro.
-10. Push de `atta/<id>` (refspec explícito, sin `--force`).
+10. Push de `atta/<id>` (refspec explícito). La espina trae la punta de origin y la compara con la local:
+    si es ancestro, push normal (avance rápido). Solo si la Cortadora rebaseó sobre el último push de la
+    propia espina (`pushed_sha` en `job.json`), empuja con `--force-with-lease=refs/heads/atta/<id>:<pushed_sha>`
+    y registra `force_push` en `events.jsonl`. Cualquier commit que la espina no empujó (origin por delante,
+    o distinto de `pushed_sha`, o job sin `pushed_sha`) detiene el job en `needs-human` con evento
+    `push_lease_rejected` y no empuja. Ver «Qué puede forzar la espina» en 8.3.
 11. Vuelve a verificar el PR (fork, base, rama, abierto); si está en borrador, `gh pr ready`.
 12. `gh pr merge <n> --merge --match-head-commit <sha que pasó el Filtro>`: si alguien empujó otro
     commit, GitHub rechaza el merge.
@@ -1343,8 +1348,8 @@ El Filtro decide si una rama está en condiciones de ser revisada (y, antes del 
 
 ### 8.3 Sincronizar sin perder una revisión (K7)
 
-Tanto `atta merge` como `atta handoff` mergean `origin/develop` en la rama del job (nunca rebase,
-nunca force-push). Antes de hacerlo la espina calcula el diff propio del job
+Tanto `atta merge` como `atta handoff` mergean `origin/develop` en la rama del job (nunca rebase;
+ver abajo el único force-push permitido). Antes de hacerlo la espina calcula el diff propio del job
 (`git diff origin/develop...HEAD`, desde el merge-base) y lo vuelve a calcular tras un merge limpio.
 La comparación es por archivo y cubre las líneas cambiadas **y las de contexto**, pero no los
 números de línea de los hunks, el nombre de función tras `@@` ni los ids `index` de los blobs
@@ -1373,6 +1378,18 @@ Estos regresos no gastan rondas (`total_rounds`, `gate_rounds`, `review_rounds`)
 `sync_attempts` (`max_rounds`), que cuenta una vez por intento (al entrar en `merging`, o al volver
 desde `approve` en un handoff o desde `awaiting-merge`). Cuando ya no cabe otro intento, el
 conflicto y el diff cambiado escalan a `needs-human` como cualquier fallo de merge.
+
+**Qué puede forzar la espina.** Solo un caso: `atta merge`, `atta handoff` y sus reanudaciones empujan
+la rama `atta/<id>` del propio job con `--force-with-lease=refs/heads/atta/<id>:<sha>` cuando la
+`atta/<id>` de origin no es ancestro de la local **y** es exactamente el último sha que la espina empujó
+ella misma (`pushed_sha` en `job.json`, que guarda tras cada push de la rama): la Cortadora rebaseó sobre
+nuestro propio push. El `<sha>` del lease es ese `pushed_sha`; nunca hay `--force` a secas, `+refspec` ni
+lease sin sha. Queda en `events.jsonl` como `force_push` (`branch`, `old`, `new`). Cualquier commit que la
+espina no empujó (GitHub «Update branch», una sugerencia, el arreglo de una persona; origin por delante de
+la local; jobs anteriores sin `pushed_sha`) no se pisa: evento `push_lease_rejected`, `needs-human` y no
+empuja. Si alguien empujó después del fetch, el lease también falla (mismo evento, sin reintento). `develop`, `main`, las ramas prohibidas, cualquier
+otra rama y `publish` siguen con push normal (solo avance rápido). Los agentes nunca fuerzan: el guard
+niega todo `--force*`, también `--force-with-lease=…`.
 
 ### Qué hace, en orden
 

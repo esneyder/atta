@@ -36,6 +36,23 @@ class WorkBranchTests(BranchTestBase):
             branches.work_branch("7", cfg)
 
 
+class OwnsWorkBranchTests(BranchTestBase):
+    def test_only_the_jobs_own_work_branch_is_owned(self):
+        self.assertTrue(branches.owns_work_branch("atta/12-x", "12-x", self.cfg))
+        for branch, job in (("atta/13-y", "12-x"), ("develop", "12-x"), ("main", "12-x"),
+                            ("feature/x", "12-x"), ("atta/12-x", "../main"),
+                            ("refs/heads/atta/12-x", "12-x"), ("atta/12-X", "12-x"),
+                            ("atta/12-x ", "12-x"), ("+atta/12-x", "12-x"),
+                            ("atta/12-x:main", "12-x"), ("atta/12-x", None)):
+            with self.subTest(branch=branch, job=job):
+                self.assertFalse(branches.owns_work_branch(branch, job, self.cfg))
+
+    def test_forbidden_work_branch_is_not_owned(self):
+        cfg = copy.deepcopy(self.cfg)
+        cfg["forbidden_branches"] = ["main", "atta/7"]
+        self.assertFalse(branches.owns_work_branch("atta/7", "7", cfg))
+
+
 class PrBaseTests(BranchTestBase):
     def assertRefusedBase(self, base, message, cfg=None):
         with self.assertRaises(branches.BranchRefused) as ctx:

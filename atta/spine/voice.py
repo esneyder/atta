@@ -134,6 +134,20 @@ def sync_diff_review(pr: int, branch: str, paths: list[str]) -> str:
             f"({', '.join(paths)}); los revisores lo miran de nuevo.")
 
 
+def push_lease_rejected(branch: str, expected: str, actual: str | None, local: str) -> str:
+    """S3: the leased push of the job's branch failed because origin moved after the fetch."""
+    return (f"No empujé {branch}: alguien más empujó a esa rama después de que la espina la "
+            f"trajo (esperaba {expected}, en origin hay {actual or 'ninguna punta'}; "
+            f"mi rama local está en {local}). No reintento ni piso su trabajo: revísalo.")
+
+
+def push_foreign_commits(branch: str, pushed: str | None, actual: str, local: str) -> str:
+    """S3: origin's job branch has commits the spine did not push; nothing is overwritten."""
+    return (f"No empujé {branch}: en origin hay commits que la espina no empujó "
+            f"(punta en origin {actual}; lo último que empujé fue {pushed or 'nada registrado'}; "
+            f"mi rama local está en {local}). No piso trabajo ajeno: revisa la rama.")
+
+
 def sync_conflict_build(pr: int, branch: str, files: list[str]) -> str:
     """S4: the sync conflicted; the Cortadora resolves it."""
     return (f"El PR #{pr} tiene conflicto con origin/{branch} en {', '.join(files)}; "

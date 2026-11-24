@@ -155,7 +155,21 @@ class FlowBase(FakeGhMixin, unittest.TestCase):
                 ["branch", "-D", BRANCH])
 
     def assert_never_forced(self):
-        for args in self.git_calls:
+        self._assert_no_force(self.git_calls)
+
+    def leased_call(self, branch, expected_sha):
+        return ["push", f"--force-with-lease=refs/heads/{branch}:{expected_sha}", "origin",
+                f"refs/heads/{branch}:refs/heads/{branch}"]
+
+    def assert_only_leased_force(self, branch, expected_sha):
+        """S3: the one narrow exception to assert_never_forced: exactly one push of `branch` with
+        an explicit lease on `expected_sha`; every other call must still be unforced."""
+        leased = self.leased_call(branch, expected_sha)
+        self.assertEqual(self.git_calls.count(leased), 1, self.pushes())
+        self._assert_no_force([c for c in self.git_calls if c != leased])
+
+    def _assert_no_force(self, calls):
+        for args in calls:
             if args in self.allowed_deletions():
                 continue
             self.assertFalse({"-f", "--force", "--force-with-lease", "--force-if-includes",
@@ -1983,6 +1997,229 @@ class HandoffSyncTests(HandoffBase):
         self.assertEqual(self.job()["stage"], "awaiting-merge")
         self.assertEqual(self.job()["sync_attempts"], 0)
         self.assertEqual(self.events_named("sync_diff"), [])
+
+
+class LeasedPushTests(HandoffBase):
+    """F3.x S3/S6: when the Cortadora rebased, the spine pushes atta/<job> with an explicit lease."""
+
+    def setUp(self):
+        super().setUp()
+        self.git_calls.clear()  # drop the publish push of the setup
+
+    def events_named(self, name):
+        return [e for e in read_events(self.store.job_dir(JID)) if e.get("event") == name]
+
+    def rebase(self):
+        """Rewrite the job's commit: origin's atta/<job> stops being an ancestor."""
+        old = self.origin_sha(f"refs/heads/{BRANCH}")
+        git(self.wt(), "commit", "-q", "--amend", "-m", "feature reescrita")
+        new = git(self.wt(), "rev-parse", "HEAD")
+        self.assertNotEqual(old, new)
+        return old, new
+
+    def move_origin_after_fetch(self):
+        """Someone else pushes to origin's atta/<job> right after the spine fetched it."""
+        real = flow.git
+        moved = {}
+
+        def racing(cwd, *args, **kw):
+            result = real(cwd, *args, **kw)
+            if args[:2] == ("rev-parse", "--verify") and args[2].startswith("refs/remotes/origin/") \
+                    and not moved:
+                tip = git(self.origin, "rev-parse", f"refs/heads/{BRANCH}")
+                tree = git(self.origin, "rev-parse", f"{tip}^{{tree}}")
+                moved["sha"] = git(self.origin, "commit-tree", tree, "-p", tip, "-m", "ajeno")
+                git(self.origin, "update-ref", f"refs/heads/{BRANCH}", moved["sha"])
+            return result
+
+        patcher = mock.patch.object(flow, "git", side_effect=racing)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return moved
+
+    def test_handoff_of_a_rebased_branch_pushes_once_with_the_fetched_lease(self):
+        old, new = self.rebase()
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "awaiting-merge")
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), new)
+        self.assertEqual(self.git_calls.count(self.leased_call(BRANCH, old)), 1)
+        self.assertEqual([c for c in self.pushes() if c != self.leased_call(BRANCH, old)], [])
+        events = self.events_named("force_push")
+        self.assertEqual([(e["branch"], e["old"], e["new"]) for e in events],
+                         [(BRANCH, old, new)])
+        self.assertEqual(self.events_named("push_lease_rejected"), [])
+        self.assert_only_leased_force(BRANCH, old)
+
+    def test_merge_of_a_rebased_branch_pushes_once_with_the_fetched_lease(self):
+        old, new = self.rebase()
+        code, out, err = self.merge()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.job()["stage"], "merged")
+        self.assertEqual([(e["branch"], e["old"], e["new"])
+                          for e in self.events_named("force_push")], [(BRANCH, old, new)])
+        self.assertEqual(self.gh_by("pr", "merge"),
+                         [["pr", "merge", "101", "--merge", "--match-head-commit", new]])
+        self.assert_only_leased_force(BRANCH, old)
+
+    def test_gated_resume_push_of_a_rebased_branch_uses_the_lease(self):
+        old, new = self.rebase()
+        flow._push_gated(self.job(), self.wt(), new, self.cfg, self.store)
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), new)
+        self.assertEqual([e["old"] for e in self.events_named("force_push")], [old])
+        self.assert_only_leased_force(BRANCH, old)
+
+    def test_remote_moved_after_the_fetch_rejects_the_lease_and_escalates(self):
+        old, new = self.rebase()
+        moved = self.move_origin_after_fetch()
+        code, out, err = self.handoff()
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), moved["sha"])
+        self.assertEqual(self.job()["stage"], "needs-human")
+        reason = (f"No empujé {BRANCH}: alguien más empujó a esa rama después de que la espina "
+                  f"la trajo (esperaba {old}, en origin hay {moved['sha']}; mi rama local está "
+                  f"en {new}). No reintento ni piso su trabajo: revísalo.")
+        self.assertIn(reason, err)
+        self.assertIn(reason, self.handoff_md())
+        self.assertEqual(self.git_calls.count(self.leased_call(BRANCH, old)), 1)
+        self.assertEqual(len(self.pushes()), 1)
+        rejected = self.events_named("push_lease_rejected")
+        self.assertEqual([(e["branch"], e["expected"], e["actual"]) for e in rejected],
+                         [(BRANCH, old, moved["sha"])])
+        self.assertTrue(all("from" not in e and "to" not in e for e in rejected))
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assert_only_leased_force(BRANCH, old)
+
+    def foreign_commit(self):
+        """A commit somebody else pushed to origin's atta/<job> (GitHub «Update branch», a
+        committed suggestion, a person's fix) on top of its current tip."""
+        tip = git(self.origin, "rev-parse", f"refs/heads/{BRANCH}")
+        tree = git(self.origin, "rev-parse", f"{tip}^{{tree}}")
+        sha = git(self.origin, "commit-tree", tree, "-p", tip, "-m", "arreglo de una persona")
+        git(self.origin, "update-ref", f"refs/heads/{BRANCH}", sha)
+        return sha
+
+    def assert_foreign_kept(self, code, err, foreign, pushed, local):
+        self.assertEqual(code, 1)
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), foreign)
+        self.assertEqual(self.job()["stage"], "needs-human")
+        self.assertEqual(self.pushes(), [])
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assertEqual(self.gh_by("pr", "merge"), [])
+        rejected = self.events_named("push_lease_rejected")
+        self.assertEqual([(e["branch"], e["expected"], e["actual"], e["local"])
+                          for e in rejected], [(BRANCH, pushed, foreign, local)])
+        self.assertTrue(all("from" not in e and "to" not in e for e in rejected))
+        self.assertIn(f"No empujé {BRANCH}: en origin hay commits que la espina no empujó", err)
+        self.assertIn(foreign, err)
+        self.assert_never_forced()
+
+    def test_publish_records_the_pushed_sha(self):
+        self.assertEqual(self.job()["pushed_sha"], self.origin_sha(f"refs/heads/{BRANCH}"))
+
+    def test_handoff_never_rewinds_a_commit_pushed_before_the_fetch(self):
+        pushed = self.origin_sha(f"refs/heads/{BRANCH}")
+        foreign = self.foreign_commit()
+        code, out, err = self.handoff()
+        self.assert_foreign_kept(code, err, foreign, pushed, pushed)
+
+    def test_merge_never_rewinds_a_commit_pushed_before_the_fetch(self):
+        pushed = self.origin_sha(f"refs/heads/{BRANCH}")
+        foreign = self.foreign_commit()
+        code, out, err = self.merge()
+        self.assert_foreign_kept(code, err, foreign, pushed, pushed)
+
+    def test_rebased_branch_with_a_foreign_commit_on_origin_is_not_forced(self):
+        pushed = self.origin_sha(f"refs/heads/{BRANCH}")
+        foreign = self.foreign_commit()
+        old, new = self.rebase_from(pushed)
+        code, out, err = self.handoff()
+        self.assert_foreign_kept(code, err, foreign, pushed, new)
+
+    def rebase_from(self, pushed):
+        git(self.wt(), "commit", "-q", "--amend", "-m", "feature reescrita")
+        return pushed, git(self.wt(), "rev-parse", "HEAD")
+
+    def test_job_without_a_recorded_pushed_sha_is_never_forced(self):
+        job = self.job()
+        job.pop("pushed_sha")
+        self.store.save(job)
+        old, new = self.rebase()
+        code, out, err = self.handoff()
+        self.assert_foreign_kept(code, err, old, None, new)
+        self.assertNotIn("pushed_sha", self.job())
+
+    @unittest.skipIf(os.name == "nt", "el hook pre-receive necesita un shell POSIX")
+    def test_hook_rejection_of_the_leased_push_is_not_a_lease_rejection(self):
+        old, new = self.rebase()
+        hook = self.origin / "hooks" / "pre-receive"
+        write(hook, "#!/bin/sh\necho 'rechazado por el hook' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        code, out, err = self.handoff()
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"), old)
+        self.assertEqual(self.job()["stage"], "needs-human")
+        self.assertEqual(self.events_named("push_lease_rejected"), [])
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assertIn("rechazado por el hook", err)
+        self.assertEqual(self.job()["pushed_sha"], old)
+
+    def test_rebase_over_the_spines_own_push_records_the_new_sha(self):
+        old, new = self.rebase()
+        self.assertEqual(self.job()["pushed_sha"], old)
+        self.ok("handoff", JID)
+        self.assertEqual(self.job()["pushed_sha"], new)
+        self.assert_only_leased_force(BRANCH, old)
+
+    def test_fast_forward_push_stays_plain(self):
+        self.commit_in_wt("src/otro_feature.py", "z = 3\n")
+        code, out, err = self.handoff()
+        self.assertEqual((code, err), (0, ""), out)
+        self.assertEqual(self.origin_sha(f"refs/heads/{BRANCH}"),
+                         git(self.wt(), "rev-parse", "HEAD"))
+        self.assertEqual(self.pushes(),
+                         [["push", "origin", f"refs/heads/{BRANCH}:refs/heads/{BRANCH}"]])
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assert_never_forced()
+
+    def test_missing_remote_branch_is_a_plain_push(self):
+        git(self.origin, "update-ref", "-d", f"refs/heads/{BRANCH}")
+        flow._push(self.wt(), BRANCH, self.cfg, job=self.job(), jobs=self.store)
+        self.assertEqual(self.pushes(),
+                         [["push", "origin", f"refs/heads/{BRANCH}:refs/heads/{BRANCH}"]])
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assert_never_forced()
+
+    def test_integration_and_forbidden_branches_are_never_pushed_or_forced(self):
+        for branch in ("develop", "main", "master"):
+            with self.subTest(branch=branch):
+                before = len(self.git_calls)
+                with self.assertRaises(flow.branches.BranchRefused):
+                    flow._push(self.wt(), branch, self.cfg, job=self.job(), jobs=self.store)
+                self.assertEqual([c for c in self.git_calls[before:] if c[0] == "push"], [])
+        self.assertEqual(self.events_named("force_push"), [])
+
+    def test_another_atta_branch_keeps_the_plain_push_and_is_rejected_when_diverged(self):
+        other = "atta/99-otra"
+        git(self.wt(), "push", "-q", "origin", f"HEAD:refs/heads/{other}")
+        remote = self.origin_sha(f"refs/heads/{other}")
+        git(self.wt(), "commit", "-q", "--amend", "-m", "reescrita")
+        git(self.wt(), "branch", "-f", other, "HEAD")
+        with self.assertRaises(flow.FlowError):
+            flow._push(self.wt(), other, self.cfg, job=self.job(), jobs=self.store)
+        self.assertEqual(self.origin_sha(f"refs/heads/{other}"), remote)
+        self.assertEqual(self.pushes(),
+                         [["push", "origin", f"refs/heads/{other}:refs/heads/{other}"]])
+        self.assertEqual(self.events_named("force_push"), [])
+        self.assert_never_forced()
+
+    def test_publish_never_uses_the_lease(self):
+        self.rebase()
+        self.set_job(stage="build")
+        code, out, err = self.run_cmd("publish", JID)
+        self.assertEqual(code, 2, out)
+        self.assertEqual([c for c in self.pushes() if len(c) > 3], [])
+        self.assertEqual(self.events_named("force_push"), [])
 
 
 class HandoffRecoveryTests(HandoffBase):

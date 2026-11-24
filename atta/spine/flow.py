@@ -7,7 +7,17 @@ Commands are exposed through `register(subparsers)`; cli.py wires them. Each han
 in Spanish to stderr by the handler itself.
 
 Branch policy (arquitectura §12, D3): every push goes through branches.check_push_target with an
-explicit `refs/heads/<b>:refs/heads/<b>` refspec and never `--force`; every PR create/merge goes
+explicit `refs/heads/<b>:refs/heads/<b>` refspec and never `--force` or `+refspec`. The only
+exception (S3) is the spine pushing a job's own work branch `atta/<id>` (`branches.work_branch`)
+from merge, handoff and their resumes when the Cortadora rebased over the spine's own last push:
+origin's tip (freshly fetched) is not an ancestor of the local branch and equals the job's
+`pushed_sha` (job.json, set after every spine push of the branch):
+`--force-with-lease=refs/heads/<b>:<pushed_sha>`, recorded as a `force_push` event (branch, old,
+new). Any commit the spine did not push (origin ahead, a different tip, a job without
+`pushed_sha`) is never overwritten: `push_lease_rejected` event and needs-human, no push. If
+someone pushes after the fetch the lease fails the same way, no retry. The integration
+branch, forbidden branches, any other branch and `publish` keep the plain fast-forward push, and
+agents never force (the guard denies `--force*`). Every PR create/merge goes
 through branches.check_pr_base with the PR's real `baseRefName`; `gh pr merge` uses
 `--match-head-commit` with the sha that passed `merge-checks` after syncing with develop.
 
@@ -147,10 +157,82 @@ def git(cwd, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return proc
 
 
-def _push(worktree: Path, branch: str, cfg: dict) -> None:
-    """Push `branch` to origin under the branch policy: explicit refspec, never forced."""
+def _push(worktree: Path, branch: str, cfg: dict, *, job: dict | None = None,
+          jobs: JobStore | None = None, lease: bool = True) -> None:
+    """Push `branch` to origin under the branch policy: explicit refspec, never `--force`.
+
+    With `job` and `jobs` and the job's own work branch (S3) the spine records `pushed_sha` in
+    job.json after every push and, unless `lease` is False (publish), decides from origin's
+    freshly fetched tip R, the local tip L and the recorded `pushed_sha` P:
+    R == L: nothing to push. R ancestor of L: plain fast-forward push. L ancestor of R, or
+    diverged with R != P (or no P): origin holds commits the spine did not push, so never force,
+    needs-human. Diverged with R == P (the Cortadora rebased over our own last push): leased push
+    on P. Any other branch, or no job, keeps the plain push.
+    """
     branches.check_push_target(branch, cfg)
-    git(worktree, "push", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
+    spec = f"refs/heads/{branch}:refs/heads/{branch}"
+    owned = (job is not None and jobs is not None
+             and branches.owns_work_branch(branch, job["id"], cfg))
+    if owned and lease:
+        remote = git(worktree, "ls-remote", "origin", f"refs/heads/{branch}").stdout.split()
+        if remote:
+            git(worktree, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+            tip = git(worktree, "rev-parse", "--verify",
+                      f"refs/remotes/origin/{branch}").stdout.strip()
+            local = git(worktree, "rev-parse", "--verify", f"refs/heads/{branch}").stdout.strip()
+            if tip == local:
+                return
+            behind = git(worktree, "merge-base", "--is-ancestor", tip, local, check=False)
+            if behind.returncode == 1:  # origin's tip is not an ancestor of the local branch
+                pushed = jobs.load(job["id"]).get("pushed_sha")
+                ahead = git(worktree, "merge-base", "--is-ancestor", local, tip,
+                            check=False).returncode == 0
+                if ahead or not pushed or pushed != tip:
+                    _foreign_commits(branch, pushed, tip, local, job, jobs)
+                _push_leased(worktree, branch, spec, pushed, local, job, jobs)
+                return
+    git(worktree, "push", "origin", spec)
+    if owned:
+        _record_pushed(jobs, job["id"], git(worktree, "rev-parse", "--verify",
+                                            f"refs/heads/{branch}").stdout.strip())
+
+
+def _record_pushed(jobs: JobStore, jid: str, sha: str) -> None:
+    """Remember the sha the spine last pushed to the job's branch (the basis of a later lease)."""
+    _update(jobs, jid, pushed_sha=sha)
+
+
+def _foreign_commits(branch: str, pushed: str | None, tip: str, local: str, job: dict,
+                     jobs: JobStore):
+    """Origin's branch holds something the spine did not push: record it and stop, no push."""
+    append_event(jobs.job_dir(job["id"]), {
+        "ts": to_iso(utcnow()), "job": job["id"], "event": "push_lease_rejected",
+        "branch": branch, "expected": pushed, "actual": tip, "local": local})
+    raise _MergeFailure(voice.push_foreign_commits(branch, pushed, tip, local))
+
+
+def _push_leased(worktree: Path, branch: str, spec: str, expected: str, local: str,
+                 job: dict, jobs: JobStore) -> None:
+    """The Cortadora rebased over the spine's own last push (`expected`, also origin's tip):
+    `--force-with-lease=<ref>:<that sha>`. Never a bare force and never a fresher lease: if
+    someone pushed after the fetch the push fails and the job escalates."""
+    job_dir = jobs.job_dir(job["id"])
+    proc = git(worktree, "push", f"--force-with-lease=refs/heads/{branch}:{expected}", "origin",
+               spec, check=False)
+    if proc.returncode != 0:
+        now = git(worktree, "ls-remote", "origin", f"refs/heads/{branch}",
+                  check=False).stdout.split()
+        actual = now[0] if now else None
+        if actual == expected:
+            detail = (proc.stderr or proc.stdout).strip() or f"exit {proc.returncode}"
+            raise FlowError(f"git push falló: {detail}")
+        append_event(job_dir, {"ts": to_iso(utcnow()), "job": job["id"],
+                               "event": "push_lease_rejected", "branch": branch,
+                               "expected": expected, "actual": actual, "local": local})
+        raise _MergeFailure(voice.push_lease_rejected(branch, expected, actual, local))
+    append_event(job_dir, {"ts": to_iso(utcnow()), "job": job["id"], "event": "force_push",
+                           "branch": branch, "old": expected, "new": local})
+    _record_pushed(jobs, job["id"], local)
 
 
 def delete_remote_branch(cwd, jid: str, branch: str, cfg: dict) -> None:
@@ -506,7 +588,7 @@ def cmd_publish(args, cfg, jobs: JobStore) -> int:
         if pr.get("isCrossRepository"):
             raise FlowError(_fork_message(pr.get("number")))
         branches.check_pr_base(pr.get("baseRefName") or "", cfg)
-    _push(wt, branch, cfg)
+    _push(wt, branch, cfg, job=job, jobs=jobs, lease=False)
     if pr is None:
         branches.check_pr_base(integration, cfg)
         body = github.sign("cortadora", _pr_body(job, jobs, wt, integration))
@@ -797,7 +879,7 @@ def _sync_gate_push(args, cfg, jobs: JobStore, job: dict, wt: Path, via: str = "
                 f"{job['sync_attempts'] + (0 if job['stage'] == 'merging' else 1)} de "
                 f"{cfg['max_rounds']}.")
         try:
-            _push(wt, branch, cfg)
+            _push(wt, branch, cfg, job=job, jobs=jobs)
         except branches.BranchRefused as exc:
             raise _MergeFailure(str(exc), REFUSED) from None
         raise _SyncRework(
@@ -820,7 +902,7 @@ def _sync_gate_push(args, cfg, jobs: JobStore, job: dict, wt: Path, via: str = "
         raise _MergeFailure(f"La rama {branch} no apunta al commit que pasó el Filtro "
                             f"({result.commit}); no se empuja.")
     try:
-        _push(wt, branch, cfg)
+        _push(wt, branch, cfg, job=job, jobs=jobs)
     except branches.BranchRefused as exc:
         raise _MergeFailure(str(exc), REFUSED) from None
     return result.commit
@@ -855,7 +937,7 @@ def _apply_rework(jobs: JobStore, job: dict, cfg: dict, rework: _SyncRework) -> 
     return OK
 
 
-def _push_gated(job: dict, wt: Path, sha: str, cfg: dict) -> str:
+def _push_gated(job: dict, wt: Path, sha: str, cfg: dict, jobs: JobStore | None = None) -> str:
     """Resume with the sha merge-checks already passed: same checks as after the Filtro (branch
     checked out, branch tip = sha), then the push (a no-op when origin has it)."""
     branch = job["branch"]
@@ -867,7 +949,7 @@ def _push_gated(job: dict, wt: Path, sha: str, cfg: dict) -> str:
     if tip != sha:
         raise _MergeFailure(f"La rama {branch} no apunta al commit que pasó el Filtro "
                             f"({sha}); no se empuja.")
-    _push(wt, branch, cfg)
+    _push(wt, branch, cfg, job=job, jobs=jobs)
     return sha
 
 
@@ -1085,7 +1167,7 @@ def _resume_merge(args, cfg, jobs: JobStore, job: dict) -> int:
         if gated and local == gated:
             print(f"El PR #{number} sigue abierto; la Reina retoma el merge de {jid} con el "
                   "commit que pasó el Filtro.")
-            sha = _push_gated(job, wt, gated, cfg)
+            sha = _push_gated(job, wt, gated, cfg, jobs)
         else:
             why = ("pero la rama cambió desde el Filtro" if gated else
                    "pero no hay un merge-checks.md con PASS de este merge")
@@ -1243,7 +1325,7 @@ def _recover_handoff(args, cfg, jobs: JobStore, job: dict) -> int:
         raise FlowError(f"El PR #{number} no está abierto ({pr.get('state')}); no se retoma "
                         "el handoff.")
     try:
-        _push_gated(job, wt, sha, cfg)
+        _push_gated(job, wt, sha, cfg, jobs)
         if pr.get("isDraft"):
             github.ready_pr(number)
     except _MERGE_ERRORS as exc:
