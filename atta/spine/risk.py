@@ -294,26 +294,47 @@ def _cosmetic_blobs(worktree: Path, path: str, entry) -> bool:
 
 # ---------------------------------------------------------------- cosmetic changes (S1)
 
-# Comment syntax per extension, kept conservative: `line` prefixes start a comment line,
-# `block` allows /* ... */, `code` lists comment lines that still mean something (shebangs,
-# build tags, magic comments, compiler pragmas, docblock annotations): they count as code.
+# Comment syntax per extension. A false negative lowers the review depth (G3) and a false
+# positive only asks for a test, so every doubt counts as code:
+#   line    prefixes that start a comment line;  block  /* ... */ comments allowed
+#   code    comment lines that still mean something (shebangs, build tags, cgo, magic
+#           comments, pragmas, docblock annotations): they count as code
+#   reject  regexes searched in the whole old and new text: a match (a multi-line string
+#           opener, a heredoc, JSX, cgo, text outside <?php...) makes the file not cosmetic
+#   bare    for languages whose plain quotes may span lines: a code line holding any of
+#           these characters makes the file not cosmetic (no string can open, so no
+#           comment-looking line can be string content)
+# Any line ending in `\` (a continuation) and a /* that never closes are never cosmetic.
 _SHEBANG = r"#!"
 _JS_CODE = (_SHEBANG, r"///\s*<", r"@ts-", r"@jsx", r"@flow", r"__PURE__", r"webpack",
             r"sourceMappingURL")
-_SLASH = {"line": ("//",), "block": True, "code": (_SHEBANG,)}
-_HASH = {"line": ("#",), "block": False, "code": (_SHEBANG,)}
+_SLASH = {"line": ("//",), "block": True, "code": (_SHEBANG,), "reject": (), "bare": ""}
+_HASH = {"line": ("#",), "block": False, "code": (_SHEBANG,), "reject": (),
+         "bare": "\"'`"}
+_TRIPLE = r'"""'
 COMMENT_STYLES = {
-    **{ext: _SLASH for ext in ("java", "kt", "kts", "cs", "c", "h", "cc", "cpp", "cxx",
-                               "hh", "hpp", "hxx", "swift", "scala", "rs")},
-    **{ext: {**_SLASH, "code": _JS_CODE} for ext in ("js", "jsx", "ts", "tsx", "mjs",
-                                                     "cjs")},
-    "php": {**_SLASH, "code": (_SHEBANG, r"@")},  # `#` is an attribute; @ are annotations
-    "go": {"line": ("//",), "block": False,  # a /* */ before `import "C"` is cgo code
-           "code": (_SHEBANG, r"^//go:", r"^//\s*\+build", r"^//line ", r"^//export ")},
-    **{ext: _HASH for ext in ("sh", "bash", "zsh", "yaml", "yml", "toml")},
-    "rb": {**_HASH, "code": (_SHEBANG, r"(?i)^#.*\b(?:frozen_string_literal|encoding|coding"
-                                        r"|warn_indent|shareable_constant_value)\s*:")},
-    "ps1": {**_HASH, "code": (_SHEBANG, r"(?i)^#\s*requires\b")},
+    **{ext: {**_SLASH, "reject": (r'R"',)}  # C++ raw strings R"(...)"
+       for ext in ("c", "h", "cc", "cpp", "cxx", "hh", "hpp", "hxx")},
+    **{ext: {**_SLASH, "reject": (_TRIPLE,)} for ext in ("java", "kt", "kts", "scala")},
+    "swift": {**_SLASH, "reject": (_TRIPLE, r'#+"')},
+    "cs": {**_SLASH, "reject": (_TRIPLE, r'@\$?"', r'\$@"')},
+    "rs": {**_SLASH, "bare": '"'},  # plain Rust strings span lines; r"..." holds a quote
+    **{ext: {**_SLASH, "code": _JS_CODE, "reject": ("`", "</", "/>")}  # template, JSX
+       for ext in ("js", "jsx", "ts", "tsx", "mjs", "cjs")},
+    "php": {**_SLASH, "code": (_SHEBANG, r"@"),  # `#` is an attribute; @ are annotations
+            "reject": (r"\A(?!<\?php)", r"\?>", "<<"), "bare": "\"'`"},
+    "go": {**_SLASH, "block": False,  # a /* */ before `import "C"` is cgo code
+           "code": (_SHEBANG, r"^//go:", r"^//\s*\+build", r"^//line ", r"^//export ",
+                    r"^//\s*#"),
+           "reject": ("`", r'"C"')},  # raw strings; any cgo file
+    **{ext: {**_HASH, "reject": ("<<",)} for ext in ("sh", "bash", "zsh")},
+    **{ext: {**_HASH, "bare": "\"'`|>"} for ext in ("yaml", "yml")},  # block scalars
+    "toml": {**_HASH, "reject": (_TRIPLE, "'''"), "bare": ""},
+    "rb": {**_HASH, "code": (_SHEBANG, r"#\{",
+                             r"(?i)^#.*\b(?:frozen_string_literal|encoding|coding"
+                             r"|warn_indent|shareable_constant_value)\s*:"),
+           "reject": ("<<", r"(?m)^__END__\s*$"), "bare": "\"'`%/"},  # %q(), /regex/
+    "ps1": {**_HASH, "code": (_SHEBANG, r"(?i)^#\s*requires\b")},  # here-strings: quotes
 }
 
 
@@ -338,9 +359,9 @@ def cosmetic(path: str, old: bytes, new: bytes) -> bool:
     if style == "py":
         before, after = _py_skeleton(old), _py_skeleton(new)
         return before is not None and before == after
-    text_old = old.decode("utf-8", "surrogateescape")
-    text_new = new.decode("utf-8", "surrogateescape")
-    return _code_lines(text_old, style) == _code_lines(text_new, style)
+    before = _code_lines(old.decode("utf-8", "surrogateescape"), style)
+    after = _code_lines(new.decode("utf-8", "surrogateescape"), style)
+    return before is not None and before == after
 
 
 def _first_line(blob: bytes) -> bytes:
@@ -366,12 +387,17 @@ def _py_skeleton(blob: bytes) -> str | None:
         return None
 
 
-def _code_lines(text: str, style: dict) -> list[str]:
+def _code_lines(text: str, style: dict) -> list[str] | None:
     """The lines of `text` that are not blank nor comment-only, verbatim (indentation and
-    line endings kept). A line with code next to a comment is code."""
+    line endings kept). A line with code next to a comment is code. None when a comment-
+    looking line could be code or string content (see COMMENT_STYLES)."""
+    if any(_regex(p).search(text) for p in style["reject"]):
+        return None
     code = [_regex(p) for p in style["code"]]
     out, in_block = [], False
     for line in text.split("\n"):
+        if line.rstrip().endswith("\\"):
+            return None
         s = line.strip()
         meaningful = any(rx.search(s) for rx in code)
         if in_block:
@@ -398,6 +424,10 @@ def _code_lines(text: str, style: dict) -> list[str]:
                 out.append(line)
             continue
         out.append(line)
+    if in_block:
+        return None
+    if style["bare"] and any(c in line for line in out for c in style["bare"]):
+        return None
     return out
 
 

@@ -263,6 +263,50 @@ class CategoryTest(RepoBase):
                 self.change({rel: text})
                 self.assertUntested(self.classify(rules), rel)
 
+    # Verification blockers B1-B3a: comment-looking lines that are code or string content.
+    STRING_CASES = {
+        "src/m.go": ('package m\n\n// #cgo LDFLAGS: -lm\nimport "C"\n',
+                     'package m\n\n// #cgo LDFLAGS: -lcrypto\nimport "C"\n'),
+        "src/m.rb": ('x = <<~E\n  #{a}\nE\n', 'x = <<~E\n  #{b}\nE\n'),
+        "src/t.js": ('const t = `\n// v1\n`;\n', 'const t = `\n// v2\n`;\n'),
+        "src/g.ts": ('const g = `\n/*\n`;\nexport const L = 10;\n',
+                     'const g = `\n/*\n`;\nexport const L = 99;\n'),
+        "src/h.sh": ('cat > f <<EOF\n# a\nEOF\n', 'cat > f <<EOF\n# b\nEOF\n'),
+        "src/r.go": ('package m\nvar s = `\n// a\n`\n', 'package m\nvar s = `\n// b\n`\n'),
+        "src/k.kt": ('val s = """\n// a\n"""\n', 'val s = """\n// b\n"""\n'),
+        "src/p.php": ('<?php\n$s = <<<EOT\n// a\nEOT;\n', '<?php\n$s = <<<EOT\n// b\nEOT;\n'),
+        "src/q.sh": ('echo "\n# a\n"\n', 'echo "\n# b\n"\n'),
+        "src/s.rs": ('let s = "\n// a\n";\n', 'let s = "\n// b\n";\n'),
+        "src/v.jsx": ('const v = <p>\n// a\n</p>;\n', 'const v = <p>\n// b\n</p>;\n'),
+        "src/u.c": ('/* abierto\nint x = 1;\n', '/* abierto\nint x = 2;\n'),
+        "src/w.js": ('const w = "a\\\n// v1";\n', 'const w = "a\\\n// v2";\n'),
+        "src/o.php": ('<p>\n# a\n</p>\n', '<p>\n# b\n</p>\n'),
+    }
+
+    def test_untested_still_for_comment_looking_code_or_strings(self):
+        for rel, (old, new) in self.STRING_CASES.items():
+            with self.subTest(rel=rel):
+                self.base_with({rel: old})
+                self.change({rel: new})
+                self.assertUntested(self.classify(), rel)
+
+    def test_cosmetic_is_false_for_comment_looking_code_or_strings(self):
+        for rel, (old, new) in self.STRING_CASES.items():
+            with self.subTest(rel=rel):
+                self.assertFalse(risk.cosmetic(rel, old.encode(), new.encode()))
+
+    def test_cosmetic_is_true_for_plain_comment_changes(self):
+        cases = {
+            "src/a.js": ("const a = 1;\n", "// nota\n/*\n * b\n */\nconst a = 1;\n"),
+            "src/a.go": ("package m\n", "// Package m.\npackage m\n"),
+            "src/a.sh": ("echo hola\n", "# saluda\necho hola\n"),
+            "src/a.kt": ('val s = "x"\n', '// nota\nval s = "x"\n'),
+            "src\\win\\a.ts": ("const a = 1;\r\n", "// nota\r\nconst a = 1;\r\n"),
+        }
+        for rel, (old, new) in cases.items():
+            with self.subTest(rel=rel):
+                self.assertTrue(risk.cosmetic(rel, old.encode(), new.encode()))
+
     def test_untested_still_for_a_mode_only_change(self):
         self.base_with({"src/run.sh": "echo 1\n"})
         git(self.repo, "update-index", "--chmod=+x", "src/run.sh")
