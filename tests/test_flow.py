@@ -1156,6 +1156,40 @@ class MergeTests(MergeBase):
         [create] = self.gh_by("issue", "create")
         self.assertEqual(create[create.index("--label") + 1], "regla")
 
+    def test_an_unexpected_ratchet_error_is_a_warning_never_a_traceback(self):
+        self.seed_ratchet_lesson()
+        with mock.patch.object(flow.github, "find_issue", side_effect=ValueError("boom")):
+            code, out, err = self.merge()
+        self.assertEqual((code, self.job()["stage"]), (0, "merged"))
+        self.assertEqual(err, "Aviso: No se pudo abrir el issue atta:ratchet: ValueError: boom\n")
+        self.assertIn("## Avisos", self.merge_md())
+
+    def test_a_failure_mid_loop_keeps_the_first_number_and_a_rerun_opens_only_the_rest(self):
+        def lesson(slug, rule, mech):
+            return (f"## {slug}\nRegla: {rule}\nCasos:\n- 3-otro: src/x.py\n- 4-otro: src/y.py\n"
+                    f"Veces: 2\nActualizada: 2025-01-01\nMecanizable: {mech}\n")
+        write(self.lessons(), lesson("a-uno", "Regla ast-grep uno sobre foo", "ast-grep") + "\n"
+              + lesson("b-dos", "Regla test dos sobre bar", "test"))
+        real, calls = flow.github.create_issue, []
+
+        def flaky(*a, **k):
+            calls.append(a[0])
+            if len(calls) == 2:
+                raise flow.GhError("HTTP 502")
+            return real(*a, **k)
+
+        with mock.patch.object(flow.github, "create_issue", side_effect=flaky):
+            code, out, err = self.merge()
+        self.assertEqual((code, self.job()["stage"]), (0, "merged"))
+        self.assertEqual(err, "Aviso: No se pudo abrir el issue atta:ratchet de la lección "
+                              "b-dos: HTTP 502\n")
+        self.assertEqual(self.lessons().read_text(encoding="utf-8").count("Issue: #"), 1)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(flow._ratchet(self.root, self.cfg, self.store, JID), [])
+        self.assertEqual([c[3] for c in self.gh_by("issue", "create")],
+                         ["Ratchet: a-uno", "Ratchet: b-dos"])
+        self.assertEqual(self.lessons().read_text(encoding="utf-8").count("Issue: #"), 2)
+
     def test_a_ratchet_failure_is_a_warning_that_never_blocks(self):
         self.seed_ratchet_lesson()
         st = self.state()

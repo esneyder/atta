@@ -1074,7 +1074,8 @@ def _finish_merge(args, cfg, jobs: JobStore, job: dict, wt: Path | None, sha: st
     _step(warnings, f"No se pudieron cosechar las lecciones de {jid}",
           lambda: _harvest(args.root, jobs, jid))
     if len(warnings) == harvested:  # a damaged lessons.md is reported once, by the harvest
-        warnings += _ratchet(args.root, cfg, jobs, jid)
+        _step(warnings, f"No se pudo abrir el issue {config.label(cfg, 'ratchet')}",
+              lambda: _ratchet(args.root, cfg, jobs, jid))
     if warnings:
         _write_merge_md(jobs.job_dir(jid), "DONE", line, sha, warnings)
         for warning in warnings:
