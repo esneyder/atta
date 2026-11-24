@@ -4,6 +4,10 @@ T12: when an agent did the stage being left, the event carries `model`, `tier` a
 `models`, a list of {agent, model, tier}, for the parallel reviewers), taken from the
 `pending_agent` that `atta next` recorded. `cost_usd` stays null: Claude Code does not report
 tokens to the spine yet; F4 reads them from the session transcripts.
+
+F4.x T3 (S3): when the job waited for a BLOCKED-BY blocker during the stage being left, the
+event carries `blocked_s` (seconds waited) and `duration_s` excludes them. A job that never
+waited has no `blocked_s` key.
 """
 
 from __future__ import annotations
@@ -45,7 +49,8 @@ def make_event(job: str, from_stage: str, to_stage: str, duration_s: float,
                now: datetime | None = None, *, model: str | None = None,
                tier: str | None = None, tokens_in: int | None = None,
                tokens_out: int | None = None, cost_usd: float | None = None,
-               agent: str | None = None, models: list[dict] | None = None) -> dict:
+               agent: str | None = None, models: list[dict] | None = None,
+               blocked_s: float | None = None) -> dict:
     event = {
         "ts": to_iso(now or utcnow()),
         "job": job,
@@ -53,6 +58,8 @@ def make_event(job: str, from_stage: str, to_stage: str, duration_s: float,
         "to": to_stage,
         "duration_s": duration_s,
     }
+    if blocked_s is not None:
+        event["blocked_s"] = blocked_s
     for key, value in (("model", model), ("tier", tier), ("agent", agent), ("models", models),
                        ("tokens_in", tokens_in), ("tokens_out", tokens_out)):
         if value is not None:

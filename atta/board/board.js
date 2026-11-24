@@ -226,8 +226,14 @@
     const list = [["intake", "Exploradora"], ["spec", "Guía"], ["spec-review", "Vigía"], ["build", "Cortadora"],
       ["gate", "Filtro"], ["review", "Jardineras"], ["approve", "Reina"]]
       .filter(([k]) => k in st.p50)
-      .map(([k, name]) => h("li", null, h("span", { class: "meta" }, name), h("span", null, dur(st.p50[k]))));
+      .map(([k, name]) => h("li", null, h("span", { class: "meta" }, name), h("span", null, dur(st.p50[k]) + blockedNote(st.blocked, k))));
     $("s-p50").replaceChildren(...(list.length ? list : [h("li", null, h("span", { class: "meta" }, "Sin datos todavía"))]));
+  }
+
+  // S3: la espera por BLOCKED-BY va aparte; el p50 y el tiempo por etapa ya la excluyen.
+  function blockedNote(map, stage) {
+    const sec = map ? lookup(map, stage) : undefined;
+    return typeof sec === "number" ? " · bloqueado " + dur(sec) : "";
   }
 
   function renderAlerts() {
@@ -302,7 +308,7 @@
     const stages = Object.keys(j.durations);
     if (stages.length) {
       body.appendChild(section("Tiempo por etapa",
-        facts(stages.map((s) => [(lookup(STAGE_ROLE, s) || s) + " · " + s, dur(j.durations[s])]))));
+        facts(stages.map((s) => [(lookup(STAGE_ROLE, s) || s) + " · " + s, dur(j.durations[s]) + blockedNote(j.blocked, s)]))));
     }
     if (j.rounds.length) {
       body.appendChild(section("Revisiones por ronda", h("ol", { class: "rounds" },

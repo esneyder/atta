@@ -8,6 +8,7 @@ import os
 import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import support  # noqa: F401
 from support import TempDirMixin
@@ -1629,15 +1630,50 @@ class DepsInNextTest(NextBase):
             code = args.func(args, self.cfg, self.jobs)
         return code, out.getvalue(), err.getvalue()
 
-    def test_unmerged_blocker_waits_and_writes_nothing(self):
+    def call_at(self, when, *argv):
+        with mock.patch("atta.spine.next.utcnow", return_value=from_iso(when)):
+            return self.call(*argv)
+
+    def test_unmerged_blocker_waits_and_records_blocked_since(self):
+        # F4.x T3 (S3): replaces F4 T6's "writes nothing"; the wait is now timed so it leaves
+        # the stage's duration_s. Only `blocked_since` is added to job.json.
         self.blocker("build")
         self.jobs.save(self.job)
-        before = (self.dir / "job.json").read_bytes()
-        code, out, err = self.call("next", JID)
+        before = json.loads((self.dir / "job.json").read_text(encoding="utf-8"))
+        code, out, err = self.call_at("2020-01-01T00:01:00Z", "next", JID)
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(json.loads(out), {
             "action": "wait", "reason": "espera a #7: todavía no está mergeado."})
-        self.assertEqual((self.dir / "job.json").read_bytes(), before)
+        self.assertEqual(self.jobs.load(JID), {**before, "blocked_since": "2020-01-01T00:01:00Z"})
+        # Only the first wait starts the clock; later waits write nothing.
+        stored = (self.dir / "job.json").read_bytes()
+        code, out2, err = self.call_at("2020-01-01T00:05:00Z", "next", JID)
+        self.assertEqual((code, out2, err), (0, out, ""))
+        self.assertEqual((self.dir / "job.json").read_bytes(), stored)
+
+    def test_unblocking_closes_the_wait_and_the_event_carries_it(self):
+        self.blocker("build")
+        self.jobs.save(self.job)  # stage_since = PAST (00:00:00)
+        self.call_at("2020-01-01T00:01:00Z", "next", JID)
+        blocker = self.jobs.load("7-bloqueante")
+        blocker["stage"] = "merged"
+        self.jobs.save(blocker)
+        code, out, err = self.call_at("2020-01-01T00:41:00Z", "next", JID)
+        self.assertEqual((code, err, json.loads(out)["agent"]), (0, "", "atta-guia"))
+        job = self.jobs.load(JID)
+        self.assertEqual(job["blocked_s"], 2400)
+        self.assertNotIn("blocked_since", job)
+        # The Guía works 5 more minutes: that time is the stage's, not blocked.
+        machine.advance(self.jobs, JID, "spec-review", now=from_iso("2020-01-01T00:46:00Z"))
+        ev = events.read_events(self.dir)[-1]
+        self.assertEqual((ev["from"], ev["duration_s"], ev["blocked_s"]), ("spec", 360, 2400))
+        self.assertFalse({"blocked_s", "blocked_since"} & set(self.jobs.load(JID)))
+
+    def test_never_blocked_job_writes_no_blocked_fields(self):
+        self.blocker("merged")
+        self.jobs.save(self.job)
+        self.call_at("2020-01-01T00:01:00Z", "next", JID)
+        self.assertFalse({"blocked_s", "blocked_since"} & set(self.jobs.load(JID)))
 
     def test_rejected_blocker_holds(self):
         self.blocker("rejected")

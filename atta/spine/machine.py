@@ -25,6 +25,11 @@ Vigía REVISE cap (T7b, S9): `spec_reviews` in job.json counts the REVISE verdic
 on (each `spec-review → spec` and the final `spec-review → needs-human`; a job without the field
 counts 0). The `MAX_SPEC_REVISE`-th REVISE never goes back to spec: `spec-review → spec` is
 refused once `spec_reviews + 1` reaches the cap, and `atta next` sends the job to needs-human.
+
+BLOCKED-BY wait (F4.x T3, S3): `atta next` writes `blocked_since` the first time the job waits
+for an unmerged blocker and, once it is unblocked, folds that wait into `blocked_s`. Leaving the
+stage puts the total wait in the event's `blocked_s`, subtracts it from `duration_s` (never below
+0) and clears both fields. A job that never waited emits the same event as before.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from datetime import datetime
 from .events import append_event, make_event
 from .lock import job_lock
 from .store import JobStore
-from .timeutil import seconds_between, to_iso, utcnow
+from .timeutil import from_iso, seconds_between, to_iso, utcnow
 
 STAGES = (
     "intake", "needs-info", "spec", "spec-review", "build", "gate", "review",
@@ -68,6 +73,35 @@ SYNC_REWORK_FROM = frozenset({"approve", "awaiting-merge"})
 # Vigía REVISE cap (S9): the third REVISE of a job goes to a person, not back to spec.
 SPEC_REVIEWS = "spec_reviews"
 MAX_SPEC_REVISE = 3
+
+# BLOCKED-BY wait of the current stage (S3): open wait start and closed waits, in job.json.
+BLOCKED_SINCE = "blocked_since"
+BLOCKED_S = "blocked_s"
+
+
+def _secs(value: float) -> float | int:
+    value = round(max(value, 0.0), 3)
+    return int(value) if value == int(value) else value
+
+
+def blocked_seconds(job: dict, now: datetime) -> float | int | None:
+    """Seconds the job waited for a BLOCKED-BY blocker in its current stage (closed waits plus
+    the open one up to `now`), at most the stage time; None when it never waited."""
+    if BLOCKED_SINCE not in job and BLOCKED_S not in job:
+        return None
+    closed = job.get(BLOCKED_S)
+    total = closed if isinstance(closed, (int, float)) and not isinstance(closed, bool) \
+        and closed > 0 else 0
+    stage_time = seconds_between(job["stage_since"], now)
+    since = job.get(BLOCKED_SINCE)
+    if isinstance(since, str):
+        try:
+            start = max(from_iso(since), from_iso(job["stage_since"]))
+        except ValueError:
+            start = None
+        if start is not None:
+            total += max((now - start).total_seconds(), 0.0)
+    return _secs(min(total, stage_time))
 
 
 def spec_reviews(job: dict) -> int:
@@ -144,6 +178,8 @@ def apply(job: dict, to: str, now: datetime) -> dict:
     new["stage_since"] = to_iso(now)
     if to in TERMINAL:
         new["ended"] = to_iso(now)
+    new.pop(BLOCKED_SINCE, None)
+    new.pop(BLOCKED_S, None)
     return new
 
 
@@ -168,6 +204,7 @@ def advance(store: JobStore, jid: str, to: str, *, now: datetime | None = None,
     T12: the `pending_agent` that `atta next` recorded for the stage being left gives the event
     its `model`, `tier` and `agent` (a list gives `models`) unless `model`/`tier` are passed;
     it is cleared on every transition. Refused leaves job.json and events.jsonl untouched.
+    S3: the BLOCKED-BY wait of the stage being left goes to `blocked_s`, out of `duration_s`.
     """
     now = now or utcnow()
     job_dir = store.job_dir(jid)
@@ -181,10 +218,14 @@ def advance(store: JobStore, jid: str, to: str, *, now: datetime | None = None,
             model, tier, agent, models = _from_pending(pending, job["stage"])
         if cost_usd is not None:
             new["cost_usd"] = round((job.get("cost_usd") or 0) + cost_usd, 6)
+        duration = seconds_between(job["stage_since"], now)
+        blocked = blocked_seconds(job, now)
+        if blocked is not None:
+            duration = _secs(duration - blocked)
         event = make_event(
-            job["id"], job["stage"], to, seconds_between(job["stage_since"], now), now,
+            job["id"], job["stage"], to, duration, now,
             model=model, tier=tier, tokens_in=tokens_in, tokens_out=tokens_out,
-            cost_usd=cost_usd, agent=agent, models=models,
+            cost_usd=cost_usd, agent=agent, models=models, blocked_s=blocked,
         )
         append_event(job_dir, event)
         store.save(new)

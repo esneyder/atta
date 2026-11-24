@@ -387,5 +387,64 @@ class PendingAgentTests(MachineTestBase):
         self.assertEqual(self.store.load(self.jid)["pending_agent"]["model"], "haiku")
 
 
+class BlockedTimeTests(MachineTestBase):
+    """F4.x T3 (S3): the BLOCKED-BY wait `atta next` recorded leaves the stage time and goes to
+    the event as `blocked_s`; a job that never waited emits the same event as before."""
+
+    def set_blocked(self, **fields):
+        job = self.store.load(self.jid)
+        job.update(fields)
+        self.store.save(job)
+
+    def test_open_wait_is_subtracted_and_reported(self):
+        self.set_blocked(blocked_since=at(3).isoformat().replace("+00:00", "Z"))
+        job = self.go("spec")  # stage time 10 s, blocked 7 s
+        ev = events.read_events(self.dir)[-1]
+        self.assertEqual(ev, {"ts": "2025-01-01T12:00:10Z", "job": self.jid, "from": "intake",
+                              "to": "spec", "duration_s": 3, "blocked_s": 7})
+        for key in ("blocked_since", "blocked_s"):
+            self.assertNotIn(key, job)
+            self.assertNotIn(key, self.store.load(self.jid))
+
+    def test_closed_and_open_waits_add_up(self):
+        self.set_blocked(blocked_s=2, blocked_since="2025-01-01T12:00:08Z")
+        self.go("spec")
+        ev = events.read_events(self.dir)[-1]
+        self.assertEqual((ev["duration_s"], ev["blocked_s"]), (6, 4))
+
+    def test_closed_wait_only(self):
+        self.set_blocked(blocked_s=4.5)
+        self.go("spec")
+        ev = events.read_events(self.dir)[-1]
+        self.assertEqual((ev["duration_s"], ev["blocked_s"]), (5.5, 4.5))
+
+    def test_blocked_never_exceeds_the_stage_time(self):
+        # A wait recorded before the stage started counts from stage_since; never negative.
+        self.set_blocked(blocked_since="2024-12-31T00:00:00Z", blocked_s=50)
+        self.go("spec")
+        ev = events.read_events(self.dir)[-1]
+        self.assertEqual((ev["duration_s"], ev["blocked_s"]), (0, 10))
+
+    def test_never_blocked_event_is_unchanged(self):
+        job = self.go("spec")
+        self.assertEqual(events.read_events(self.dir)[-1],
+                         {"ts": "2025-01-01T12:00:10Z", "job": self.jid, "from": "intake",
+                          "to": "spec", "duration_s": 10})
+        self.assertFalse({"blocked_since", "blocked_s"} & set(job))
+
+    def test_wait_is_only_on_the_stage_it_happened_in(self):
+        self.set_blocked(blocked_since="2025-01-01T12:00:05Z")
+        self.go("spec")
+        self.go("build")
+        self.assertEqual(set(events.read_events(self.dir)[-1]),
+                         {"ts", "job", "from", "to", "duration_s"})
+
+    def test_refused_transition_keeps_the_wait(self):
+        self.set_blocked(blocked_since="2025-01-01T12:00:05Z")
+        self.assertRefused("build", "Transición ilegal en 12-exportar-csv: intake → build. "
+                           "Desde intake solo se puede ir a: spec, needs-info, rejected.")
+        self.assertEqual(self.store.load(self.jid)["blocked_since"], "2025-01-01T12:00:05Z")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1240,9 +1240,32 @@ def _blocked(jobs, job: dict) -> dict | None:
     return None if verdict is None else {"action": "wait", "reason": verdict["reason"]}
 
 
+def record_blocked(jobs, jid: str, stage: str, waiting: bool) -> None:
+    """Time the BLOCKED-BY wait of `stage` in job.json, under the job lock (F4.x T3, S3): the
+    first wait writes `blocked_since`; the first `atta next` that finds the job unblocked folds
+    that wait into `blocked_s`. machine.advance moves the total to the event and clears both."""
+    now = utcnow()
+    with job_lock(jobs.job_dir(jid)):
+        job = jobs.load(jid)
+        if job["stage"] != stage:
+            return
+        if waiting:
+            if machine.BLOCKED_SINCE in job:
+                return
+            job[machine.BLOCKED_SINCE] = to_iso(now)
+        else:
+            if machine.BLOCKED_SINCE not in job:
+                return
+            job[machine.BLOCKED_S] = machine.blocked_seconds(job, now)
+            del job[machine.BLOCKED_SINCE]
+        jobs.save(job)
+
+
 def cmd_next(args, cfg, jobs) -> int:
     job = jobs.load(args.job)
     blocked = _blocked(jobs, job)
+    if (blocked is not None) != (machine.BLOCKED_SINCE in job):
+        record_blocked(jobs, job["id"], job["stage"], blocked is not None)
     if blocked is not None:
         print(json.dumps(blocked, ensure_ascii=False))
         return OK
