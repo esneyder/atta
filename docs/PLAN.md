@@ -149,6 +149,53 @@ prioridad: G1 → G3 → G4/G5 → G7 → G6/G13.
 desatendida) ni la ceremonia de admisión de writers (Atta ya tiene su máquina de estados). La regla
 «nunca le busques la vuelta al guard» ya está en el skill `/atta`.
 
+### 6.2 Memoria compartida entre jobs (backlog, F4.x a evaluar)
+
+Idea traída por un comentario externo (hilo de LinkedIn, nov-2025): integrar un servidor de memoria
+MCP tipo [`ericrisco/rsc-brain`](https://github.com/ericrisco/rsc-brain) para que la colonia aprenda
+entre jobs y no arranque fría cada vez. Queda **documentado para revisar**, no planificado.
+
+**Qué es rsc-brain.** Memoria auto-hospedada y curada por humanos, expuesta por MCP. Tres capas:
+journal (los agentes escriben libre), proposals (un agente compila páginas tipadas, un curador
+aprueba), wiki (lo que el equipo sabe, con revisiones y undo). Postgres + Docker + Caddy, MIT.
+
+**Huecos de Atta que cerraría.**
+
+- Cada job arranca frío: `mem_search` antes de `build` y de `review` traería lecciones previas con
+  sus fuentes.
+- `needs-human` pierde la lección: el feedback humano se vuelve entrada del journal → proposal →
+  regla curada, y la colonia aprende de sus escaladas.
+- Convenciones de proyecto (ADRs, estilos, «nunca lock pesimista aquí») viven en docs o en la
+  cabeza; pasarían a un wiki curado por la Reina y consultable por MCP desde cualquier rol.
+
+**Fricciones a resolver antes de adoptar.**
+
+1. **Determinismo.** Una memoria dinámica introduce una entrada no reproducible. Si entra, el
+   snapshot del brain se **congela al inicio del job** y se audita en `events.jsonl` qué se
+   consultó.
+2. **Doble curación.** La Reina ya es el cuello humano (aprobar PR a `develop`); aprobar proposals
+   del wiki duplica carga. La curación del brain va **fuera del `max_total_rounds`**, nunca adentro.
+3. **Peso de infra.** Atta es «solo stdlib»; rsc-brain es Postgres + Docker + Caddy. Integración
+   **opcional, nunca requisito**: flag `--brain off` por defecto.
+4. **Solapamiento con lo que ya existe.** `round-N/*.md`, `events.jsonl`, `odd/` y `job.json` ya son
+   journaling fino **por job**. El hueco real es **retrieval cross-job**, no logging. Exportar hacia
+   el brain, no reemplazar lo local.
+
+**Forma tentativa de la integración (a validar en F4.x).**
+
+- Nuevo rol **Archivista**: corre post-merge y solo escribe al journal una entrada por job
+  (decisión, archivos, hallazgos refutados/confirmados, por qué escaló si escaló).
+- Lectura **congelada por job**: al pasar a `spec`, la espina captura el revision del wiki y lo pasa
+  como contexto inmutable a todos los roles de ese job.
+- Consulta antes de `build` y de `review`: resultados como «memoria del equipo», no como
+  instrucciones ejecutables.
+- Curación del wiki fuera del loop: una proposal pendiente no bloquea el job.
+- Flag `--brain off` por defecto; la fábrica sigue corriendo sin brain.
+
+**Veredicto provisional.** Vale la pena como F4.x opcional, no como dependencia. El valor está en
+cerrar el loop `needs-human → aprendizaje`. El riesgo es romper el principio de determinismo si
+entra mal; por eso snapshot congelado y curación fuera del presupuesto de rondas.
+
 ## 7. Decisiones
 
 **Tomadas**
