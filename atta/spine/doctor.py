@@ -11,7 +11,9 @@ Checks, in order (each one catches a stumble of the real runs, odd/tasks/f2-colo
 - the project root is a git repo, `atta/config.json` loads and validates (missing: ⚠, defaults),
   and without `routing_matrix` a ⚠ says the default routing changed (F4 T3, S9; `true` accepts
   the stage×risk model matrix, `false` keeps the old routing; never edited by doctor),
-  `atta/checks.json` has at least one check (without checks the Filtro always fails);
+  `atta/checks.json` has at least one check (without checks the Filtro always fails), and
+  the shell and first command of every check exist (⚠, F4.x T6: the Filtro stops as a
+  configuration failure, needs-human without a round; same lookup as the Filtro's preflight);
 - with a `sgconfig.yml`, the `ast-grep` (or `sg`) binary on the PATH (⚠: the Filtro fails);
 - remote `origin`, `origin/<integration_branch>` (`git ls-remote --heads`), the main checkout is
   on that branch (✗ otherwise, T9: on `main` the Filtro reads an empty checks.json; same hint as
@@ -187,8 +189,9 @@ def _project(r: Report, root: Path) -> tuple[bool, dict]:
         try:
             cfg = project.load_config(root)
         except config.ConfigError as exc:
-            r.fail(f"atta/config.json no es válido: {exc}",
-                   "Corrígelo a mano en tu terminal (atta settings muestra cada clave).")
+            r.fail(f"atta/config.json no es válido: {exc.reason}",
+                   exc.hint or "Corrígelo a mano en tu terminal (atta settings muestra cada "
+                               "clave).")
         else:
             r.ok("atta/config.json es válido")
             _routing(r, cfg)
@@ -201,6 +204,7 @@ def _project(r: Report, root: Path) -> tuple[bool, dict]:
     else:
         if checks:
             r.ok(f"atta/checks.json tiene {_plural(len(checks), 'check')}")
+            _commands(r, root, cfg)
         else:
             r.fail("atta/checks.json no tiene checks: el Filtro siempre falla",
                    "Agrega los checks reales del proyecto (README, sección 4.2).")
@@ -231,6 +235,18 @@ def _matrix(r: Report, cfg: dict) -> None:
            "Mira el efecto con `atta models`. Para aceptarlo, agrega \"routing_matrix\": true "
            "a atta/config.json; para volver al routing de antes, agrega \"routing_matrix\": "
            "false (solo una persona edita ese archivo).")
+
+
+def _commands(r: Report, root: Path, cfg: dict) -> None:
+    """F4.x T6 (S8): a check whose shell or first command is not on the PATH makes the Filtro
+    stop as a configuration failure. Reuses the Filtro's own lookup (`gate.config_problems`);
+    its other problems (branch, empty checks, ast-grep) have their own lines here."""
+    for problem in gate.config_problems(root, cfg):
+        if not problem.startswith("No se encontró"):
+            continue
+        head, _, tail = problem.partition(". ")
+        r.warn(f"{head.rstrip('.')}: el Filtro no va a correr (needs-human)",
+               tail or "Instálalo o corrige atta/checks.json en el checkout principal.")
 
 
 def _ast_grep(r: Report, root: Path) -> None:
@@ -452,7 +468,8 @@ def register(subparsers) -> None:
         description="Revisa, sin escribir nada: atta y atta-board en el PATH, Python con pip, "
                     "repo git, atta/config.json (avisa si tu routing propio no tiene al "
                     "Rastreador en riesgo alto o si no define routing_matrix: el routing por "
-                    "defecto ahora depende del riesgo), atta/checks.json con checks, ast-grep si hay "
+                    "defecto ahora depende del riesgo), atta/checks.json con checks (avisa si el "
+                    "shell o el primer comando de un check no está en el PATH), ast-grep si hay "
                     "sgconfig.yml, origin y origin/develop, que el checkout principal esté en "
                     "develop (falla si no) y al día, gh (instalado, con "
                     "sesión, con acceso al repo), las labels de Atta, los agentes, el skill, el "

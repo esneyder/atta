@@ -43,7 +43,9 @@ relevant lessons the prompt names. Judge the evidence in them; do not read the w
 - Every blocker and major finding from earlier rounds is really fixed in the diff.
 - The latest `build.md` carries evidence, not prose: `## Tests` shows the commands run with
   their real output, every `## Acceptance` line is ✓ and points at a test or `path:line`, and
-  `## Changes` lists the same files as `git diff --stat`.
+  `## Changes` lists the same files as `git diff --stat`. The spine already checks that each
+  «…» criterion of spec.md is copied word for word; it cannot see a false ✓, so read the test
+  behind each ✓ and confirm it proves that exact criterion (the same exception, value, text).
 
 ## When to escalate
 

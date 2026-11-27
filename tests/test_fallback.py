@@ -108,8 +108,11 @@ class ModelFailedTest(FallbackBase):
         action = self.next()
         self.assertEqual((action["agent"], action["model"]), ("atta-cortadora", "sonnet"))
         self.assertEqual(set(action), {"action", "agent", "model", "prompt"})
+        # F4.x S5: `tier` is the tier of the model it runs on (sonnet is T2); `chain_tier` is
+        # the chain it walks (T3). Before F4.x this pinned ("sonnet", "T3").
         pending = self.jobs.load(JID)["pending_agent"]
-        self.assertEqual((pending["model"], pending["tier"]), ("sonnet", "T3"))
+        self.assertEqual((pending["model"], pending["tier"], pending["chain_tier"]),
+                         ("sonnet", "T2", "T3"))
 
         code, out, err = self.failed("atta-cortadora", "rate-limit")
         self.assertEqual((code, out, err), (0, (
@@ -121,10 +124,11 @@ class ModelFailedTest(FallbackBase):
         self.assertEqual((code, out, err), (0, (
             f"atta-cortadora falló en haiku por red en {JID}: la cadena de fallback de T3 se "
             "agotó; Atta no sube a un modelo más caro y `atta next` espera.\n"), ""))
-        self.assertEqual([(e["from_model"], e["to_model"], e["reason"])
+        self.assertEqual([(e["from_model"], e["to_model"], e["reason"], e["tier"])
                           for e in self.fallback_events()],
-                         [("opus", "sonnet", "quota"), ("sonnet", "haiku", "rate-limit"),
-                          ("haiku", None, "network")])
+                         [("opus", "sonnet", "quota", "T3"),
+                          ("sonnet", "haiku", "rate-limit", "T3"),
+                          ("haiku", None, "network", "T3")])
         self.assertEqual(self.next(), {"action": "wait", "reason": (
             f"La cadena de fallback de T3 se agotó para atta-cortadora en {JID}: falló en opus, "
             "sonnet, haiku por cuota, rate limit o red y Atta no sube a un modelo más caro. El "
@@ -132,6 +136,55 @@ class ModelFailedTest(FallbackBase):
         # The wait is reported once: the failures of that agent are cleared for the next pass.
         self.assertNotIn("model_failures", self.jobs.load(JID))
         self.assertEqual(self.next()["model"], "opus")
+
+    def test_fallback_records_the_model_tier_and_the_chain_tier(self):
+        # F4.x S5: the T3 Cortadora on haiku (T1's model) records tier T1, chain T3; the
+        # stage transition event carries the tier of the model it ran on.
+        self.build()
+        self.next()
+        self.failed("atta-cortadora", "quota")
+        self.next()
+        self.failed("atta-cortadora", "quota")
+        self.assertEqual(self.next()["model"], "haiku")
+        pending = self.jobs.load(JID)["pending_agent"]
+        self.assertEqual((pending["model"], pending["tier"], pending["chain_tier"]),
+                         ("haiku", "T1", "T3"))
+        self.assertEqual(set(self.next()), {"action", "agent", "model", "prompt"})
+        machine.advance(self.jobs, JID, "needs-human")
+        ev = [e for e in events.read_events(self.dir) if e.get("to") == "needs-human"][-1]
+        self.assertEqual((ev["model"], ev["tier"]), ("haiku", "T1"))
+
+    def test_routed_spawn_records_no_chain_tier(self):
+        self.build()
+        self.next()
+        self.assertNotIn("chain_tier", self.jobs.load(JID)["pending_agent"])
+
+    def last_resort(self, entry):
+        """A pending Cortadora whose next step is not a spawn of it (build.md is BLOCKED), so
+        `atta model-failed` looks the chain up itself."""
+        self.use(fallbacks={"T3": ["sonnet", "claude-haiku-4-5"], "T2": ["haiku"]})
+        self.build()
+        self.write("round-3/build.md", "STATUS: BLOCKED\n")
+        self.job = self.jobs.load(JID)
+        self.job["pending_agent"] = dict(entry, stage="build", role="cortadora",
+                                         agent="atta-cortadora", at=PAST)
+        self.job["model_failures"] = {"stage": "build", "since": PAST,
+                                      "agents": {"atta-cortadora": ["opus"]}}
+        self.jobs.save(self.job)
+        return self.failed("atta-cortadora", "quota")
+
+    def test_last_resort_lookup_walks_the_chain_tier(self):
+        self.assertEqual(self.last_resort({"model": "sonnet", "tier": "T2", "chain_tier": "T3"}),
+                         (0, f"atta-cortadora falló en sonnet por cuota en {JID}: el próximo "
+                          "intento usa claude-haiku-4-5 (cadena de fallback de T3).\n", ""))
+        self.assertEqual([(e["tier"], e["to_model"]) for e in self.fallback_events()],
+                         [("T3", "claude-haiku-4-5")])
+
+    def test_old_pending_entry_without_chain_tier_still_walks_its_chain(self):
+        # PRESERVE: an entry written before F4.x (tier = chain tier, no chain_tier).
+        self.assertEqual(self.last_resort({"model": "sonnet", "tier": "T3"}),
+                         (0, f"atta-cortadora falló en sonnet por cuota en {JID}: el próximo "
+                          "intento usa claude-haiku-4-5 (cadena de fallback de T3).\n", ""))
 
     def test_escalated_agent_uses_the_t3_chain_not_its_own_tier(self):
         self.build()

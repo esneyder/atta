@@ -75,8 +75,8 @@ DEFAULTS = {
     # the previous round; `enforce` turns those warnings into failures (see scope.py).
     "scope": {"enforce": False, "max_files": 12},
 }
-# Optional keys, never defaulted: `profile` (id of a packaged profile, F2.y T3; absent = no
-# profile = factory models; see profiles.py and `atta profiles`), `models` (per-runtime tier and role overrides, S12; see
+# Optional keys, never defaulted: `profile` (id of a packaged profile, F2.y T3; absent or null =
+# no profile = factory models; see profiles.py and `atta profiles`), `models` (per-runtime tier and role overrides, S12; see
 # models.py and `atta models`) and `routing_matrix` (bool; false turns off the stage×risk model
 # matrix of F4 T3 and keeps the routing of before; absent means on, and `atta doctor` tells
 # a project without the key that the default changed) and `stage_timeouts_s` ({stage: seconds}
@@ -108,7 +108,12 @@ _SECTIONS = ("labels", "delivery", "scope")
 
 
 class ConfigError(ValueError):
-    """config.json is unreadable or violates a rule."""
+    """config.json is unreadable or violates a rule. `hint` (optional) says how to get out; it
+    is part of the message, and `reason` is the message without it (doctor shows it apart)."""
+
+    def __init__(self, reason: str, hint: str | None = None):
+        super().__init__(f"{reason} {hint}" if hint else reason)
+        self.reason, self.hint = reason, hint
 
 
 def _err(msg: str) -> ConfigError:
@@ -210,11 +215,11 @@ def validate(cfg: dict) -> dict:
         problem = timeouts.config_error(cfg["stage_timeouts_s"])
         if problem:
             raise _err(problem)
-    if "profile" in cfg:
+    if cfg.get("profile") is not None:  # S3 (F2.y A3): null is no profile, like no key
         from . import profiles  # lazy: profiles.py reads models.py
         problem = profiles.config_error(cfg["profile"])
-        if problem:
-            raise _err(problem)
+        if problem:  # S1 (F2.y A1): still fails closed, but says how to get out
+            raise ConfigError(f"config.json: {problem}", profiles.WAY_OUT)
     if "models" in cfg:
         from . import models  # lazy: models.py reads config lazily too
         problem = models.config_error(cfg["models"])

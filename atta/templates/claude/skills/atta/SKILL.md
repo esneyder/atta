@@ -43,8 +43,8 @@ Spanish; relay them as they are.
   the job's diff) exits `0` and moves the job back to `build` (conflict) or `review` (changed
   diff): keep driving the job with `atta next`.
 - A Filtro failure of kind `config` (`KIND: config` in `round-N/checks.md`: `atta/checks.json`
-  without checks or invalid, a missing shell or `ast-grep`, the main checkout not on the
-  integration branch) is for the human, not for the colony. `atta next` sends the job to
+  without checks or invalid, a missing shell, check command or `ast-grep`, the main checkout
+  not on the integration branch) is for the human, not for the colony. `atta next` sends the job to
   `needs-human` without spending a round and then prints a `wait` with the reason: report it
   word for word and move on. Never ask the Cortadora (or any agent) to fix it, and never create
   or edit files under `atta/` or switch branches yourself; the human fixes it in their terminal.
@@ -95,9 +95,12 @@ Resuming is the same command: run `/atta run` again. All state lives in the spin
 - `{"action": "spawn", "agent": A, "model": M, "prompt": P}`: launch the subagent `A` with the
   Agent (Task) tool in the background, with `subagent_type` = `A`, `model` = `M` and `prompt` =
   `P` exactly. Wait for it to finish, then call `atta next <job>` again.
-  - `atta-exploradora` returns intake.md in its reply instead of writing it. With the Write
-    tool, write its full reply, unchanged, to a file in the system temp folder (your
-    scratchpad, `$TMPDIR` or `%TEMP%`; for example `<temp>/atta-reply-<job>.txt`), then run:
+  - `atta-exploradora` returns intake.md in its reply instead of writing it. First resolve the
+    system temp folder, the only place outside the project the guard allows: run
+    `echo "$TMPDIR"` (macOS/Linux; `/tmp` when it prints nothing) or `echo %TEMP%`
+    (`$env:TEMP` in PowerShell) on Windows, and use the absolute path it prints, because the
+    Write tool does not expand variables. With the Write tool, write the full reply, unchanged,
+    to a file in that folder (for example `<temp>/atta-reply-<job>.txt`), then run:
 
     ```bash
     atta save-artifact <job> intake --from-reply <that file>

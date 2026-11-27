@@ -246,6 +246,19 @@ class DriverModelTests(TempDirMixin, unittest.TestCase):
                       "corre en el tier barato); es nada.", done.stdout)
 
 
+class SkillReplyFileTests(unittest.TestCase):
+    """F4.x T7 (S7): the guard denies Claude Code's scratchpad, so the skill asks for the
+    system temp folder from the start."""
+
+    def test_reply_file_goes_to_the_system_temp_folder_first(self):
+        skill = TEMPLATES / "skills" / "atta" / "SKILL.md"
+        text = " ".join(skill.read_text(encoding="utf-8").split())
+        self.assertNotIn("scratchpad", text)
+        self.assertIn('`echo "$TMPDIR"`', text)
+        self.assertIn("`$env:TEMP`", text)
+        self.assertIn("the Write tool does not expand variables", text)
+
+
 class PrBodyTemplateTests(unittest.TestCase):
     """atta/templates/pr-body.md (K16) has the fixed sections and documents its placeholders."""
 

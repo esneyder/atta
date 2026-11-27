@@ -244,6 +244,7 @@ Perfiles de Atta en {self.root} (runtime claude-code):
     T0 haiku · T1 sonnet · T2 opus · T3 opus · entrega hasta none
     {profiles.load()['calidad']['description']}
 {NO_PROFILE}
+Vigente: T0 haiku · T1 haiku · T2 sonnet · T3 opus · entrega hasta none (proyecto).
 Mira el efecto con `atta profiles show <perfil>`; elige con `atta profiles use <perfil>` o vuelve a fábrica con `atta profiles clear`.
 — Atta
 """)
@@ -486,8 +487,183 @@ class UseAndClearTest(ProfilesBase):
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
             cli.build_parser().parse_args(["profiles", "--help"])
         self.assertEqual(ctx.exception.code, 0)
-        for word in ("economico", "equilibrado", "calidad", "use", "clear", "--json"):
+        for word in ("economico", "equilibrado", "calidad", "use", "clear", "--json",
+                     "vigentes", "primero", "salida"):  # single words: help wraps lines
             self.assertIn(word, out.getvalue())
+
+
+WAY_OUT = ("Quítalo con atta profiles clear en tu terminal o borra «profile» de "
+           "atta/config.json.")
+
+
+def no_init(root):
+    return (f"No encontré atta/config.json en {root}: corre atta init primero. "
+            "No cambié nada.\n")
+
+
+class UnknownProfileWayOutTest(ProfilesBase):
+    """S1 (F2.y A1): an unknown profile still fails closed, but `profiles clear` gets out."""
+
+    def setUp(self):
+        super().setUp()
+        self.write({**self.stored(), "profile": "barato"})
+
+    def test_commands_still_refuse_and_the_message_says_how_to_get_out(self):
+        before = self.snapshot()
+        for argv in (("models",), ("profiles",), ("profiles", "use", "calidad"),
+                     ("settings",)):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.atta(*argv), (
+                    2, "", "config.json: profile «barato» no existe: usa economico, "
+                           f"equilibrado o calidad. {WAY_OUT}\n"))
+                self.assertEqual(self.snapshot(), before)
+
+    def test_clear_removes_the_unknown_profile(self):
+        data = self.stored()
+        out = self.ok("profiles", "clear")
+        self.assertTrue(out.startswith(
+            "Atta quitó el perfil barato de atta/config.json: vuelven los modelos de fábrica "
+            "(con tus overrides de atta models). La entrega sigue como está (none); cámbiala con "
+            "`atta settings set delivery.auto_merge_up_to <nivel>`.\n"), out)
+        data.pop("profile")
+        self.assertEqual(self.stored(), data)
+        self.ok("models")  # the project works again
+
+    def test_clear_does_not_hide_another_invalid_key(self):
+        # refused like any other command refuses that config (the CLI's ConfigError), whether
+        # config.validate finds the other key before the profile (concurrency) or after (models)
+        cases = ({"concurrency": 0}, "config.json: concurrency debe ser un entero mayor que 0.\n"), (
+            {"models": []}, "config.json: models debe ser un objeto por runtime, p. ej. "
+                            '{"claude-code": {"tiers": {"T2": "haiku"}, "roles": {"soldado": '
+                            '"opus"}}}.\n')
+        clean = self.stored()
+        for broken, message in cases:
+            with self.subTest(broken=broken):
+                self.write({**clean, **broken})
+                before = self.snapshot()
+                self.assertEqual(self.atta("profiles", "clear"), (2, "", message))
+                self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_clear_of_an_invalid_config_without_profile_refuses_as_before(self):  # PRESERVE
+        self.write({k: v for k, v in self.stored().items() if k != "profile"} | {
+            "concurrency": 0})
+        before = self.snapshot()
+        self.assertEqual(self.atta("profiles", "clear"), (
+            2, "", "config.json: concurrency debe ser un entero mayor que 0.\n"))
+        self.assertEqual(self.snapshot(), before)
+
+
+class NullProfileTest(ProfilesBase):
+    """S3 (F2.y A3): `"profile": null` is no profile, exactly like a missing key."""
+
+    def setUp(self):
+        super().setUp()
+        self.without = self.stored()
+        self.write({**self.stored(), "profile": None})
+
+    def test_null_is_accepted_and_reads_like_no_profile(self):
+        nulled = self.snapshot()
+        self.assertIsNone(project.load_config(self.root)["profile"])
+        self.assertIsNone(self.models_json()["profile"])
+        self.assertIsNone(json.loads(self.ok("profiles", "--json"))["current"])
+        listed = self.ok("profiles")
+        self.assertIn(f"\n{NO_PROFILE}\n", listed)
+        self.assertNotIn("\n* ", listed)
+        self.assertEqual(self.ok("settings", "get", "profile"), "null\n")
+        self.assertEqual(self.ok("profiles", "clear"),
+                         "Atta: el proyecto no usa un perfil; no cambié nada.\n— Atta\n")
+        self.assertEqual(self.snapshot(), nulled)
+        with_null = self.ok("models")
+        self.write(self.without)
+        self.assertEqual(self.ok("models"), with_null)
+
+    def test_use_replaces_null(self):
+        self.ok("profiles", "use", "calidad")
+        self.assertEqual(self.stored()["profile"], "calidad")
+
+    def test_a_non_text_profile_is_still_refused(self):  # PRESERVE
+        self.write({**self.without, "profile": 5})
+        before = self.snapshot()
+        self.assertEqual(self.atta("models"), (
+            2, "", "config.json: profile «5» no existe: usa economico, equilibrado o calidad. "
+                   f"{WAY_OUT}\n"))
+        self.assertEqual(self.snapshot(), before)
+
+
+class CurrentValuesTest(ProfilesBase):
+    """S2 (F2.y A2, L11 R3-origin): `atta profiles` shows the values in effect and who decided
+    each one. Rule: a tier is `proyecto` when atta/config.json has it under `models.<runtime>.
+    tiers` (only `atta models set` writes there, never a profile), even when it equals the
+    profile's or the factory's value; `perfil` when the profile decides it and it differs from
+    the factory; unmarked (factory) otherwise. Delivery: `profiles use` writes
+    `delivery.auto_merge_up_to` itself, so a value equal to the current profile's level reads
+    `perfil` (an explicit `atta settings set` to that same level is the same setting); any other
+    explicit value is `proyecto`; an absent key is the factory default."""
+
+    def current_line(self):
+        return [ln for ln in self.ok("profiles").splitlines() if ln.startswith("Vigente: ")]
+
+    def test_without_profile_the_init_delivery_is_the_project_s(self):
+        self.assertEqual(self.current_line(), [
+            "Vigente: T0 haiku · T1 haiku · T2 sonnet · T3 opus · entrega hasta none "
+            "(proyecto)."])
+
+    def test_absent_delivery_is_the_factory_default(self):
+        self.write({k: v for k, v in self.stored().items() if k != "delivery"})
+        self.assertEqual(self.current_line(), [
+            "Vigente: T0 haiku · T1 haiku · T2 sonnet · T3 opus · entrega hasta high."])
+
+    def test_after_use_the_profile_decides(self):
+        self.ok("profiles", "use", "calidad")
+        self.assertEqual(self.current_line(), [
+            "Vigente: T0 haiku · T1 sonnet (perfil) · T2 opus (perfil) · T3 opus · entrega "
+            "hasta none (perfil)."])
+
+    def test_delivery_changed_with_settings_shows_the_real_value(self):
+        self.ok("profiles", "use", "calidad")
+        self.ok("settings", "set", "delivery.auto_merge_up_to", "medium")
+        self.assertEqual(self.current_line(), [
+            "Vigente: T0 haiku · T1 sonnet (perfil) · T2 opus (perfil) · T3 opus · entrega "
+            "hasta medium (proyecto)."])
+
+    def test_an_override_equal_to_the_profile_is_the_project_s(self):
+        self.ok("profiles", "use", "calidad")
+        self.ok("models", "set", "T2", "opus")
+        self.assertEqual(self.current_line(), [
+            "Vigente: T0 haiku · T1 sonnet (perfil) · T2 opus (proyecto) · T3 opus · entrega "
+            "hasta none (perfil)."])
+        self.assertIn("Tiers: T0 haiku · T1 sonnet (perfil) · T2 opus (proyecto) · T3 opus\n",
+                      self.ok("models"))
+        self.assertEqual(self.models_json()["tiers"]["T2"]["origin"], "proyecto")
+        self.assertEqual(self.models_json()["roles"]["guia"]["origin"], "tier")
+
+
+class WithoutInitTest(TempDirMixin, unittest.TestCase):
+    """S4 (F2.y A4): writing commands never create atta/config.json from scratch."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = (self.tmp / "bare").resolve()
+        self.root.mkdir()
+
+    def atta(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["--project", str(self.root), *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_use_and_clear_refuse_and_create_nothing(self):
+        for argv in (("use", "calidad"), ("clear",)):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.atta("profiles", *argv), (2, "", no_init(self.root)))
+                self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_listing_still_reads_the_defaults(self):  # PRESERVE
+        code, out, err = self.atta("profiles")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn(f"\n{NO_PROFILE}\n", out)
+        self.assertEqual(list(self.root.iterdir()), [])
 
 
 if __name__ == "__main__":

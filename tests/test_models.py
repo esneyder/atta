@@ -495,6 +495,15 @@ class StageTierTest(unittest.TestCase):
             "jardinera-ux", tier="T2", escalate=False, risk="high", cortadora="sonnet"),
             "sonnet")
 
+    def test_tier_for_names_the_tier_of_the_model(self):
+        # F4.x S5: base first, then AVOID_ORDER (T1 before T0 for a shared haiku), else base.
+        tab = self.table()
+        self.assertEqual(tab.tier_for("sonnet", "T2"), "T2")
+        self.assertEqual(tab.tier_for("opus", "T2"), "T3")
+        self.assertEqual(tab.tier_for("haiku", "T0"), "T0")
+        self.assertEqual(tab.tier_for("haiku", "T2"), "T1")
+        self.assertEqual(tab.tier_for("claude-opus-4-1", "T2"), "T2")
+
     def test_resolve_ceiling_bounds_the_avoid_search(self):
         tab = self.table()
         self.assertEqual(tab.resolve("refutador", avoid={"haiku"}, floor="T1"), "sonnet")
@@ -802,6 +811,53 @@ class JsonStateTest(ModelsBase):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out, f"Modelos de Atta en {self.root} (runtime claude-code):\n"
                               + DEFAULT_TABLE)
+
+
+class ExplicitTierOriginTest(ModelsBase):
+    """S2 (F2.y L11 R3-origin): a tier the project wrote in `models.<runtime>.tiers` is
+    `proyecto` even when it equals the value underneath (factory or profile)."""
+
+    def test_override_equal_to_the_factory_is_the_project_s(self):
+        self.atta("models", "set", "T2", "sonnet")
+        _, table, _ = self.atta("models")
+        self.assertIn("Tiers: T0 haiku · T1 haiku · T2 sonnet (proyecto) · T3 opus\n", table)
+        self.assertRegex(table, r"(?m)^guia\s+T2\s+sonnet\s+tier$")
+
+    def test_bare_table_keeps_comparing_values(self):  # PRESERVE: Table built without config
+        base = {"T0": "haiku", "T1": "haiku", "T2": "sonnet", "T3": "opus"}
+        tab = models.Table(dict(base, T2="haiku"), {}, models.role_tiers(), base)
+        self.assertEqual([tab.tier_origin(t) for t in models.TIERS],
+                         ["fábrica", "fábrica", "proyecto", "fábrica"])
+
+
+class WithoutInitTest(TempDirMixin, unittest.TestCase):
+    """S4 (F2.y A4): `atta models` actions never create atta/config.json from scratch."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = (self.tmp / "bare").resolve()
+        self.root.mkdir()
+
+    def atta(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["--project", str(self.root), *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_every_action_refuses_and_creates_nothing(self):
+        expected = (f"No encontré atta/config.json en {self.root}: corre atta init primero. "
+                    "No cambié nada.\n")
+        for argv in (("set", "T2", "haiku"), ("set", "--role", "soldado", "opus"),
+                     ("unset", "--role", "soldado"), ("reset",),
+                     ("fallback", "T3", "sonnet"), ("fallback", "T3", "--clear")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.atta("models", *argv), (2, "", expected))
+                self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_the_table_still_reads_the_defaults(self):  # PRESERVE
+        self.assertEqual(self.atta("models"), (
+            0, f"Modelos de Atta en {self.root} (runtime claude-code):\n" + DEFAULT_TABLE, ""))
+        self.assertEqual(list(self.root.iterdir()), [])
 
 
 if __name__ == "__main__":

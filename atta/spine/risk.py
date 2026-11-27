@@ -11,7 +11,10 @@ down. Categories (labels in Spanish in every message):
                  public API route files
     concurrency  threads, locks, async primitives, queues, cron/schedulers
     delivery     entrega/CI: workflows, Dockerfile, deploy/infra, dependency manifests, lockfiles
-    untested     source files changed with no test file changed in the diff
+    untested     source files changed with no test file changed in the diff; a file whose
+                 change only touches blank lines or comments (known languages, see
+                 COMMENT_STYLES) or, in .py, only docstrings/comments (same AST) is not
+                 counted. An unknown extension or an unparseable .py keeps counting.
 
 The rules are data: config key `risk_rules` (DEFAULT_RULES when absent; a project's table
 replaces the whole default) with this shape::
@@ -37,9 +40,11 @@ transition: it has no `from`/`to`), and the Filtro's summary and checks.md say s
 
 from __future__ import annotations
 
+import ast
 import copy
 import functools
 import re
+import warnings
 from pathlib import Path
 
 RISKS = ("low", "medium", "high")
@@ -228,7 +233,9 @@ def _parse_patch(raw: bytes) -> dict[str, dict[str, list[str]]]:
 
 
 def changes(worktree, base: str, head: str = "HEAD") -> list[dict]:
-    """[{status, paths, added, removed}] of the diff `<base>...<head>` (renames detected)."""
+    """[{status, paths, added, removed, cosmetic}] of the diff `<base>...<head>` (renames
+    detected). `cosmetic` is True only for a modified file whose change touches nothing but
+    blank lines, comments or (in .py) docstrings; see cosmetic()."""
     from . import gate  # lazy: gate imports this module
     span = f"{base}...{head}"
     entries = _parse_name_status(gate._git(
@@ -241,7 +248,187 @@ def changes(worktree, base: str, head: str = "HEAD") -> list[dict]:
     for letter, paths in entries:
         lines = patch.get(paths[-1]) or patch.get(paths[0]) or {"added": [], "removed": []}
         out.append({"status": letter, "paths": list(paths), "added": list(lines["added"]),
-                    "removed": list(lines["removed"])})
+                    "removed": list(lines["removed"]), "cosmetic": False})
+    candidates = [ch for ch in out if ch["status"] == "M" and _style(ch["paths"][-1])]
+    if candidates:
+        blobs = _parse_raw(gate._git(
+            Path(worktree), "diff", "--no-ext-diff", "--no-textconv",
+            "--ignore-submodules=none", "--raw", "-z", "--no-abbrev", "-M",
+            "--end-of-options", span, "--"))
+        for ch in candidates:
+            ch["cosmetic"] = _cosmetic_blobs(Path(worktree), ch["paths"][-1],
+                                             blobs.get(ch["paths"][-1]))
+    return out
+
+
+def _parse_raw(raw: bytes) -> dict[str, tuple[str, str, str, str]]:
+    """{new path: (old mode, new mode, old blob, new blob)} from `diff --raw -z --no-abbrev`."""
+    fields = raw.decode("utf-8", "surrogateescape").split("\0")
+    out, i = {}, 0
+    while i < len(fields) and fields[i].startswith(":"):
+        meta = fields[i][1:].split()
+        if len(meta) < 5 or not meta[4]:
+            break
+        npaths = 2 if meta[4][0] in "RC" else 1
+        paths = fields[i + 1:i + 1 + npaths]
+        if paths:
+            out[paths[-1]] = (meta[0], meta[1], meta[2], meta[3])
+        i += 1 + npaths
+    return out
+
+
+def _cosmetic_blobs(worktree: Path, path: str, entry) -> bool:
+    from . import gate  # lazy: gate imports this module
+    if entry is None:
+        return False
+    old_mode, new_mode, old_sha, new_sha = entry
+    if old_mode != new_mode or old_mode not in ("100644", "100755"):
+        return False  # a mode change, symlink or submodule is never cosmetic
+    try:
+        old = gate._git(worktree, "cat-file", "blob", old_sha)
+        new = gate._git(worktree, "cat-file", "blob", new_sha)
+    except (gate.GateError, OSError):
+        return False
+    return cosmetic(path, old, new)
+
+
+# ---------------------------------------------------------------- cosmetic changes (S1)
+
+# Comment syntax per extension. A false negative lowers the review depth (G3) and a false
+# positive only asks for a test, so every doubt counts as code:
+#   line    prefixes that start a comment line;  block  /* ... */ comments allowed
+#   code    comment lines that still mean something (shebangs, build tags, cgo, magic
+#           comments, pragmas, docblock annotations): they count as code
+#   reject  regexes searched in the whole old and new text: a match (a multi-line string
+#           opener, a heredoc, JSX, cgo, text outside <?php...) makes the file not cosmetic
+#   bare    for languages whose plain quotes may span lines: a code line holding any of
+#           these characters makes the file not cosmetic (no string can open, so no
+#           comment-looking line can be string content)
+# Any line ending in `\` (a continuation) and a /* that never closes are never cosmetic.
+_SHEBANG = r"#!"
+_JS_CODE = (_SHEBANG, r"///\s*<", r"@ts-", r"@jsx", r"@flow", r"__PURE__", r"webpack",
+            r"sourceMappingURL")
+_SLASH = {"line": ("//",), "block": True, "code": (_SHEBANG,), "reject": (), "bare": ""}
+_HASH = {"line": ("#",), "block": False, "code": (_SHEBANG,), "reject": (),
+         "bare": "\"'`"}
+_TRIPLE = r'"""'
+COMMENT_STYLES = {
+    **{ext: {**_SLASH, "reject": (r'R"',)}  # C++ raw strings R"(...)"
+       for ext in ("c", "h", "cc", "cpp", "cxx", "hh", "hpp", "hxx")},
+    **{ext: {**_SLASH, "reject": (_TRIPLE,)} for ext in ("java", "kt", "kts")},
+    "scala": {**_SLASH, "reject": (_TRIPLE, "</", "/>")},  # Scala 2 XML literals
+    "swift": {**_SLASH, "reject": (_TRIPLE, r'#+"')},
+    "cs": {**_SLASH, "reject": (_TRIPLE, r'@\$?"', r'\$@"')},
+    "rs": {**_SLASH, "bare": '"'},  # plain Rust strings span lines; r"..." holds a quote
+    **{ext: {**_SLASH, "code": _JS_CODE, "reject": ("`", "</", "/>")}  # template, JSX
+       for ext in ("js", "jsx", "ts", "tsx", "mjs", "cjs")},
+    "php": {**_SLASH, "code": (_SHEBANG, r"@"),  # `#` is an attribute; @ are annotations
+            "reject": (r"\A(?!<\?php)", r"\?>", "<<"), "bare": "\"'`"},
+    "go": {**_SLASH, "block": False,  # a /* */ before `import "C"` is cgo code
+           "code": (_SHEBANG, r"^//go:", r"^//\s*\+build", r"^//line ", r"^//export ",
+                    r"^//\s*#"),
+           "reject": ("`", r'"C"')},  # raw strings; any cgo file
+    **{ext: {**_HASH, "reject": ("<<",)} for ext in ("sh", "bash", "zsh")},
+    **{ext: {**_HASH, "bare": "\"'`|>"} for ext in ("yaml", "yml")},  # block scalars
+    "toml": {**_HASH, "reject": (_TRIPLE, "'''"), "bare": ""},
+    "rb": {**_HASH, "code": (_SHEBANG, r"#\{",
+                             r"(?i)^#.*\b(?:frozen_string_literal|encoding|coding"
+                             r"|warn_indent|shareable_constant_value)\s*:"),
+           "reject": ("<<", r"(?m)^__END__\s*$"), "bare": "\"'`%/"},  # %q(), /regex/
+    "ps1": {**_HASH, "code": (_SHEBANG, r"(?i)^#\s*requires\b")},  # here-strings: quotes
+}
+
+
+def _style(path: str):
+    """"py", a COMMENT_STYLES entry, or None for an unknown extension (Windows-safe)."""
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name.lstrip(".") else ""
+    return "py" if ext == "py" else COMMENT_STYLES.get(ext)
+
+
+def cosmetic(path: str, old: bytes, new: bytes) -> bool:
+    """True when `old` → `new` only touches blank lines or comments (or, for .py, the code
+    keeps the same AST once docstrings are stripped). False for an unknown extension, an
+    unparseable .py, or a changed shebang. Line endings count: CRLF ↔ LF is a change, except
+    in .py where the AST decides."""
+    style = _style(path)
+    if style is None or old == new:
+        return False
+    if _first_line(old).startswith(b"#!") or _first_line(new).startswith(b"#!"):
+        if _first_line(old) != _first_line(new):
+            return False
+    if style == "py":
+        before, after = _py_skeleton(old), _py_skeleton(new)
+        return before is not None and before == after
+    before = _code_lines(old.decode("utf-8", "surrogateescape"), style)
+    after = _code_lines(new.decode("utf-8", "surrogateescape"), style)
+    return before is not None and before == after
+
+
+def _first_line(blob: bytes) -> bytes:
+    return blob.split(b"\n", 1)[0]
+
+
+def _py_skeleton(blob: bytes) -> str | None:
+    """ast.dump of a Python source without docstrings; None when it does not parse."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(blob)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+                body = node.body
+                if (body and isinstance(body[0], ast.Expr)
+                        and isinstance(body[0].value, ast.Constant)
+                        and isinstance(body[0].value.value, str)):
+                    node.body = body[1:]
+        return ast.dump(tree)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+
+
+def _code_lines(text: str, style: dict) -> list[str] | None:
+    """The lines of `text` that are not blank nor comment-only, verbatim (indentation and
+    line endings kept). A line with code next to a comment is code. None when a comment-
+    looking line could be code or string content (see COMMENT_STYLES)."""
+    if any(_regex(p).search(text) for p in style["reject"]):
+        return None
+    code = [_regex(p) for p in style["code"]]
+    out, in_block = [], False
+    for line in text.split("\n"):
+        if line.rstrip().endswith("\\"):
+            return None
+        s = line.strip()
+        meaningful = any(rx.search(s) for rx in code)
+        if in_block:
+            end = s.find("*/")
+            if end >= 0:
+                in_block = False
+            if meaningful or (end >= 0 and s[end + 2:].strip()):
+                out.append(line)
+            continue
+        if not s:
+            continue
+        if meaningful:
+            out.append(line)
+            if style["block"] and s.startswith("/*") and s.find("*/", 2) < 0:
+                in_block = True
+            continue
+        if s.startswith(style["line"]):
+            continue
+        if style["block"] and s.startswith("/*"):
+            end = s.find("*/", 2)
+            if end < 0:
+                in_block = True
+            elif s[end + 2:].strip():
+                out.append(line)
+            continue
+        out.append(line)
+    if in_block:
+        return None
+    if style["bare"] and any(c in line for line in out for c in style["bare"]):
+        return None
     return out
 
 
@@ -287,8 +474,10 @@ def assess(diff: list[dict], rules: dict) -> tuple[dict, list[tuple[str, str, st
     if "untested" in cats:
         live = [ch["paths"][-1] for ch in diff if ch["status"] != "D"]
         if not any(_match(p, tests) for p in live):
-            hits += [(p, "untested", "cambia código y el diff no cambia ningún test")
-                     for p in live if scanned(p)]
+            hits += [(ch["paths"][-1], "untested",
+                      "cambia código y el diff no cambia ningún test")
+                     for ch in diff if ch["status"] != "D" and scanned(ch["paths"][-1])
+                     and not ch.get("cosmetic")]
     found = sorted({c for _, c, _ in hits}, key=CATEGORIES.index)
     level = highest(*(cats[c]["risk"] for c in found)) or "low"
     reasons = [f"{p}: {CATEGORY_ES[c]} — {why}" for p, c, why in hits]

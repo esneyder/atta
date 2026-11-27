@@ -41,13 +41,17 @@ The gate FAILS without running checks when:
 Failure kinds (T9, S2): every FAIL is `config` or `code`, written as the third line of the report
 (`KIND: config|code`) and in `GateResult.kind`. `config` is what a person fixes in the main
 checkout and the Cortadora never can: no checks in checks.json, checks.json unreadable or invalid,
-a check's shell or the ast-grep binary missing, ast-grep rules failing their own tests, or the main
+a check's shell or the ast-grep binary missing, the first command of a check missing (T6: a bare
+name not on the PATH, PATHEXT on Windows; a path like `./scripts/x.sh` in neither the main
+checkout nor the worktree; builtins, `VAR=value` prefixes and words with expansions are never
+flagged), ast-grep rules failing their own tests, or the main
 checking out another branch than `integration_branch` (only checked when that branch exists in
 the main checkout, locally or as origin/<branch>; message: «El checkout principal está en «main»;
 Atta lee checks.json y las reglas desde develop. Corre: git switch develop»). Those are checked
 first (`## Configuración`) and run nothing else. Everything else is `code`: protected paths,
 dirty worktree, scope enforce, ast-grep error findings or bad output, a failing or timed-out
-check. A report without `KIND:` (older Atta) counts as `code` (`report_kind`). `atta next`
+check (exit 127 of a command that exists included: nothing is reclassified after running).
+A report without `KIND:` (older Atta) counts as `code` (`report_kind`). `atta next`
 sends a `config` FAIL to needs-human without spending a round and retries the gate in the same
 round once `config_problems` finds nothing (next.py). A `checks` run records the outcome in
 job.json (`gate_failure: {kind: config, reason}`, removed by any other outcome) when
@@ -139,6 +143,41 @@ AST_GREP_BATCH = 100
 # cmd.exe re-parses the arguments of a .cmd/.bat launcher: these characters could run commands.
 _CMD_UNSAFE = frozenset('&|<>^%!"\r\n')
 _which = shutil.which  # patched in tests
+_command_which = shutil.which  # the first command of a check (T6); patched in tests
+
+# T6 (S6): the first command of every check must exist before anything runs. Words that are not
+# programs (shell builtins, keywords, PowerShell aliases) are never looked up, and a first word
+# that cannot be read with certainty (expansions, substitutions, grouping) is never flagged.
+_POSIX_BUILTINS = frozenset(
+    ": . ! [ alias bg bind break builtin caller case cd command compgen complete compopt "
+    "continue coproc declare dirs disown do done echo elif else enable esac eval exec exit "
+    "export false fc fg fi for function getopts hash help history if in jobs kill let local "
+    "logout mapfile popd printf pushd pwd read readarray readonly return select set shift "
+    "shopt source suspend test then time times trap true type typeset ulimit umask unalias "
+    "unset until wait while".split())
+_CMD_BUILTINS = frozenset(
+    "assoc break call cd chdir cls color copy date del dir echo endlocal erase exit for ftype "
+    "goto if md mkdir mklink move path pause popd prompt pushd rd rem ren rename rmdir set "
+    "setlocal shift start time title type ver verify vol".split())
+_PWSH_WORDS = frozenset(
+    ". % ? begin break catch class continue data do dynamicparam else elseif end enum exit "
+    "filter finally for foreach function if param process return switch throw trap try until "
+    "using while ac cat cd chdir clc clear clhy cli clp cls clv cnsn compare copy cp cpi cpp "
+    "curl cvpa dbp del diff dir dnsn ebp echo epal epcsv epsn erase etsn exsn fc fhx fl ft fw "
+    "gal gbp gc gcb gci gcm gcs gdr ghy gi gin gjb gl gm gmo gp gps gpv group gsn gsnp gsv gtz "
+    "gu gv gwmi h history icm iex ihy ii ipal ipcsv ipmo ipsn irm ise iwmi iwr kill lp ls man "
+    "md measure mi mount move mp mv nal ndr ni nmo npssc nsn nv ogv oh popd ps pushd pwd r rbp "
+    "rcjb rcsn rd rdr ren ri rjb rm rmdir rmo rni rnp rp rsn rsnp rujb rv rvpa rwmi sajb sal "
+    "saps sasv sbp sc scb select set shcm si sl sleep sls sort sp spjb spps spsv start stz "
+    "sujb sv swmi tee trcm type wget where wjb write".split())
+# Characters that make a word an expansion, a pattern or shell grammar (never flagged).
+_COMMAND_META = {"posix": frozenset("$`\\(){}[]<>|&;*?~#!"),
+                 "cmd": frozenset('%!^&|<>()/'),
+                 "pwsh": frozenset("$`(){}[]<>|&;@#,")}
+# Characters that expand even inside double quotes.
+_QUOTED_META = {"posix": frozenset("$`\\"), "cmd": frozenset("%!"), "pwsh": frozenset("$`")}
+_QUOTES = {"posix": "'\"", "cmd": '"', "pwsh": "'\""}
+_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
 
 # Freshness preflight (K14): `git ls-remote` never waits longer than this.
 FRESHNESS_TIMEOUT_S = 15
@@ -760,11 +799,107 @@ def main_branch_problem(main_checkout: Path, branch: str) -> str | None:
     return None if current == branch else branch_problem(current or "HEAD suelto", branch)
 
 
-def _preflight(main_checkout: Path, config: dict) -> tuple[list[str], dict | None]:
+def _shell_family(shell: str) -> str:
+    return "cmd" if shell == "cmd" else "pwsh" if shell in ("pwsh", "powershell") else "posix"
+
+
+def _next_word(text: str, i: int, family: str) -> tuple[str | None, str, bool, int]:
+    """(value without quotes or None at the end, raw text, uncertain, next index) of the word
+    of `text` starting at `i` (after blanks). A newline ends the first command."""
+    n = len(text)
+    while i < n and text[i] in " \t":
+        i += 1
+    if i >= n or text[i] in "\r\n":
+        return None, "", False, i
+    start, value, uncertain = i, [], False
+    while i < n and text[i] not in " \t\r\n":
+        ch = text[i]
+        if ch in _QUOTES[family]:
+            end = text.find(ch, i + 1)
+            if end < 0:
+                return None, text[start:], True, n
+            part = text[i + 1:end]
+            if ch == '"' and _QUOTED_META[family] & set(part):
+                uncertain = True
+            value.append(part)
+            i = end + 1
+            continue
+        if ch in _COMMAND_META[family]:
+            uncertain = True
+        value.append(ch)
+        i += 1
+    return "".join(value), text[start:i], uncertain, i
+
+
+def first_command(shell: str, run: str) -> str | None:
+    """The program the shell runs first for `run`, or None when it is not a program (a builtin,
+    a keyword, a PowerShell cmdlet or alias) or cannot be told for sure (expansions,
+    substitutions, grouping, a PATH assignment). POSIX `VAR=value` prefixes are skipped."""
+    family = _shell_family(shell)
+    text = run.strip()
+    if family == "cmd":
+        text = text.lstrip("@").lstrip()
+    i = 0
+    while True:
+        word, raw, uncertain, i = _next_word(text, i, family)
+        if not word or uncertain:
+            return None
+        assignment = _ASSIGNMENT.match(raw) if family == "posix" else None
+        if assignment is None:
+            break
+        if assignment.group(1) == "PATH" or set(raw) & _QUOTED_META["posix"]:
+            return None
+    folded = word.casefold()
+    if family == "posix" and word in _POSIX_BUILTINS:
+        return None
+    if family == "cmd" and folded in _CMD_BUILTINS:
+        return None
+    if family == "pwsh" and (folded in _PWSH_WORDS or
+                             re.fullmatch(r"[A-Za-z]+-[A-Za-z0-9]+", word)):
+        return None
+    return word
+
+
+def _missing_command(check: dict, main_checkout: Path, worktree: Path | None) -> str | None:
+    """The config problem when the first command of `check` does not exist, else None.
+
+    A bare name is looked up on this process's PATH (the one the check inherits; PATHEXT on
+    Windows, and the check's folder too under cmd). A path-like word (`./x.sh`, `scripts\\x.cmd`)
+    is resolved against the main checkout and the worktree and is only missing when it is in
+    neither: if the worktree alone lost it, running it fails as `code` (the Cortadora's diff)."""
+    family = _shell_family(check["shell"])
+    word = first_command(check["shell"], check["run"])
+    if word is None:
+        return None
+    name = check["name"]
+    dirs = [Path(main_checkout)] + ([Path(worktree)] if worktree is not None else [])
+    seps = "/" if family == "posix" else "\\/"
+    if any(s in word for s in seps) or (family != "posix" and re.match(r"[A-Za-z]:", word)):
+        path = Path(word)
+        candidates = [path] if path.is_absolute() else [d / path for d in dirs]
+        if any(c.exists() or _command_which(str(c)) for c in candidates):
+            return None
+        where = "en este equipo" if path.is_absolute() else "en el checkout principal"
+        hint = "Instálalo" if path.is_absolute() else "Agrégalo"
+        return (f"No se encontró «{word}» (check «{name}») {where}. {hint} o corrige "
+                "atta/checks.json en el checkout principal.")
+    if _command_which(word):
+        return None
+    if family == "cmd" and any(_command_which(word, path=str(d)) for d in dirs):
+        return None
+    return (f"No se encontró el comando «{word}» en el PATH de este equipo (check «{name}»). "
+            "Instálalo o corrige atta/checks.json en el checkout principal.")
+
+
+def _preflight(main_checkout: Path, config: dict,
+               worktree: Path | None = None) -> tuple[list[str], dict | None]:
     """(config problems found before running anything, loaded checks.json or None).
 
     Order: main checkout branch (a wrong branch explains every other problem), checks.json
-    readable and valid, at least one check, the shell of every check on the PATH."""
+    readable and valid, at least one check, the shell of every check on the PATH, the first
+    command of every check (T6: on the PATH, or a script in the main checkout or `worktree`).
+    A check whose command exists and still exits 127 is a `code` failure: nothing is
+    reclassified after running."""
     problems = []
     branch = config.get("integration_branch") or "develop"
     wrong = main_branch_problem(main_checkout, branch)
@@ -783,12 +918,24 @@ def _preflight(main_checkout: Path, config: dict) -> tuple[list[str], dict | Non
             missing.append(check["shell"])
             problems.append(f"No se encontró el shell «{check['shell']}» en el PATH de este "
                             f"equipo (check «{check['name']}»).")
+    seen = set()
+    for check in spec["checks"]:
+        if check["shell"] in missing:
+            continue  # without its shell the command cannot be judged
+        problem = _missing_command(check, main_checkout, worktree)
+        word = first_command(check["shell"], check["run"])
+        if problem and word not in seen:
+            seen.add(word)
+            problems.append(problem)
     return problems, spec
 
 
 def config_problems(main_checkout: Path, config: dict) -> list[str]:
     """What would make the gate FAIL with kind `config` right now (cheap, read-only, no diff):
-    the preflight plus ast-grep rules without the binary. Empty when the config is ready."""
+    the preflight plus ast-grep rules without the binary. Empty when the config is ready.
+
+    Without a worktree a check's script is looked up in the main checkout only; the gate never
+    reports a missing script this would not (it needs it missing from the main checkout too)."""
     main_checkout = Path(main_checkout)
     problems, _spec = _preflight(main_checkout, config)
     try:
@@ -873,7 +1020,7 @@ def run_gate(main_checkout: Path, worktree: Path, job, round_dir: Path, *, base_
     commit = _sha(_git(worktree, "rev-parse", "--verify", "HEAD^{commit}"))
     base = resolve_base(worktree, base_ref, commit)
     # T9: configuration first; a config FAIL is for a person and runs nothing else.
-    problems, spec = _preflight(main_checkout, config)
+    problems, spec = _preflight(main_checkout, config, worktree)
     spec = spec or {"checks": [], "timeout_s": DEFAULT_TIMEOUT_S}
     violations = protected_violations(worktree, base, globs, commit)
     dirty = dirty_entries(worktree)

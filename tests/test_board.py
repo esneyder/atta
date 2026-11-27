@@ -685,5 +685,45 @@ class StageTimeoutEventBoardTests(unittest.TestCase):
         self.assertEqual(board.durations(events), {"intake": 5})
 
 
+class BlockedTimeBoardTests(TempDirMixin, unittest.TestCase):
+    """F4.x T3 (S3): BLOCKED-BY time is its own figure; the stage p50 uses the clean duration."""
+
+    def make(self, jid, evs):
+        job_dir = self.tmp / jid
+        job_dir.mkdir()
+        (job_dir / "events.jsonl").write_text(
+            "".join(json.dumps(e) + "\n" for e in evs), encoding="utf-8")
+        raw = {"id": jid, "issue": int(jid.split("-")[0]), "title": jid, "stage": "spec",
+               "started": "2025-06-06T10:00:00Z", "stage_since": "2025-06-06T11:00:00Z"}
+        return board.build_job(jid, job_dir, raw, NOW)
+
+    def test_blocked_is_separate_and_p50_is_clean(self):
+        a = self.make("20-a", [{"from": "intake", "to": "spec", "duration_s": 10,
+                                "blocked_s": 2559}])
+        b = self.make("21-b", [{"from": "intake", "to": "spec", "duration_s": 30}])
+        self.assertEqual((a["durations"], a["blocked"]), ({"intake": 10}, {"intake": 2559}))
+        self.assertEqual((b["durations"], b["blocked"]), ({"intake": 30}, {}))
+        stats = board.stats([a, b])
+        self.assertEqual(stats["p50"]["intake"], 20)
+        self.assertEqual(stats["blocked"], {"intake": 2559})
+
+    def test_blocked_sums_per_stage_and_ignores_bad_values(self):
+        evs = [{"from": "intake", "to": "spec", "duration_s": 1, "blocked_s": 5},
+               {"from": "spec", "to": "build", "duration_s": 1, "blocked_s": "x"},
+               {"from": "intake", "to": "spec", "duration_s": 1, "blocked_s": 2.5},
+               {"from": "build", "to": "gate", "duration_s": 1, "blocked_s": True}]
+        self.assertEqual(board.blocked(evs), {"intake": 7.5})
+
+    def test_no_blocked_job_has_empty_blocked_stats(self):
+        b = self.make("21-b", [{"from": "intake", "to": "spec", "duration_s": 30}])
+        self.assertEqual(board.stats([b])["blocked"], {})
+
+    def test_board_js_shows_blocked(self):
+        js = (BOARD_DIR / "board.js").read_text(encoding="utf-8")
+        self.assertIn("st.blocked", js)
+        self.assertIn("j.blocked", js)
+        self.assertIn("bloqueado", js)
+
+
 if __name__ == "__main__":
     unittest.main()

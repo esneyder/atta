@@ -227,6 +227,20 @@ class RuleFallsBackTest(RuleBase):
         self.write("round-1/build.md", BUILD_OK.replace("- ✓ «Exporta", "- ✗ «Exporta"))
         self.assertReina("build.md")
 
+    def test_build_rewords_a_spec_criterion(self):
+        # F4.x S4: #15's ✓ with ValueError for the spec's ZeroDivisionError.
+        self.write("spec.md", "STATUS: READY\n\n## Acceptance criteria\n\n"
+                   "1. «Exporta los pedidos filtrados.»\n"
+                   "2. «Dividir por cero lanza ZeroDivisionError.»\n\nFILES: src/a.py\n")
+        self.write("round-1/build.md", BUILD_OK.replace(
+            "## Risks", "- ✓ «Dividir por cero lanza ValueError.» — t\n\n## Risks"))
+        self.assertReina("«Dividir por cero lanza ZeroDivisionError.»")
+
+    def test_build_with_every_spec_criterion_still_approves(self):
+        self.write("spec.md", "STATUS: READY\n\n## Acceptance criteria\n\n"
+                   "1. «Exporta los pedidos filtrados.»\n\nFILES: src/a.py\n")
+        self.assertEqual(self.next_action(), self.run_action("merge", JID))
+
     def test_diff_out_of_files(self):
         self.write("spec.md", "STATUS: READY\n\nFILES: src/b.py\n")
         self.assertReina("FILES:")

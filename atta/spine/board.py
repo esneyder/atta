@@ -297,6 +297,17 @@ def durations(events: list[dict]) -> dict:
     return {stage: _clean(secs) for stage, secs in totals.items()}
 
 
+def blocked(events: list[dict]) -> dict:
+    """Seconds waited for a BLOCKED-BY blocker per stage (event `blocked_s`, F4.x T3, S3); that
+    time is already out of `duration_s`, so the stage p50 stays clean."""
+    totals: dict[str, float] = {}
+    for event in events:
+        stage, secs = event.get("from"), _number(event.get("blocked_s"))
+        if isinstance(stage, str) and secs is not None:
+            totals[stage] = totals.get(stage, 0) + secs
+    return {stage: _clean(secs) for stage, secs in totals.items()}
+
+
 # --- jobs --------------------------------------------------------------------
 
 def _str(value) -> str | None:
@@ -381,6 +392,7 @@ def build_job(jid: str, job_dir: Path, raw: dict, now: datetime) -> dict:
         "rounds": rounds,
         "latest": rounds[-1] if rounds else None,
         "durations": durations(events),
+        "blocked": blocked(events),
         "elapsed_s": _elapsed(raw, now),
         "cost_usd": cost,
         "tier": tiers[-1] if tiers else None,
@@ -444,6 +456,12 @@ def stats(jobs: list[dict]) -> dict:
         values = [j["durations"][stage] for j in jobs if stage in j["durations"]]
         if values:
             p50[stage] = _clean(statistics.median(values))
+    # S3: «bloqueado» is its own figure: p50 of the BLOCKED-BY wait among the jobs that waited.
+    waits = {}
+    for stage in P50_STAGES:
+        values = [j["blocked"][stage] for j in jobs if stage in j.get("blocked", {})]
+        if values:
+            waits[stage] = _clean(statistics.median(values))
     return {
         "active": len(jobs) - closed - human,
         "needs_human": human,
@@ -452,6 +470,7 @@ def stats(jobs: list[dict]) -> dict:
         "merge_rate": round(100 * merged / closed) if closed else None,
         "cost_usd": round(sum(costs), 6) if costs else None,
         "p50": p50,
+        "blocked": waits,
     }
 
 

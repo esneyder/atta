@@ -17,8 +17,8 @@ and clean:
   reviews). Any finding line the parser cannot read (`- [blocker]  x`, `* [Major] …`), a
   CHANGES without findings, a minor finding in a CHANGES, an unrefuted finding or a malformed
   reviewer plan is a doubt;
-- the round's `build.md` says `STATUS: DONE`, keeps the build.md contract (`next.check_build`)
-  and has no ✗;
+- the round's `build.md` says `STATUS: DONE`, keeps the build.md contract (`next.check_build`,
+  with every «…» criterion of spec.md copied verbatim) and has no ✗;
 - scope: the spec's `FILES:` exists and names no catch-all entry (`**`, `**/*`, `*`, …); the
   diff `<base>...HEAD` changes at least one non-test path of `FILES:`, and every path outside
   `FILES:` is a test file by the DEFAULT test globs (a project cannot widen them here).
@@ -159,7 +159,8 @@ def _signals(job, job_dir, round_dir, worktree, base, cfg) -> list[str]:
     build = round_dir / nxt.BUILD_FILE
     if nxt._first_line(build) != "STATUS: DONE":
         raise _Doubt(f"{rnd}/build.md no existe o no dice STATUS: DONE")
-    problems, open_items = nxt.check_build(nxt._read_text(build))
+    problems, open_items = nxt.check_build(nxt._read_text(build),
+                                           nxt._read_text(job_dir / nxt.SPEC_FILE))
     if problems:
         raise _Doubt(f"{rnd}/build.md no cumple el contrato: {'; '.join(problems)}")
     if open_items:

@@ -2,8 +2,10 @@
 
 `templates/claude/profiles.json` holds the profiles Atta ships (`economico`, `equilibrado`,
 `calidad`); it is loaded and validated like models.json. A project picks one with
-`"profile": "<id>"` in atta/config.json (absent = no profile = factory). Names are accepted
-with accents and any case («Económico» is `economico`); the stored id is ASCII.
+`"profile": "<id>"` in atta/config.json (absent or null = no profile = factory). Names are
+accepted with accents and any case («Económico» is `economico`); the stored id is ASCII. An
+unknown `profile` makes every command fail closed (config.validate) with WAY_OUT as the hint;
+`atta profiles clear` is the one command that still runs on such a config (S1, F2.y A1).
 
 Precedence for models (S6): factory < profile < the project's `models` tiers/roles overrides:
 `models.table` layers them, and `atta models` shows origin `perfil` for a tier the profile
@@ -12,10 +14,11 @@ thing the pipeline reads (config.auto_merges), so `atta profiles use` WRITES it 
 to `profile` and says so in its output; an explicit `delivery` is never changed behind the
 person's back, and `atta profiles clear` leaves it as written.
 
-`atta profiles` lists them (current marked; `--json`), `show <name>` previews the effect against
+`atta profiles` lists them (current marked; `--json`) and the values in effect with their
+origin (`Vigente:`, S2: see `_current_line`), `show <name>` previews the effect against
 the current config, `use <name>` / `clear` write atta/config.json atomically (models.py's
-writer) and sync the agents' `model:` lines like `atta models set`. Anything invalid exits 2
-and writes nothing.
+writer) and sync the agents' `model:` lines like `atta models set`. Anything invalid, or a
+folder without atta/config.json (run `atta init` first, S4), exits 2 and writes nothing.
 """
 
 from __future__ import annotations
@@ -24,11 +27,15 @@ import json
 import sys
 from pathlib import Path
 
-from . import config, models
+from . import config, models, project
 
 OK, REFUSED = 0, 2
 SIGN = "— Atta"
 KEYS = ("description", "models", "delivery")
+# How to get out of an invalid `profile` in config.json (S1): shown by every refused command
+# and by `atta doctor`.
+WAY_OUT = ("Quítalo con atta profiles clear en tu terminal o borra «profile» de "
+           "atta/config.json.")
 
 
 class ProfilesError(models.ModelsError):
@@ -187,6 +194,37 @@ def state(root: Path, cfg: dict, templates=None) -> dict:
             "runtime": models.RUNTIME}
 
 
+def _delivery_origin(root: Path, cfg: dict, templates=None) -> str:
+    """Who decided delivery.auto_merge_up_to (S2). `use` writes the key itself, so a value
+    equal to the current profile's level is `perfil`; any other explicit value is `proyecto`;
+    no key in atta/config.json is the factory default."""
+    path = project.config_path(root)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        raw = {}
+    delivery = raw.get("delivery") if isinstance(raw, dict) else None
+    if not isinstance(delivery, dict) or "auto_merge_up_to" not in delivery:
+        return "fábrica"
+    cur = current(cfg)
+    return "perfil" if cur and _delivery(cfg) == level(cur, templates) else "proyecto"
+
+
+def _current_line(root: Path, cfg: dict, templates=None) -> str:
+    """The tier models and delivery in effect, each marked with its origin when it is not the
+    factory's (tiers: models.Table.tier_origin)."""
+    tab = models.table(cfg, templates=templates)
+    parts = []
+    for t in models.TIERS:
+        origin = tab.tier_origin(t)
+        parts.append(f"{t} {tab.tiers.get(t, '-')}" + (f" ({origin})" if origin != "fábrica"
+                                                        else ""))
+    origin = _delivery_origin(root, cfg, templates)
+    parts.append(f"entrega hasta {_delivery(cfg)}" + (f" ({origin})" if origin != "fábrica"
+                                                       else ""))
+    return "Vigente: " + " · ".join(parts) + "."
+
+
 def render(root: Path, cfg: dict, templates=None) -> str:
     found, cur = load(templates), current(cfg)
     out = [f"Perfiles de Atta en {root} (runtime {models.RUNTIME}):"]
@@ -197,6 +235,7 @@ def render(root: Path, cfg: dict, templates=None) -> str:
                    f"entrega hasta {entry['delivery']['auto_merge_up_to']}")
         out.append(f"    {entry['description']}")
     out.append(f"Perfil actual: {cur}." if cur else "Perfil actual: ninguno (modelos de fábrica).")
+    out.append(_current_line(root, cfg, templates))
     out += ["Mira el efecto con `atta profiles show <perfil>`; elige con `atta profiles use "
             "<perfil>` o vuelve a fábrica con `atta profiles clear`.", SIGN]
     return "\n".join(out)
@@ -229,9 +268,20 @@ def _use(root: Path, cfg: dict, name: str) -> int:
         "de atta models siguen ganando sobre el perfil.")
 
 
-def _clear(root: Path) -> int:
+def _clear(root: Path, cfg: dict | None) -> int:
+    """Remove `profile`. `cfg` is None when config.json did not validate (S1: clear runs even
+    then); it only gets out of a bad profile, so any other problem refuses as in every other
+    command (ConfigError, exit 2 from the CLI)."""
+    if cfg is None:
+        try:
+            project.load_config(root)
+        except config.ConfigError as exc:
+            if exc.hint != WAY_OUT:
+                raise
     data = models._raw_config(root)
-    if "profile" not in data:
+    if cfg is None:  # the profile is the first problem found; refuse if another one is left
+        config.with_defaults({k: v for k, v in data.items() if k != "profile"})
+    if data.get("profile") is None:
         print(f"Atta: el proyecto no usa un perfil; no cambié nada.\n{SIGN}")
         return OK
     name = data.pop("profile")
@@ -269,7 +319,7 @@ def cmd_profiles(args, cfg, jobs) -> int:
             return OK
         if action == "use":
             return _use(root, cfg, args.name)
-        return _clear(root)
+        return _clear(root, cfg)
     except models.ModelsError as exc:  # includes ProfilesError
         return _refuse(str(exc))
     except OSError as exc:
@@ -282,13 +332,17 @@ def register(subparsers) -> None:
     p = subparsers.add_parser(
         "profiles", help="Perfiles de fábrica (económico, equilibrado, calidad) que fijan modelos "
                          "y entrega.",
-        description="Sin acción, lista los perfiles con el actual marcado (con --json, el mismo "
-                    "estado y el efecto de cada uno como JSON, solo lectura). show <perfil> "
+        description="Sin acción, lista los perfiles con el actual marcado y los valores "
+                    "vigentes (modelos por tier y entrega) con su origen: perfil, proyecto o "
+                    "de fábrica (con --json, el estado y el efecto de cada perfil como JSON, "
+                    "solo lectura). show <perfil> "
                     "muestra qué cambiaría; use <perfil> guarda «profile» y la entrega "
                     "(delivery.auto_merge_up_to) en atta/config.json y vuelve a escribir la "
                     "línea model: de los agentes; clear quita «profile». Tus overrides de atta "
                     "models ganan sobre el perfil. Un perfil inexistente sale 2 sin escribir "
-                    "nada.",
+                    "nada; si atta/config.json tiene un «profile» que no existe, todos los "
+                    "comandos lo rechazan y clear es la salida. Sin atta/config.json, use y "
+                    "clear salen 2 sin crear nada: corre atta init primero.",
         epilog="Perfiles: económico (también economico), equilibrado y calidad. Los acentos y "
                "las mayúsculas no importan.")
     p.add_argument("--json", action="store_true",
@@ -305,6 +359,10 @@ def register(subparsers) -> None:
                                    "atta/config.json y sincroniza la línea model: de los "
                                    "agentes.")
     u.add_argument("name", metavar="<perfil>", help="economico, equilibrado o calidad")
-    sub.add_parser("clear", help="Quita el perfil del proyecto (vuelven los modelos de fábrica).",
-                   description="Quita «profile» de atta/config.json y vuelve a escribir la línea "
-                               "model: de los agentes. La entrega queda como está.")
+    c = sub.add_parser("clear", help="Quita el perfil del proyecto (vuelven los modelos de "
+                                     "fábrica).",
+                       description="Quita «profile» de atta/config.json y vuelve a escribir la "
+                                   "línea model: de los agentes. La entrega queda como está. "
+                                   "Funciona aunque el perfil guardado no exista (es la salida "
+                                   "de ese error).")
+    c.set_defaults(tolerates_bad_config=True)

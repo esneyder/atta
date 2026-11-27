@@ -102,7 +102,9 @@ La Cortadora agregó la exportación CSV con 6 tests nuevos.
   paraphrased. «It should pass» is not evidence: a command you did not run is not listed. For a
   bugfix, name the red test and show it failing before the fix and passing after.
 - `## Acceptance`: every acceptance criterion from spec.md copied verbatim, each with ✓ or ✗ and
-  where it is covered (test name or `path:line`).
+  where it is covered (test name or `path:line`). The spine checks that each «…» criterion of
+  spec.md appears here word for word: a missing or reworded one (`ValueError` for
+  `ZeroDivisionError`) makes build.md invalid. Mark ✓ only when the test proves that exact text.
 - `## Risks`: what could still go wrong, or «ninguno».
 - `## Blocked`: only when `STATUS: BLOCKED`; leave the section out when DONE.
 

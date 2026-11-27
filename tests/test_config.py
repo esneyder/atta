@@ -187,12 +187,19 @@ class ConfigTests(TempDirMixin, unittest.TestCase):
         self.assertNotIn("profile", config.load_config(self.write({})))
         for name in ("economico", "equilibrado", "calidad"):
             self.assertEqual(config.load_config(self.write({"profile": name}))["profile"], name)
-        for bad in ("barato", "Económico", "", 3, None, ["calidad"]):
+        # S3 (F2.y A3): null is no profile, exactly like the missing key
+        self.assertIsNone(config.load_config(self.write({"profile": None}))["profile"])
+        for bad in ("barato", "Económico", "", 3, ["calidad"]):
             with self.subTest(profile=bad):
                 with self.assertRaises(config.ConfigError) as ctx:
                     config.load_config(self.write({"profile": bad}))
                 self.assertIn("config.json: profile", str(ctx.exception))
                 self.assertIn("usa economico, equilibrado o calidad", str(ctx.exception))
+                # S1 (F2.y A1): the message says how to get out; doctor shows the hint apart
+                self.assertEqual(ctx.exception.hint, "Quítalo con atta profiles clear en tu "
+                                 "terminal o borra «profile» de atta/config.json.")
+                self.assertEqual(str(ctx.exception),
+                                 f"{ctx.exception.reason} {ctx.exception.hint}")
 
     def test_models_is_optional_and_accepts_tiers_and_roles(self):
         self.assertNotIn("models", config.load_config(self.write({})))

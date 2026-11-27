@@ -187,6 +187,27 @@ class CollectHarvestTest(Base):
             {"rule": "cada temporal tiene un test por tipo de fallo", "job": "11-historial",
              "reviewer": "code", "paths": ["history.py"]}])
 
+    def test_absolute_worktree_and_root_paths_are_stored_relative(self):
+        # S2 (F3.x L12 c): the reviewer wrote the absolute worktree path of the finding.
+        d = self.job("7-x")
+        write(d / "round-1" / "review-code.md", review(
+            "CHANGES", [("major", f"{self.root.as_posix()}/.worktrees/7-x/calc.py:12"),
+                         ("minor", f"`{self.root.as_posix()}/src/util.py:3`"),
+                         ("minor", "/otro/lugar/x.py:1")],
+            ["dividir por cero lanza ZeroDivisionError"]))
+        self.assertEqual(memory.collect(d)[0]["paths"], ["calc.py", "src/util.py",
+                                                         "/otro/lugar/x.py"])
+        self.lessons.harvest("7-x", jobs_dir=self.jobs_dir, now=NOW)
+        [lesson] = self.lessons.load()
+        self.assertEqual(lesson.cases, [("7-x", ["calc.py", "src/util.py",
+                                                  "/otro/lugar/x.py"])])
+
+    def test_collect_takes_an_explicit_root(self):
+        d = write(self.tmp / "suelto" / "9-y" / "round-1" / "review-code.md", review(
+            "CHANGES", [("major", "/srv/proj/.worktrees/9-y/calc.py:1")], ["regla"])).parents[1]
+        self.assertEqual(memory.collect(d, root="/srv/proj")[0]["paths"], ["calc.py"])
+        self.assertEqual(memory.collect(d)[0]["paths"], ["/srv/proj/.worktrees/9-y/calc.py"])
+
     def test_collect_skips_refuted_and_pass(self):
         d = self.make_job()
         got = memory.collect(d)
