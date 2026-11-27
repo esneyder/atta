@@ -1,150 +1,176 @@
 """`atta guard`: the Claude Code PreToolUse hook (S8). Python stdlib only; Windows, macOS, Linux.
 
-Claude Code runs `atta guard` before every Write/Edit/MultiEdit/NotebookEdit/Bash/PowerShell call
-and passes the hook JSON on stdin (`tool_name`, `tool_input`, `cwd`, ...; extra fields ignored).
-Allowed: prints nothing, exit 0. Denied: prints the PreToolUse decision JSON
-(`permissionDecision: deny`, reason in Spanish signed «Atta»), exit 0. The only `ask` is for
-Atta's configuration commands (S4, below). Malformed input, an unreadable project config or any
-internal error: denied (fail closed).
+Contract
+  Claude Code runs `atta guard` before every Write/Edit/MultiEdit/NotebookEdit/Bash/PowerShell
+  call and passes the hook JSON on stdin (`tool_name`, `tool_input`, `cwd`, `permission_mode`,
+  `agent_id`, ...; extra fields ignored). Exit code always 0. Allow: prints nothing. Deny or ask:
+  prints the PreToolUse decision JSON (`permissionDecision`, reason in Spanish signed «Atta»);
+  `ask` only for Atta's configuration commands (section below). Malformed input, an unreadable
+  project config or any internal error: deny (fail closed). Python API: `decide()` returns
+  `("deny" | "ask", reason)` or None (allowed); `evaluate()` (older) returns the reason of both
+  kinds, so a non-None result is never an allow.
 
-Project root: `--project`, then `$ATTA_PROJECT` (both taken as given), else the hook `cwd`
-resolved like every Atta command (git top level, then the folder itself); when that lands on a job
-worktree (`<root>/.worktrees/<id>`) the guard climbs to the main checkout. Config is always read
-from `<root>/atta/config.json` of the main checkout; jobs from `<root>/atta/jobs` (`--jobs-dir`
-does not apply to the guard).
+Project root
+  `--project`, then `$ATTA_PROJECT` (both taken as given), else the hook `cwd` resolved like every
+  Atta command (git top level, then the folder itself); when that lands on a job worktree
+  (`<root>/.worktrees/<id>`) the guard climbs to the main checkout. Config is always read from
+  `<root>/atta/config.json` of the main checkout; jobs from `<root>/atta/jobs` (`--jobs-dir`
+  does not apply to the guard).
 
-File writes (the target is normalised, `..` and symlinks/junctions resolved, compared with
-`str.lower()` on Windows and macOS -- never `casefold()`, which maps the long s `ſ` to `s`) are
-allowed only:
-- inside `<root>/.worktrees/<id>/` of a job whose stage is active (not merged/rejected), outside
-  `protected_paths` (relative to that worktree) and outside any `.git` folder; or
-- for exactly one of the job artifacts inside `<root>/atta/jobs/<id>/` of an active job:
-  `intake.md`, `spec.md`, `spec-review.md`, `decision.md`, `feedback-<x>.md`,
-  `round-<N>/build.md`, `round-<N>/review-<x>.md`, `round-<N>/refute.md`, `round-<N>/refute-retry.md`.
-- outside the project, inside the system temp folder (`tempfile.gettempdir()` plus `$TEMP`,
-  `$TMP`, `$TMPDIR` when absolute; a folder that is a drive root, the user's home or an ancestor
-  of it never counts), e.g. the orchestrator's scratchpad. Project rules win when the project
-  itself lives under the temp folder.
-Everything else is denied: config.json, checks.json, job.json, events.jsonl, `.claude/**`, the
-main checkout, other projects, the user's home (`~/.bashrc`). On Windows, alternate data streams (`a:b`), trailing dots/spaces,
-drive-relative paths (`C:src/a.py`) and device paths (`\\\\?\\`) are denied outright.
+File writes (Write, Edit, MultiEdit, NotebookEdit)
+  The target is normalised (`..` and symlinks/junctions resolved) and compared with
+  `str.lower()` on Windows and macOS -- never `casefold()`, which maps the long s `ſ` to `s`.
+  Allowed only:
+  - inside `<root>/.worktrees/<id>/` of a job whose stage is active (not merged/rejected),
+    outside `protected_paths` (relative to that worktree) and outside any `.git` folder;
+  - exactly one of the job artifacts inside `<root>/atta/jobs/<id>/` of an active job:
+    `intake.md`, `spec.md`, `spec-review.md`, `decision.md`, `feedback-<x>.md`,
+    `round-<N>/build.md`, `round-<N>/review-<x>.md`, `round-<N>/refute.md`,
+    `round-<N>/refute-retry.md`;
+  - outside the project, inside the system temp folder (`tempfile.gettempdir()` plus `$TEMP`,
+    `$TMP`, `$TMPDIR` when absolute; a folder that is a drive root, the user's home or an
+    ancestor of it never counts), e.g. the orchestrator's scratchpad. Project rules win when the
+    project itself lives under the temp folder.
+  Everything else is denied: config.json, checks.json, job.json, events.jsonl, `.claude/**`, the
+  main checkout, other projects, the user's home (`~/.bashrc`). On Windows, alternate data
+  streams (`a:b`), trailing dots/spaces, drive-relative paths (`C:src/a.py`) and device paths
+  (`\\\\?\\`) are denied outright.
 
-Heredoc bodies (`<<DELIM`, `<<'DELIM'`, `<<"DELIM"`, `<<-DELIM`, quoting-aware, terminated by a
-line equal to DELIM) and PowerShell here-strings (`@'...'@`, `@"..."@`) are data: they are
-removed before the command is tokenised (`$(...)`/backticks inside an unquoted heredoc and
-`$(...)` inside `@"..."@` are still inspected). Exceptions, where the body stays in the command
-and is inspected as today: the pipeline fed by the heredoc reaches a shell (`bash/sh/zsh/...`,
-`pwsh/powershell`, `cmd`), `source`/`.`, `eval`, `xargs`, `at`/`batch`, `Invoke-Expression`, a
-wrapper with no command (`exec 3<<EOF`, `sudo -s`) or a compound command (`done <<EOF`); the
-opener's logical line (continuations joined) ends in `|`, `&&`, `||` or `\\`; the command text
-before the end of the opener line (other heredoc bodies excluded) contains a construct whose
-nested quoting the scanner does not model (Bash: `${`, `$(`, backticks, `$[`, `<(`, `>(`, `((`;
-PowerShell: `$(`, `${`, backticks, `<(`, `<#`, typographic quotes), so the heredoc could be text
-for the shell; or the command contains dynamic execution anywhere (a shell, `eval`, `source`,
-`at`, `iex`, `Invoke-Command`, `[scriptblock]`, `Start-Process`, a `$var` as command word). An
-interpreter fed code through a heredoc (`python`, `python3`, `py`, `node`, `perl`, `ruby` with
-no script, or `-`/`/dev/stdin`) is denied, and so is any heredoc fed to a program that runs its
-input as commands (`ssh`, `su`, `script`, `wsl`, `busybox`, `make`, `crontab`, `php`, `lua`,
-`tclsh`, `expect`, `osascript`, `Rscript`, `nu`, `xonsh`). A `#` right after `<`/`>` starts a
-comment for the scanner (as in Bash). An unterminated heredoc is not stripped.
+Shell commands (Bash and PowerShell): parsing
+  1. Heredoc bodies (`<<DELIM`, `<<'DELIM'`, `<<"DELIM"`, `<<-DELIM`, quoting-aware, terminated
+     by a line equal to DELIM) and PowerShell here-strings (`@'...'@`, `@"..."@`) are data: they
+     are removed before the command is tokenised (`$(...)`/backticks inside an unquoted heredoc
+     and `$(...)` inside `@"..."@` are still inspected). A `#` right after `<`/`>` starts a
+     comment for the scanner (as in Bash). An unterminated heredoc is not stripped. The body
+     stays in the command and is inspected when:
+     - the pipeline fed by the heredoc reaches a shell (`bash/sh/zsh/...`, `pwsh/powershell`,
+       `cmd`), `source`/`.`, `eval`, `xargs`, `at`/`batch`, `Invoke-Expression`, a wrapper with
+       no command (`exec 3<<EOF`, `sudo -s`) or a compound command (`done <<EOF`);
+     - the opener's logical line (continuations joined) ends in `|`, `&&`, `||` or `\\`;
+     - the command text before the end of the opener line (other heredoc bodies excluded)
+       contains a construct whose nested quoting the scanner does not model (Bash: `${`, `$(`,
+       backticks, `$[`, `<(`, `>(`, `((`; PowerShell: `$(`, `${`, backticks, `<(`, `<#`,
+       typographic quotes), so the heredoc could be text for the shell;
+     - the command contains dynamic execution anywhere (a shell, `eval`, `source`, `at`, `iex`,
+       `Invoke-Command`, `[scriptblock]`, `Start-Process`, a `$var` as command word).
+     Denied outright: an interpreter fed code through a heredoc (`python`, `python3`, `py`,
+     `node`, `perl`, `ruby` with no script, or `-`/`/dev/stdin`) and any heredoc fed to a
+     program that runs its input as commands (`ssh`, `su`, `script`, `wsl`, `busybox`, `make`,
+     `crontab`, `php`, `lua`, `tclsh`, `expect`, `osascript`, `Rscript`, `nu`, `xonsh`).
+  2. Line continuations are joined (`\\` + newline in Bash, backtick + newline in PowerShell).
+  3. The command is tokenised with shlex (tolerant: unbalanced quotes fall back to a plain split)
+     and split on `;`, `&&`, `||`, `|`, `&`, newlines, parentheses and braces. Leading shell
+     keywords (`if then elif else fi do done while until !`) are skipped so the real command word
+     is checked; `for/select/case ... in ...` headers are data.
+  4. Inspected recursively: `$(...)`, backticks, here-strings (`<<<`), `bash/sh/zsh -c`,
+     `pwsh/powershell -Command|-EncodedCommand` (also `/c`, `/Command`, any prefix such as `-c`,
+     `-Co`, `-e`, `-ec`; the base64 UTF-16LE payload is decoded), `cmd /c|/k`, `eval`,
+     `Invoke-Expression`, `Start-Process` and the command after
+     `find -exec|-execdir|-ok|-okdir`. Skipped to reach the real command: `sudo`, `env`, `nice`,
+     `nohup`, `timeout`, `command`, `exec`, `time`, `npx`, `xargs` and `VAR=value` prefixes.
 
-Shell commands (Bash and PowerShell) first get their line continuations joined (`\\` + newline
-in Bash, backtick + newline in PowerShell), then are tokenised with shlex (tolerant: unbalanced
-quotes fall back to a plain split) and split on `;`, `&&`, `||`, `|`, `&`, newlines, parentheses
-and braces. Leading shell keywords (`if then elif else fi do done while until !`) are skipped so
-the real command word is checked; `for/select/case ... in ...` headers are data. `$(...)`,
-backticks, here-strings (`<<<`), `bash/sh/zsh -c`, `pwsh/powershell -Command|-EncodedCommand`
-(also `/c`, `/Command`, any prefix such as `-c`, `-Co`, `-e`, `-ec`; the base64 UTF-16LE payload
-is decoded), `cmd /c|/k`, `eval`, `Invoke-Expression`, `Start-Process` and the command after
-`find -exec|-execdir|-ok|-okdir` are inspected recursively, and `sudo`, `env`, `nice`, `nohup`,
-`timeout`, `command`, `exec`, `time`, `npx`, `xargs` and `VAR=value` prefixes are skipped.
-Denied:
-- a shell (`bash/sh/zsh/dash/...`, `pwsh/powershell`, `cmd`) started with neither `-c`/`-Command`/
-  `/c` nor a script file: it would read its commands from stdin (`... | bash`, `bash < f`, `sh -s`);
-- defining `GIT_CONFIG*` or `GIT_ALIAS*` environment variables (prefix, `export`, `env`,
-  `$env:`, `SetEnvironmentVariable`), which can inject aliases or push mappings;
-- `git push` unless it names a remote and at least one refspec and every destination passes
-  `branches.check_push_target` (only `atta/<id>`); `+refspec`, `:branch`, `HEAD` without a
-  destination, `--force*`, `--mirror`, `--all`, `--tags`, `--delete`, `--prune`,
-  `--receive-pack` and unknown options are denied; `git -c alias.*|remote.*|url.*|include.*|
-  includeIf.*|core.hooksPath`, writing those keys with `git config` (the values of `-f/--file/
-  --blob/--type/--default/--comment` are skipped when locating the key), `git send-pack`,
-  `git update-ref -d|--delete|--stdin`, `git update-ref` of the integration or a forbidden branch,
-  and branch deletion (`git branch -d|-D|--delete`);
-- `gh pr merge`, `gh repo delete|archive`, `gh release ...`, `gh alias set|import`, `gh api` with
-  DELETE, `gh api` with a write method (PUT/POST/PATCH, or `-f/-F/--input` implying POST) to
-  `pulls/<n>/merge`, `git/refs`, `branches/*/protection`, `merges`, `merge-upstream` or
-  `releases` (every non-flag argument is a candidate endpoint, cut at `?`/`#`), the GraphQL
-  mutations `mergePullRequest`, `enablePullRequestAutoMerge`, `mergeBranch`, `deleteRef`,
-  `updateRef`, and `gh pr create|edit` with a base other than the integration branch
-  (`gh pr create` without `--base` too);
-- `curl`, `wget`, `Invoke-RestMethod`, `Invoke-WebRequest`, `irm`, `iwr` against the GitHub API
-  (`api.github.com`, or `/api/v3/`, `/api/graphql` of a GitHub Enterprise host) with a write
-  method (`-X/--request/--method/-Method PUT|POST|PATCH|DELETE`, or `-d/--data*/--json/-F/-T/
-  --post-data` implying one);
-- Atta's configuration-mutating subcommands (L29), which change atta/config.json and .claude/
-  through the CLI where the write rules cannot see them: `atta settings set|reset`,
-  `atta models set|unset|reset|fallback`, `atta profiles use|clear` and `atta init` (any flags). Detected as `atta`, `atta.exe`,
-  `atta.cmd`, `atta.bat`, `./atta.sh` (also `sh atta.sh`), `python|python3|python3.N|py [-3.N]
-  -m atta.spine.cli` and `python .../atta.py`, with global options (`--project X`,
-  `--jobs-dir Y`, `=` forms and argparse prefixes) and `models --runtime X` before the action.
-  Read-only forms (`atta settings`, `atta settings get <k>`, `atta models [--runtime X]`, `atta profiles [--json]`, `atta profiles show X`) and
-  every other subcommand stay allowed;
-  the reason always carries the exact command (cut at 400 characters) so the human can run it in
-  their terminal. F2.y (S4): the answer is `ask` (Claude Code asks the user to approve that exact
-  command) instead of `deny` only when ALL hold: the hook `permission_mode` is `default`,
-  `acceptEdits` or `plan` (missing, non-string or any other value, including `bypassPermissions`,
-  `dontAsk` and `auto`, fails closed to `deny`); `agent_id` is absent or blank (a subagent, or a
-  non-string `agent_id`, always gets `deny`); and the command is ONE plain Atta invocation: its
-  first word is Atta itself and it has no `;`, `&`, `|`, `<`, `>`, parentheses, braces, backticks,
-  `$`, backslash, newline (PowerShell: no `@` either), so no chaining, pipes, subshells,
-  substitutions, heredocs, redirections, variables, `env`/`sudo`/`timeout`/`nohup`/`command`
-  wrappers or `bash -c`/`eval`/`cmd /c`. Every other rule keeps `deny`; `ask` is never given for
-  a non-config command. `decide()` returns `(kind, reason)`; `evaluate()` returns the reason for
-  both kinds, so a non-None result is never an allow;
-- orchestrator-only Atta commands (F4 T4): `atta model-failed` (any detected form, see above)
-  when the hook payload carries a non-empty `agent_id`, which Claude Code sets only for tool
-  calls inside a subagent. The /atta driver (main session, no `agent_id`) runs it; a payload
-  without `agent_id` is treated as the main session;
-- deploy commands: `guard.deny_commands` in config.json (a list of command prefixes; it REPLACES
-  `DEFAULT_DENY_COMMANDS`). A rule matches when the command name is equal and the remaining words
-  appear in order among the arguments (`kubectl apply` matches `kubectl -n prod apply -f x`);
-- writing through `>`, `>>`, `>|`, `&>`, `2>`, `tee`, `Out-File`, `Set-Content`, `Add-Content`
-  or `Tee-Object` to a target inside the project but outside the worktree of an active job (main
-  checkout, job control files, artifacts, other worktrees), into protected paths or into a
-  `.git` folder; outside the project, to anything but the system temp folder (same roots as for
-  Write/Edit: `~/.bashrc`, `~/.profile`, the Windows Startup folder, other projects are denied).
-  Null devices (`/dev/null`, `NUL`, `$null`, `/dev/stdout`, `/dev/stderr`, `CON`) stay allowed.
-  A destination with variables (`$X`, `$HOME`, `$PROFILE`, `%X%`) cannot be checked and is
-  denied. `~` is expanded. `cd` within the command is followed.
+Shell commands: denied
+  - a shell (`bash/sh/zsh/dash/...`, `pwsh/powershell`, `cmd`) started with neither
+    `-c`/`-Command`/`/c` nor a script file: it would read its commands from stdin
+    (`... | bash`, `bash < f`, `sh -s`);
+  - defining `GIT_CONFIG*` or `GIT_ALIAS*` environment variables (prefix, `export`, `env`,
+    `$env:`, `SetEnvironmentVariable`), which can inject aliases or push mappings;
+  - `git push` unless it names a remote and at least one refspec and every destination passes
+    `branches.check_push_target` (only `atta/<id>`); `+refspec`, `:branch`, `HEAD` without a
+    destination, `--force*`, `--mirror`, `--all`, `--tags`, `--delete`, `--prune`,
+    `--receive-pack` and unknown options are denied; also `git -c alias.*|remote.*|url.*|
+    include.*|includeIf.*|core.hooksPath`, writing those keys with `git config` (the values of
+    `-f/--file/--blob/--type/--default/--comment` are skipped when locating the key),
+    `git send-pack`, `git update-ref -d|--delete|--stdin`, `git update-ref` of the integration
+    or a forbidden branch, and branch deletion (`git branch -d|-D|--delete`);
+  - `gh pr merge`, `gh repo delete|archive`, `gh release ...`, `gh alias set|import`, `gh api`
+    with DELETE, `gh api` with a write method (PUT/POST/PATCH, or `-f/-F/--input` implying POST)
+    to `pulls/<n>/merge`, `git/refs`, `branches/*/protection`, `merges`, `merge-upstream` or
+    `releases` (every non-flag argument is a candidate endpoint, cut at `?`/`#`), the GraphQL
+    mutations `mergePullRequest`, `enablePullRequestAutoMerge`, `mergeBranch`, `deleteRef`,
+    `updateRef`, and `gh pr create|edit` with a base other than the integration branch
+    (`gh pr create` without `--base` too);
+  - `curl`, `wget`, `Invoke-RestMethod`, `Invoke-WebRequest`, `irm`, `iwr` against the GitHub
+    API (`api.github.com`, or `/api/v3/`, `/api/graphql` of a GitHub Enterprise host) with a
+    write method (`-X/--request/--method/-Method PUT|POST|PATCH|DELETE`, or
+    `-d/--data*/--json/-F/-T/--post-data` implying one);
+  - Atta's configuration commands, unless they get `ask` (next section);
+  - orchestrator-only Atta commands (F4 T4): `atta model-failed` (any detected form, see next
+    section) when the hook payload carries a non-empty `agent_id`, which Claude Code sets only
+    for tool calls inside a subagent. The /atta driver (main session, no `agent_id`) runs it; a
+    payload without `agent_id` is treated as the main session;
+  - deploy commands: `guard.deny_commands` in config.json (a list of command prefixes; it
+    REPLACES `DEFAULT_DENY_COMMANDS`). A rule matches when the command name is equal and the
+    remaining words appear in order among the arguments (`kubectl apply` matches
+    `kubectl -n prod apply -f x`);
+  - writing through `>`, `>>`, `>|`, `&>`, `2>`, `tee`, `Out-File`, `Set-Content`,
+    `Add-Content` or `Tee-Object` to a target inside the project but outside the worktree of an
+    active job (main checkout, job control files, artifacts, other worktrees), into protected
+    paths or into a `.git` folder; outside the project, to anything but the system temp folder
+    (same roots as for Write/Edit: `~/.bashrc`, `~/.profile`, the Windows Startup folder, other
+    projects are denied). Null devices (`/dev/null`, `NUL`, `$null`, `/dev/stdout`,
+    `/dev/stderr`, `CON`) stay allowed. A destination with variables (`$X`, `$HOME`,
+    `$PROFILE`, `%X%`) cannot be checked and is denied. `~` is expanded. `cd` within the
+    command is followed.
 
-Known limits (best effort, not detected):
-- writes by other programs: `cp`, `mv`, `sed -i`, `rm`, `install`, `git apply`, hard links;
-- other interpreters (`python -c`, `node -e`, `perl -e`, `ruby -e`) and scripts run from files
-  (`bash deploy.sh`, `pwsh -File x.ps1`, `python x.py`, `make`): their content is not read;
-- commands built at run time: `X=push; git $X ...`, brace expansion (`git pu{sh,ll}`), globbing,
-  aliases or functions defined earlier in the same session;
-- other shells or launchers not modelled: `wsl`, `busybox sh`, `nu`, `xonsh`, `script -c`,
-  `httpie` and other HTTP clients;
-- git aliases or `remote.*.push` mappings already in the user's git config, gh aliases or
-  extensions defined outside the session, GraphQL queries passed through files
-  (`-F query=@q.graphql`, `--input`), `gh api -X PATCH pulls/<n>` changing a PR base;
-- heavily obfuscated shell code.
-- a heredoc stored in a variable and run later without a dynamic-execution word in the same
-  command (`read X <<EOF` then, in a later call, `$X`); a heredoc read by a program not listed
-  above that executes data (`awk '{system($0)}'`, `sed e`, `git am`, a function or alias defined
-  in an earlier call); `bash 3<<EOF` is seen as a script named `3` (its body is still inspected,
-  since a shell is present).
-- programs that read commands from a pipe instead of a heredoc (`echo x | ssh host`).
-- Atta's configuration commands run through launchers not modelled (`uv run atta`,
-  `pipx run atta`, `python -c "...cli.main(...)"`, a copy of the CLI under another name).
-The Filtro (gate) still rejects any diff that touches protected paths, and branch protection on
-GitHub remains the last line. Text that merely mentions a denied command (quoted args, heredocs
-that stay inspected per the exceptions above) may be denied.
+Atta configuration commands (L29; F2.y S4, advisories S5)
+  `atta settings set|reset`, `atta models set|unset|reset|fallback`, `atta profiles use|clear`
+  and `atta init` (any flags) change atta/config.json and .claude/ through the CLI, where the
+  write rules cannot see them. Detected as `atta`, `atta.exe`, `atta.cmd`, `atta.bat`,
+  `./atta.sh` (also `sh atta.sh`), `python|python3|python3.N|py [-3.N] -m atta.spine.cli` and
+  `python .../atta.py`, with global options (`--project X`, `--jobs-dir Y`, `=` forms and
+  argparse prefixes) and `models --runtime X` before the action, in any letter case. Read-only
+  forms (`atta settings`, `atta settings get <k>`, `atta models [--runtime X]`,
+  `atta profiles [--json]`, `atta profiles show X`) and every other subcommand stay allowed.
+  The answer is `ask` (Claude Code asks the user to approve that exact command) only when ALL
+  hold, else `deny`:
+  - `permission_mode` is `default`, `acceptEdits` or `plan` (missing, non-string or any other
+    value, including `bypassPermissions`, `dontAsk` and `auto`, fails closed);
+  - `agent_id` is absent or blank (a subagent, or a non-string `agent_id`, always gets `deny`);
+  - the command is ONE plain Atta invocation: its first word is a bare launcher (`atta`,
+    `atta.exe`, `atta.cmd`, or a bare `python`/`python3`/`py` running `-m atta.spine.cli`; no
+    path, no `VAR=value` prefix) and it has no `;`, `&`, `|`, `<`, `>`, parentheses, braces,
+    backticks, `$`, newline, glob or expansion characters (`* ? [ ~ ! #`), backslash in Bash
+    or `@` in PowerShell -- so no chaining, pipes, subshells, substitutions, heredocs,
+    redirections, variables, `env`/`sudo`/`timeout`/`nohup`/`command` wrappers or
+    `bash -c`/`eval`/`cmd /c`;
+  - the command fits in MAX_SHOWN_COMMAND (400) characters, so the prompt shows it whole;
+  - the subcommand and its action are spelled exactly as the CLI accepts them (argparse is
+    case-sensitive: `atta PROFILES USE` would be approved and then rejected);
+  - no `guard.deny_commands` rule of the project matches it.
+  `ask` is never given to a non-config command. Every reason carries the exact command (cut at
+  400 characters) for the human's terminal; a plain, exactly spelled command from the main
+  session denied only by the reported mode also says which mode to use.
 
-Wiring: the hook command is `atta guard`. If `atta` is not on PATH the hook command itself fails
-(non-zero exit, no JSON) and Claude Code treats that as a non-blocking hook error, i.e. the tool
-call is NOT blocked. `atta init` and the install instructions must keep `atta` on PATH (pipx).
+Known limits (best effort, not detected)
+  - writes by other programs: `cp`, `mv`, `sed -i`, `rm`, `install`, `git apply`, hard links;
+  - other interpreters (`python -c`, `node -e`, `perl -e`, `ruby -e`) and scripts run from files
+    (`bash deploy.sh`, `pwsh -File x.ps1`, `python x.py`, `make`): their content is not read;
+  - commands built at run time: `X=push; git $X ...`, brace expansion (`git pu{sh,ll}`),
+    globbing, aliases or functions defined earlier in the same session;
+  - other shells or launchers not modelled: `wsl`, `busybox sh`, `nu`, `xonsh`, `script -c`,
+    `httpie` and other HTTP clients;
+  - git aliases or `remote.*.push` mappings already in the user's git config, gh aliases or
+    extensions defined outside the session, GraphQL queries passed through files
+    (`-F query=@q.graphql`, `--input`), `gh api -X PATCH pulls/<n>` changing a PR base;
+  - heavily obfuscated shell code;
+  - a heredoc stored in a variable and run later without a dynamic-execution word in the same
+    command (`read X <<EOF` then, in a later call, `$X`); a heredoc read by a program not listed
+    above that executes data (`awk '{system($0)}'`, `sed e`, `git am`, a function or alias
+    defined in an earlier call); `bash 3<<EOF` is seen as a script named `3` (its body is still
+    inspected, since a shell is present);
+  - programs that read commands from a pipe instead of a heredoc (`echo x | ssh host`);
+  - Atta's configuration commands run through launchers not modelled (`uv run atta`,
+    `pipx run atta`, `python -c "...cli.main(...)"`, a copy of the CLI under another name).
+  The Filtro (gate) still rejects any diff that touches protected paths, and branch protection
+  on GitHub remains the last line. Text that merely mentions a denied command (quoted args,
+  heredocs that stay inspected per the exceptions above) may be denied.
+
+Wiring
+  The hook command is `atta guard`. If `atta` is not on PATH the hook command itself fails
+  (non-zero exit, no JSON) and Claude Code treats that as a non-blocking hook error, i.e. the
+  tool call is NOT blocked. `atta init` and the install instructions must keep `atta` on PATH
+  (pipx).
 """
 
 from __future__ import annotations
@@ -280,11 +306,13 @@ _PY_VALUED = {"-X", "-W"}
 # by a person. Anything else (bypassPermissions, dontAsk, auto, missing, unknown) fails closed.
 ASK_MODES = ("default", "acceptEdits", "plan")
 # A command with any of these is not a single plain invocation (chaining, pipes, subshells,
-# substitutions, heredocs, redirections, backslash escapes, variables, newlines) nor what the
-# person approves verbatim (globs `* ? [`, `~` and `!` expansion, `#` comments): the shell
-# would run something else (review R3). PowerShell also expands `@` (splatting).
-_NOT_PLAIN_BASH = re.compile(r"[;&|<>(){}`$\\\r\n*?\[~!#]")
-_NOT_PLAIN_PS = re.compile(r"[;&|<>(){}`$@\r\n*?\[~!#]")
+# substitutions, heredocs, redirections, variables, newlines) nor what the person approves
+# verbatim (globs `* ? [`, `~` and `!` expansion, `#` comments): the shell would run something
+# else (review R3). On top of that, Bash escapes with a backslash and PowerShell expands `@`
+# (splatting). Keyed by `powershell`.
+_NOT_PLAIN_ANY = r";&|<>(){}`$\r\n*?\[~!#"
+_NOT_PLAIN = {False: re.compile(rf"[{_NOT_PLAIN_ANY}\\]"),
+              True: re.compile(rf"[{_NOT_PLAIN_ANY}@]")}
 # The `ask` prompt shows the command whole; a longer one is shown cut, so it is denied.
 MAX_SHOWN_COMMAND = 400
 
@@ -333,7 +361,8 @@ def run(data, out, *, root=None, explicit=None, environ=None) -> int:
 
 
 def decide(hook, *, root=None, explicit=None, environ=None) -> tuple[str, str] | None:
-    """`("deny" | "ask", reason)` for one PreToolUse hook payload, or None when it is allowed."""
+    """The guard's answer for one PreToolUse hook payload: None when the call is allowed, else
+    `(kind, reason)` with kind `"deny"` (refused) or `"ask"` (the user must approve it)."""
     try:
         _evaluate(hook, root, explicit, environ)
     except Ask as exc:
@@ -344,8 +373,9 @@ def decide(hook, *, root=None, explicit=None, environ=None) -> tuple[str, str] |
 
 
 def evaluate(hook, *, root=None, explicit=None, environ=None) -> str | None:
-    """Reason for one PreToolUse hook payload that is denied OR must be asked (see `decide` for
-    which), or None when the call is allowed."""
+    """Older API: `decide()` without the kind. None when the call is allowed; otherwise the
+    reason, for a deny AND for an ask, so a non-None result is never an allow and never tells
+    which of the two it is. Use `decide()` when the kind matters."""
     got = decide(hook, root=root, explicit=explicit, environ=environ)
     return got[1] if got else None
 
@@ -365,7 +395,7 @@ def _is_plain_atta(command: str, powershell: bool) -> bool:
     `python`/`python3`/`py` running `-m atta.spine.cli`. No path, no `VAR=value` prefix."""
     if len(command) > MAX_SHOWN_COMMAND:
         return False
-    if (_NOT_PLAIN_PS if powershell else _NOT_PLAIN_BASH).search(command):
+    if _NOT_PLAIN[powershell].search(command):
         return False
     words = _tokenize(command, powershell)
     if not words:
@@ -1205,8 +1235,8 @@ def _first_positional(args: list[str], valued=()) -> tuple[str | None, list[str]
 def _check_atta(args: list[str], ctx: "_Ctx | None" = None) -> None:
     """Deny Atta's configuration-mutating subcommands, and the driver-only ones inside a
     subagent (see module docstring)."""
-    subcmd, rest = _first_positional(args, _ATTA_GLOBAL_VALUED)
-    subcmd = (subcmd or "").lower()
+    typed, rest = _first_positional(args, _ATTA_GLOBAL_VALUED)
+    subcmd = (typed or "").lower()
     if subcmd in _ATTA_DRIVER_ONLY and ctx is not None and ctx.subagent:
         raise Deny(f"Solo el orquestador /atta registra la falla de modelo de un agente (atta "
                    f"{subcmd}); un subagente no puede. Termina tu trabajo o informa el error "
@@ -1215,18 +1245,23 @@ def _check_atta(args: list[str], ctx: "_Ctx | None" = None) -> None:
         return
     actions = _ATTA_MUTATING[subcmd]
     shown = f"atta {subcmd}"
+    # S5: argparse is case-sensitive, so only the exact spelling may be asked: `atta PROFILES
+    # USE` would be approved and then rejected by the CLI. Any other casing is denied like the
+    # other non-plain forms, without the mode hint (no mode would ask it).
+    exact = typed == subcmd
     if actions is not None:
-        action, _ = _first_positional(rest, _ATTA_SUB_VALUED.get(subcmd, ()))
-        action = (action or "").lower()
+        typed, _ = _first_positional(rest, _ATTA_SUB_VALUED.get(subcmd, ()))
+        action = (typed or "").lower()
         if action not in actions:
             return
+        exact = exact and typed == action
         shown += f" {action}"
     command = ctx.command if ctx is not None else ""
-    if ctx is not None and ctx.ask_ok:
+    if ctx is not None and ctx.ask_ok and exact:
         raise Ask(f"Atta pide tu aprobación para cambiar la configuración ({shown}). Comando "
                   f"exacto: {command}. Apruébalo solo si lo pediste tú; si no, recházalo y corre "
                   "ese comando en tu terminal.")
-    hint = ctx.mode_hint if ctx is not None else ""
+    hint = ctx.mode_hint if ctx is not None and exact else ""
     raise Deny(f"Atta no deja que un agente cambie su propia configuración ({shown}). Corre ese "
                f"comando tú en tu terminal. Comando: {command}{hint}")
 

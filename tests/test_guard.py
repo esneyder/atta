@@ -20,6 +20,12 @@ from atta.spine import guard
 JID = "7-agregar-csv"
 OLD = "3-viejo"
 SETTINGS = REPO_ROOT / "atta" / "templates" / "claude" / "settings.json"
+# Reasons for Atta's configuration commands (L29, F2.y S4): `shown` is the canonical subcommand.
+CONFIG_DENY = ("Atta no deja que un agente cambie su propia configuración ({shown}). Corre ese "
+               "comando tú en tu terminal. Comando: {command}")
+CONFIG_ASK = ("Atta pide tu aprobación para cambiar la configuración ({shown}). Comando exacto: "
+              "{command}. Apruébalo solo si lo pediste tú; si no, recházalo y corre ese comando "
+              "en tu terminal.")
 
 
 def write(path, text="x"):
@@ -60,6 +66,17 @@ class GuardBase(TempDirMixin, unittest.TestCase):
         return {"session_id": "s", "hook_event_name": "PreToolUse", "cwd": str(self.root),
                 "tool_name": tool, "tool_input": tool_input, "extra": [1, 2]}
 
+    def shell_hook(self, command, tool="Bash", cwd=None, mode=None, agent_id=None):
+        """Bash/PowerShell payload; `mode` and `agent_id` are added only when not None."""
+        h = self.hook(tool, command=command)
+        if cwd is not None:
+            h["cwd"] = str(cwd)
+        if mode is not None:
+            h["permission_mode"] = mode
+        if agent_id is not None:
+            h["agent_id"] = agent_id
+        return h
+
     def write_reason(self, path, tool="Write", cwd=None):
         key = "notebook_path" if tool == "NotebookEdit" else "file_path"
         h = self.hook(tool, **{key: str(path)})
@@ -67,11 +84,24 @@ class GuardBase(TempDirMixin, unittest.TestCase):
             h["cwd"] = str(cwd)
         return guard.evaluate(h, root=self.root)
 
-    def bash_reason(self, command, tool="Bash", cwd=None):
-        h = self.hook(tool, command=command)
-        if cwd is not None:
-            h["cwd"] = str(cwd)
-        return guard.evaluate(h, root=self.root)
+    def bash_reason(self, command, tool="Bash", cwd=None, agent_id=None):
+        """`guard.evaluate`: None = allowed, else the reason (a deny, or an ask in a mode that
+        asks; no `permission_mode` is sent, so config commands are denied here)."""
+        return guard.evaluate(self.shell_hook(command, tool, cwd, agent_id=agent_id),
+                              root=self.root)
+
+    def run_hook(self, payload):
+        """`guard.run` on a payload (dict, or raw text): (exit code, hookSpecificOutput or
+        None when nothing was printed)."""
+        out = io.StringIO()
+        text = payload if isinstance(payload, str) else json.dumps(payload)
+        code = guard.run(text, out, root=self.root)
+        printed = out.getvalue()
+        if not printed:
+            return code, None
+        data = json.loads(printed)
+        self.assertEqual(set(data), {"hookSpecificOutput"})
+        return code, data["hookSpecificOutput"]
 
     def assertAllowed(self, reason):
         self.assertIsNone(reason)
@@ -81,6 +111,16 @@ class GuardBase(TempDirMixin, unittest.TestCase):
         self.assertTrue(reason.strip())
         for frag in fragments:
             self.assertIn(frag, reason)
+
+    def denied_all(self, cmds, tool="Bash", cwd=None):
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertDenied(self.bash_reason(cmd, tool=tool, cwd=cwd))
+
+    def allowed_all(self, cmds, tool="Bash", cwd=None):
+        for cmd in cmds:
+            with self.subTest(cmd=cmd):
+                self.assertAllowed(self.bash_reason(cmd, tool=tool, cwd=cwd))
 
 
 class WriteTests(GuardBase):
@@ -375,16 +415,6 @@ class CommandTests(GuardBase):
 class BypassTests(GuardBase):
     """Regression tests for the independent verifier findings (L9: B1-B9, M1, minor)."""
 
-    def denied_all(self, cmds, tool="Bash", cwd=None):
-        for cmd in cmds:
-            with self.subTest(cmd=cmd):
-                self.assertDenied(self.bash_reason(cmd, tool=tool, cwd=cwd))
-
-    def allowed_all(self, cmds, tool="Bash", cwd=None):
-        for cmd in cmds:
-            with self.subTest(cmd=cmd):
-                self.assertAllowed(self.bash_reason(cmd, tool=tool, cwd=cwd))
-
     def test_b1_shell_keywords_do_not_hide_the_command(self):
         self.denied_all(("for x in 1; do git push origin main; done",
                          "if git push origin main; then echo ok; fi",
@@ -616,10 +646,9 @@ class OutsideShellWriteTests(GuardBase):
                 self.assertAllowed(self.bash_reason(cmd, tool="PowerShell", cwd=self.wt))
 
     def test_reason_is_spanish_and_signed(self):
-        out = io.StringIO()
-        h = self.hook("Bash", command=f"echo x >> {(self.tmp / '.bashrc').as_posix()}")
-        guard.run(json.dumps(h), out, root=self.root)
-        reason = json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecisionReason"]
+        _code, spec = self.run_hook(
+            self.shell_hook(f"echo x >> {(self.tmp / '.bashrc').as_posix()}"))
+        reason = spec["permissionDecisionReason"]
         self.assertIn("fuera del proyecto", reason)
         self.assertTrue(reason.endswith("«Atta»"), reason)
 
@@ -643,16 +672,6 @@ RUN_BODY = (
 
 class HeredocTests(GuardBase):
     """L17 (a): heredoc and here-string bodies are data unless they feed a shell/interpreter."""
-
-    def denied_all(self, cmds, tool="Bash", cwd=None):
-        for cmd in cmds:
-            with self.subTest(cmd=cmd):
-                self.assertDenied(self.bash_reason(cmd, tool=tool, cwd=cwd))
-
-    def allowed_all(self, cmds, tool="Bash", cwd=None):
-        for cmd in cmds:
-            with self.subTest(cmd=cmd):
-                self.assertAllowed(self.bash_reason(cmd, tool=tool, cwd=cwd))
 
     def test_run_command_from_l17_allowed(self):
         cmd = (f'cd "{self.root}" && atta save-artifact 1-agregar-la-funcion-de intake '
@@ -833,6 +852,7 @@ class OutputTests(GuardBase):
         return code, out.getvalue()
 
     def assertDenyJson(self, output):
+        """`output` is the printed text (also from a subprocess), parsed here."""
         data = json.loads(output)
         self.assertEqual(set(data), {"hookSpecificOutput"})
         spec = data["hookSpecificOutput"]
@@ -907,21 +927,16 @@ class ConfigCommandTests(GuardBase):
     """L29: `atta settings set|reset`, `atta models set|unset|reset` and `atta init` change
     atta/config.json and .claude/ through the CLI; agents may only run the read-only forms."""
 
-    MESSAGE = ("Atta no deja que un agente cambie su propia configuración ({}). Corre ese "
-               "comando tú en tu terminal. Comando: {}")
-
     def assertConfigDenied(self, reason, shown, command):
-        self.assertEqual(reason, self.MESSAGE.format(shown, command))
+        self.assertEqual(reason, CONFIG_DENY.format(shown=shown, command=command))
 
     def test_hook_output_is_signed_deny(self):
-        out = io.StringIO()
-        code = guard.run(json.dumps(self.hook("Bash", command="atta settings set max_rounds 9")),
-                         out, root=self.root)
+        code, data = self.run_hook(self.shell_hook("atta settings set max_rounds 9"))
         self.assertEqual(code, 0)
-        data = json.loads(out.getvalue())["hookSpecificOutput"]
         self.assertEqual(data["permissionDecision"], "deny")
         self.assertEqual(data["permissionDecisionReason"],
-                         self.MESSAGE.format("atta settings set", "atta settings set max_rounds 9")
+                         CONFIG_DENY.format(shown="atta settings set",
+                                            command="atta settings set max_rounds 9")
                          + " — «Atta»")
 
     def test_mutating_subcommands_denied(self):
@@ -1069,7 +1084,6 @@ class ConfigCommandTests(GuardBase):
             with self.subTest(command=command):
                 self.assertAllowed(self.bash_reason(command))
 
-
     def test_models_fallback_denied_in_every_form(self):  # S9
         for command in ("atta.exe models fallback T3 sonnet",
                         "./atta.sh models fallback T3 --clear",
@@ -1089,11 +1103,8 @@ class AskConfigCommandTests(GuardBase):
     `plan`), the main session running a single plain config command gets `ask`; every other case
     keeps `deny` with the exact command to run in the terminal."""
 
-    ASK = ("Atta pide tu aprobación para cambiar la configuración ({shown}). Comando exacto: "
-           "{command}. Apruébalo solo si lo pediste tú; si no, recházalo y corre ese comando en "
-           "tu terminal.")
-    DENY = ("Atta no deja que un agente cambie su propia configuración ({shown}). Corre ese "
-            "comando tú en tu terminal. Comando: {command}")
+    ASK = CONFIG_ASK
+    DENY = CONFIG_DENY
     INTERACTIVE = ("default", "acceptEdits", "plan")
     SKIPPING = ("bypassPermissions", "dontAsk", "auto")
 
@@ -1160,12 +1171,8 @@ class AskConfigCommandTests(GuardBase):
                 ("atta profiles clear", "atta profiles clear"))
 
     def hook_with(self, command, mode="default", agent_id=None, tool="Bash"):
-        h = self.hook(tool, command=command)
-        if mode is not None:
-            h["permission_mode"] = mode
-        if agent_id is not None:
-            h["agent_id"] = agent_id
-        return h
+        """Like `shell_hook`, but in the interactive `default` mode unless told otherwise."""
+        return self.shell_hook(command, tool, mode=mode, agent_id=agent_id)
 
     def decide(self, command, **kw):
         return guard.decide(self.hook_with(command, **kw), root=self.root)
@@ -1235,16 +1242,7 @@ class AskConfigCommandTests(GuardBase):
                                      {"a": 1}, True):
             for command, shown in self.PLAIN[:12]:
                 with self.subTest(mode=mode, command=command):
-                    h = self.hook_with(command, mode=None)
-                    if mode is not None:
-                        h["permission_mode"] = mode
-                    if isinstance(mode, str) and mode.strip():
-                        hint = self.MODE_HINT.format(mode=mode)
-                    else:
-                        hint = self.NO_MODE_HINT
-                    self.assertEqual(guard.decide(h, root=self.root),
-                                     ("deny", self.DENY.format(shown=shown, command=command)
-                                      + hint))
+                    self.assertDenyByMode(self.decide(command, mode=mode), shown, command, mode)
 
     def test_mode_hint_only_for_a_plain_command_from_the_main_session(self):  # sandbox L13
         for h in (self.hook_with("atta init", mode="bypassPermissions", agent_id="a1"),
@@ -1376,13 +1374,8 @@ class AskConfigCommandTests(GuardBase):
         self.assertEqual(self.decide("atta init")[0], "deny")
 
     def test_json_shape_for_ask(self):
-        out = io.StringIO()
-        code = guard.run(json.dumps(self.hook_with("atta models set T2 haiku")), out,
-                         root=self.root)
+        code, spec = self.run_hook(self.hook_with("atta models set T2 haiku"))
         self.assertEqual(code, 0)
-        data = json.loads(out.getvalue())
-        self.assertEqual(set(data), {"hookSpecificOutput"})
-        spec = data["hookSpecificOutput"]
         self.assertEqual(set(spec), {"hookEventName", "permissionDecision",
                                      "permissionDecisionReason"})
         self.assertEqual(spec["hookEventName"], "PreToolUse")
@@ -1392,10 +1385,7 @@ class AskConfigCommandTests(GuardBase):
                                          command="atta models set T2 haiku") + " — «Atta»")
 
     def test_json_shape_for_deny_by_mode(self):
-        out = io.StringIO()
-        guard.run(json.dumps(self.hook_with("atta init", mode="bypassPermissions")), out,
-                  root=self.root)
-        spec = json.loads(out.getvalue())["hookSpecificOutput"]
+        _code, spec = self.run_hook(self.hook_with("atta init", mode="bypassPermissions"))
         self.assertEqual(spec["permissionDecision"], "deny")
         self.assertEqual(spec["permissionDecisionReason"],
                          self.DENY.format(shown="atta init", command="atta init")
@@ -1420,10 +1410,62 @@ class AskConfigCommandTests(GuardBase):
         self.assertEqual(guard.decide(h, root=self.root)[0], "deny")
 
     def test_malformed_input_is_still_denied(self):  # PRESERVE
-        out = io.StringIO()
-        guard.run("{roto", out, root=self.root)
-        self.assertEqual(json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"],
-                         "deny")
+        _code, spec = self.run_hook("{roto")
+        self.assertEqual(spec["permissionDecision"], "deny")
+
+    # F2.y advisories S5 (A5): argparse is case-sensitive, so `atta PROFILES USE` would be
+    # approved and then rejected by the CLI. Only the exact spelling of the subcommand and its
+    # action may be asked; any other casing is denied like every other non-plain form.
+    MISCASED = (
+        ("atta PROFILES USE calidad", "atta profiles use"),
+        ("atta profiles USE calidad", "atta profiles use"),
+        ("atta Profiles use calidad", "atta profiles use"),
+        ("atta profiles Clear", "atta profiles clear"),
+        ("atta SETTINGS set max_rounds 9", "atta settings set"),
+        ("atta settings Set max_rounds 9", "atta settings set"),
+        ("atta settings RESET merge_method", "atta settings reset"),
+        ("atta Models set T2 haiku", "atta models set"),
+        ("atta models UNSET --role soldado", "atta models unset"),
+        ("atta models Reset", "atta models reset"),
+        ("atta models FALLBACK T3 sonnet", "atta models fallback"),
+        ("atta models --runtime claude-code SET T1 opus", "atta models set"),
+        ("atta INIT", "atta init"),
+        ("atta Init --force", "atta init"),
+        ("atta --project /x PROFILES use calidad", "atta profiles use"),
+        ("atta.exe PROFILES USE calidad", "atta profiles use"),
+        ("atta.cmd Models reset", "atta models reset"),
+        ("ATTA.EXE INIT", "atta init"),
+        ("python -m atta.spine.cli SETTINGS set max_rounds 9", "atta settings set"),
+        ("py -3.11 -m atta.spine.cli profiles CLEAR", "atta profiles clear"),
+    )
+    # Exact spellings through every launcher that may be asked (Bash and PowerShell).
+    WINDOWS_PLAIN = (
+        ("atta.cmd profiles use calidad", "atta profiles use"),
+        ("atta.exe models fallback T3 sonnet", "atta models fallback"),
+        ("ATTA.EXE settings reset merge_method", "atta settings reset"),
+        ("python3 -m atta.spine.cli models unset --role guia", "atta models unset"),
+        ("py -m atta.spine.cli profiles use equilibrado", "atta profiles use"),
+        ("python.exe -m atta.spine.cli init --force", "atta init"),
+    )
+
+    def test_miscased_subcommand_or_action_is_denied_not_asked(self):  # S5
+        for tool in ("Bash", "PowerShell"):
+            for mode in self.INTERACTIVE:
+                for command, shown in self.MISCASED:
+                    with self.subTest(tool=tool, mode=mode, command=command):
+                        self.assertDeny(self.decide(command, mode=mode, tool=tool), shown,
+                                        command)
+
+    def test_miscased_command_gets_no_mode_hint(self):  # S5: another mode would not ask it
+        for command, shown in self.MISCASED:
+            with self.subTest(command=command):
+                self.assertDeny(self.decide(command, mode="bypassPermissions"), shown, command)
+
+    def test_exact_spelling_still_asks_in_bash_and_powershell(self):  # S5 PRESERVE
+        for tool in ("Bash", "PowerShell"):
+            for command, shown in self.PLAIN + self.PROFILES + self.WINDOWS_PLAIN:
+                with self.subTest(tool=tool, command=command):
+                    self.assertAsk(self.decide(command, tool=tool), shown, command)
 
 
 class DriverOnlyCommandTests(GuardBase):
@@ -1435,17 +1477,13 @@ class DriverOnlyCommandTests(GuardBase):
                "tu respuesta.")
 
     def reason(self, command, tool="Bash", agent_id=None):
-        h = self.hook(tool, command=command)
-        if agent_id is not None:
-            h["agent_id"] = agent_id
-        return guard.evaluate(h, root=self.root)
+        return self.bash_reason(command, tool=tool, agent_id=agent_id)
 
     COMMANDS = (f"atta model-failed {JID} --agent atta-cortadora --reason quota",
                 f"atta --project /x model-failed {JID} --agent atta-reina --reason network",
                 f"python -m atta.spine.cli model-failed {JID} --agent a --reason quota",
                 f"echo ok && atta.exe MODEL-FAILED {JID} --agent a --reason rate-limit",
                 f"bash -c 'atta model-failed {JID} --agent a --reason quota'")
-
 
     def test_subagent_denied_in_script_and_wrapper_forms(self):  # S9
         tail = f"model-failed {JID} --agent atta-cortadora --reason quota"
@@ -1455,6 +1493,7 @@ class DriverOnlyCommandTests(GuardBase):
                         f"echo $(atta {tail})", f"timeout 5 atta {tail}"):
             with self.subTest(command=command):
                 self.assertEqual(self.reason(command, agent_id="a1b2"), self.MESSAGE)
+
     def test_subagent_is_denied(self):
         for command in self.COMMANDS:
             with self.subTest(command=command):
@@ -1474,8 +1513,8 @@ class DriverOnlyCommandTests(GuardBase):
             with self.subTest(command=command):
                 self.assertAllowed(self.reason(command, agent_id="a1b2"))
         self.assertEqual(self.reason("atta models fallback T3 sonnet"),
-                         ConfigCommandTests.MESSAGE.format("atta models fallback",
-                                                           "atta models fallback T3 sonnet"))
+                         CONFIG_DENY.format(shown="atta models fallback",
+                                            command="atta models fallback T3 sonnet"))
 
 
 class SettingsTemplateTests(unittest.TestCase):
