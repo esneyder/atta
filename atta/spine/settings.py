@@ -5,8 +5,9 @@ settings_registry.py (a `*` marks values that differ from the default). `get <cl
 value (JSON for lists and objects). `set <clave> <valor>` parses the value by the key's type
 (lists as `a,b` or a JSON array; booleans sí/no/true/false), runs config.validate on the new
 config and writes atta/config.json atomically keeping every other key (models.py's writer).
-`reset <clave>` removes the key (or nested key) so the default applies. Unknown or read-only keys
-and invalid values exit 2 and write nothing. `atta/config.json` is a protected path: only a human
+`reset <clave>` removes the key (or nested key) so the default applies. Unknown or read-only keys,
+invalid values and a folder without atta/config.json (S4: `set`/`reset` never create it; run
+`atta init` first) exit 2 and write nothing. `atta/config.json` is a protected path: only a human
 changes it.
 """
 
@@ -216,11 +217,11 @@ def _get(cfg: dict, key: str) -> int:
 def _set(root: Path, cfg: dict, key: str, text: str) -> int:
     setting = _setting(key, editing=True)
     value = parse(setting, text)
+    data = _raw(root)  # S4: refuses before anything else when there is no atta/config.json
     old = effective(cfg, setting)
     if value == old and type(value) is type(old):
         print(f"Atta: {key} ya vale {show(old)}; no cambié nada.\n{SIGN}")
         return OK
-    data = _raw(root)
     _assign(data, setting.path, value)
     rel = _save(root, data)
     print(f"Atta cambió {key} en {rel}: {show(old)} → {show(value)}.\n{SIGN}")
@@ -276,6 +277,7 @@ def register(subparsers) -> None:
                     "(«*» marca lo distinto del valor por defecto). get imprime un valor; set "
                     "lo cambia y reset lo quita para que rija el valor por defecto. Una clave "
                     "desconocida o de solo lectura, o un valor inválido, sale 2 sin escribir "
+                    "nada. Sin atta/config.json (sin atta init), set y reset salen 2 sin crear "
                     "nada.",
         epilog="Claves: " + keys + ". Listas: a,b o [\"a\", \"b\"]; sí/no: sí, no, true, false.")
     p.add_argument("--json", action="store_true",

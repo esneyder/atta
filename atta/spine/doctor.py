@@ -189,8 +189,9 @@ def _project(r: Report, root: Path) -> tuple[bool, dict]:
         try:
             cfg = project.load_config(root)
         except config.ConfigError as exc:
-            r.fail(f"atta/config.json no es válido: {exc}",
-                   "Corrígelo a mano en tu terminal (atta settings muestra cada clave).")
+            r.fail(f"atta/config.json no es válido: {exc.reason}",
+                   exc.hint or "Corrígelo a mano en tu terminal (atta settings muestra cada "
+                               "clave).")
         else:
             r.ok("atta/config.json es válido")
             _routing(r, cfg)

@@ -227,11 +227,12 @@ class SetTest(SettingsBase):
                          "Atta: max_rounds ya vale 3; no cambié nada.\n— Atta\n")
         self.assertEqual(self.cfg_path.read_bytes(), before)
 
-    def test_set_without_config_file_starts_from_the_packaged_one(self):
-        self.cfg_path.unlink()
-        self.ok("settings", "set", "max_rounds", "4")
-        packaged = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(self.stored(), dict(packaged, max_rounds=4))
+    def test_set_without_config_file_asks_for_init(self):  # S4 (F2.y A4): was created from
+        self.cfg_path.unlink()                             # the packaged config.json before
+        self.assertEqual(self.atta("settings", "set", "max_rounds", "4"), (
+            2, "", f"No encontré atta/config.json en {self.root}: corre atta init primero. "
+                   "No cambié nada.\n"))
+        self.assertFalse(self.cfg_path.exists())
 
 
 class RefusalTest(SettingsBase):
@@ -408,6 +409,37 @@ class JsonStateTest(SettingsBase):
                                      "reset <clave>`.\n— Atta\n"))
         self.assertNotIn('"key"', out)
         self.assertEqual(self.ok("settings", "get", "max_rounds"), "3\n")
+
+
+class WithoutInitTest(TempDirMixin, unittest.TestCase):
+    """S4 (F2.y A4): set and reset never create atta/config.json from scratch."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = (self.tmp / "bare").resolve()
+        self.root.mkdir()
+
+    def atta(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["--project", str(self.root), *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_set_and_reset_refuse_and_create_nothing(self):
+        expected = (f"No encontré atta/config.json en {self.root}: corre atta init primero. "
+                    "No cambié nada.\n")
+        for argv in (("set", "max_rounds", "4"), ("set", "max_rounds", "3"),
+                     ("reset", "max_rounds")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.atta("settings", *argv), (2, "", expected))
+                self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_reading_still_uses_the_defaults(self):  # PRESERVE
+        self.assertEqual(self.atta("settings", "get", "max_rounds"), (0, "3\n", ""))
+        code, out, err = self.atta("settings")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(list(self.root.iterdir()), [])
+
 
 
 if __name__ == "__main__":

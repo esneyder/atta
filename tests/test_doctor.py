@@ -375,6 +375,19 @@ class FailureTest(DoctorBase):
                               "ser un entero mayor que 0.",
                          "Corrígelo a mano en tu terminal (atta settings muestra cada clave).")
 
+    def test_unknown_profile_says_how_to_get_out(self):  # S1 (F2.y A1)
+        path = self.root / "atta" / "config.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({**data, "profile": "barato"}), encoding="utf-8")
+        before = tree(self.root)
+        code, out = self.run_doctor(no_github=True, via_cli=True)
+        self.assertEqual(code, 1, out)
+        self.assert_line(out, "✗ atta/config.json no es válido: config.json: profile «barato» "
+                              "no existe: usa economico, equilibrado o calidad.",
+                         "Quítalo con atta profiles clear en tu terminal o borra «profile» de "
+                         "atta/config.json.")
+        self.assertEqual(tree(self.root), before)
+
     def test_sgconfig_without_ast_grep_is_a_warning(self):
         (self.root / "sgconfig.yml").write_text("ruleDirs:\n  - rules\n", encoding="utf-8")
         code, out = self.run_doctor(no_github=True)

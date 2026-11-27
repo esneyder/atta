@@ -29,14 +29,16 @@ only; absent or true: on); `atta doctor` tells projects without the key that the
 
 Profiles (F2.y T3, S6; profiles.py): `"profile": "<id>"` layers a packaged profile's tier models
 between the factory and the project's overrides: factory < profile < `models` tiers/roles.
-`atta models` shows origin `perfil` for what the profile decided.
+`atta models` shows origin `perfil` for what the profile decided and `proyecto` for a tier the
+project wrote under `models.<runtime>.tiers`, even when it equals the profile's model.
 
 `atta models [--runtime R]` prints the table; `set <Tn> <modelo>`, `set --role <rol> <modelo>`,
 `unset --role <rol>`, `fallback <Tn> <modelo>...` / `fallback <Tn> --clear` and `reset` change `atta/config.json` (atomically, keeping every other key
 and its order) and then the `model:` line of each `.claude/agents/atta-<rol>.md` and of the
 `/atta` driver (`.claude/commands/atta.md` and `.claude/skills/atta/SKILL.md`, which run on
 the cheap tier DRIVER_TIER, F4 S5/G8: `atta next` decides the pipeline). Anything invalid
-exits 2 and writes nothing.
+exits 2 and writes nothing; so does a folder without atta/config.json (`_raw_config`, S4 of
+F2.y advisories: only `atta init` creates it).
 
 Fallback chains (F4 T4, S4): `models.<runtime>.fallbacks` maps a tier to the Claude models that
 replace its model, in order, when an agent fails by quota, rate limit or network (never by
@@ -256,7 +258,8 @@ class Table:
     def __init__(self, tiers: dict, roles: dict | None = None, defaults: dict | None = None,
                  base: dict | None = None, runtime: str = RUNTIME,
                  fallbacks: dict | None = None, matrix: bool = True,
-                 profile: str | None = None, profile_tiers: dict | None = None):
+                 profile: str | None = None, profile_tiers: dict | None = None,
+                 overrides=None):
         self.tiers = dict(tiers)
         self.profile = profile  # F2.y T3: the packaged profile layered over the factory tiers
         self.profile_tiers = dict(profile_tiers or {})
@@ -264,6 +267,11 @@ class Table:
         self.roles = dict(roles or {})
         self.defaults = dict(defaults) if defaults is not None else role_tiers()
         self.base = dict(base) if base is not None else dict(tiers)
+        # Tiers the project wrote in `models.<runtime>.tiers` (S2, F2.y L11). A bare Table (no
+        # config) counts as overrides the tiers that differ from what lies underneath.
+        self.overrides = set(overrides) if overrides is not None else {
+            t for t in self.tiers
+            if self.tiers[t] != self.profile_tiers.get(t, self.base.get(t))}
         self.runtime = runtime
         self.matrix = matrix
 
@@ -372,10 +380,12 @@ class Table:
 
     def tier_origin(self, tier: str) -> str:
         """Who decided the model of `tier`: the project's override (S12), the profile (S6) or
-        the factory (models.json). Overrides win over the profile, which wins over the factory."""
-        layered = self.profile_tiers.get(tier, self.base.get(tier))
-        if self.tiers.get(tier) != layered:
+        the factory (models.json). Overrides win over the profile, which wins over the factory.
+        A tier the project wrote is `proyecto` even when it equals the profile's or the
+        factory's model (S2, F2.y L11); a profile tier equal to the factory's reads `fábrica`."""
+        if tier in self.overrides:
             return "proyecto"
+        layered = self.profile_tiers.get(tier, self.base.get(tier))
         return "perfil" if layered != self.base.get(tier) else "fábrica"
 
     def origin(self, role: str) -> str:
@@ -413,7 +423,8 @@ def table(cfg: dict | None = None, runtime: str = RUNTIME,
         chosen = profiles.tiers(name, runtime, templates)
     tiers = {**base, **chosen, **(entry.get("tiers") or {})}
     return Table(tiers, entry.get("roles") or {}, role_tiers(templates), base, runtime,
-                 entry.get("fallbacks") or {}, matrix_on(cfg), name or None, chosen)
+                 entry.get("fallbacks") or {}, matrix_on(cfg), name or None, chosen,
+                 overrides=entry.get("tiers") or {})
 
 
 def matrix_on(cfg: dict | None) -> bool:
@@ -514,9 +525,12 @@ def _sync_driver(root: Path, tab: Table) -> list[str]:
 
 
 def _raw_config(root: Path) -> dict:
-    from . import config, project
-    path = project.config_path(root)
-    source = path if path.exists() else config.CONFIG_PATH
+    """The project's atta/config.json as written, for a command that changes it. Without the
+    file it refuses (S4, F2.y A4): only `atta init` creates it."""
+    from . import project
+    source = project.config_path(root)
+    if not source.exists():
+        raise ModelsError(f"No encontré atta/config.json en {root}: corre atta init primero.")
     try:
         data = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -791,7 +805,9 @@ def register(subparsers) -> None:
                     "fallback y reset cambian «models» en atta/config.json y la línea model: de "
                     ".claude/agents/atta-*.md y del comando y skill /atta (que corren en "
                     "T0). Un modelo, rol o tier inválido sale 2 sin "
-                    "escribir nada.",
+                    "escribir nada; sin atta/config.json (sin atta init) las acciones salen 2 "
+                    "sin crear nada. ORIGEN proyecto marca un tier que escribiste con set, "
+                    "aunque valga lo mismo que el perfil o la fábrica.",
         epilog="Modelos válidos en claude-code: haiku, sonnet, opus o un id completo "
                "claude-[a-z0-9.-]+. Roles: " + ", ".join(ROLES) + ".")
     p.add_argument("--runtime", choices=RUNTIMES, default=RUNTIME, help=runtime_help)
